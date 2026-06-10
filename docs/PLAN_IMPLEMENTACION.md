@@ -219,7 +219,7 @@ Documentación      [═══════════════════�
 ### Hardware (disponible)
 | Recurso | Cantidad | Especificación |
 |---------|----------|----------------|
-| Raspberry Pi 5 | 2 | 16 GB RAM, 128 GB NVMe |
+| Raspberry Pi 5 | 2 | 16 GB RAM, 128 GB microSD |
 | Switch Gigabit | 1 | Para red LAN privada |
 | Cables Ethernet | 2 | Cat6, 2 m |
 | Fuentes de alimentación | 2 | 5V / 5A USB-C |
@@ -250,7 +250,7 @@ Documentación      [═══════════════════�
 | ID | Riesgo | Probabilidad | Impacto | Mitigación |
 |----|--------|-------------|---------|------------|
 | R-1 | Overheating de RPi5 bajo carga sostenida | Media | Alto | Instalar disipadores y monitorear temperatura; reducir dificultad |
-| R-2 | Fallo de disco NVMe | Baja | Alto | Backup diario del `data/chain/` a almacenamiento externo |
+| R-2 | Corrupción de microSD bajo escrituras intensivas | Media | Alto | Backup diario del `data/chain/` a almacenamiento externo; usar microSD de clase A2 |
 | R-3 | Dependencias incompatibles en ARM64 | Media | Medio | Probar instalación completa en semana 1; fijar versiones en requirements.txt |
 | R-4 | Corte de red universitaria durante demo | Media | Alto | Demo offline preparada (`scripts/demo.py`) sin dependencia de red |
 | R-5 | Tiempo de minado excesivo en presentación | Alta | Medio | Usar dificultad=2 para demo rápida; PBFT no requiere minado |

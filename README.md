@@ -238,7 +238,7 @@ pytest tests/test_consensus.py -v  # Solo consenso
 |---|---|
 | CPU | ARM Cortex-A76 quad-core 2.4 GHz |
 | RAM | 16 GB LPDDR4X |
-| Almacenamiento | 128 GB NVMe SSD |
+| Almacenamiento | 128 GB microSD |
 | Red | Gigabit Ethernet + WiFi 6 |
 | Hash rate SHA-256 (estimado) | ~500,000 – 800,000 H/s |
 | Tiempo de bloque (dificultad 4) | 3–15 segundos |
