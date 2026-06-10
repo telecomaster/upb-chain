@@ -1,0 +1,65 @@
+# ── Entornos virtuales ────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Datos de la cadena (generados en runtime) ─────────────
+data/
+*.json.bak
+
+# ── Variables de entorno (contienen secretos) ─────────────
+.env
+.env.local
+.env.*.local
+
+# ── Wallets y llaves privadas ─────────────────────────────
+wallets/
+*.wallet.json
+*_private_key*
+*.pem
+*.key
+
+# ── Logs ──────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Claude Code ───────────────────────────────────────────
+.claude/
+
+# ── IDEs ──────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Testing y coverage ────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.pytest_cache/
+
+# ── Jupyter ───────────────────────────────────────────────
+notebooks/.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ── Modelos ML guardados ──────────────────────────────────
+models/
+*.pkl
+*.joblib
+*.h5
