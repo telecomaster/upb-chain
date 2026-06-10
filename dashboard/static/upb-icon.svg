@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="UPB">
+  <defs>
+    <linearGradient id="sg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1B3A7A"/>
+      <stop offset="100%" stop-color="#0D2459"/>
+    </linearGradient>
+    <linearGradient id="fg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFD700"/>
+      <stop offset="100%" stop-color="#C8A951"/>
+    </linearGradient>
+  </defs>
+  <!-- Escudo -->
+  <path d="M6 4 L58 4 L58 42 Q32 62 6 42 Z" fill="url(#sg)" stroke="#C8A951" stroke-width="2"/>
+  <!-- Franja superior -->
+  <rect x="6" y="4" width="52" height="18" fill="#2A5298"/>
+  <!-- UPB texto -->
+  <text x="32" y="17" text-anchor="middle" font-family="Georgia,serif"
+        font-size="11" font-weight="bold" fill="#FFD700" letter-spacing="2">UPB</text>
+  <!-- Antorcha mango -->
+  <rect x="29" y="32" width="6" height="16" fill="#C8A951" rx="2"/>
+  <!-- Antorcha cabeza -->
+  <ellipse cx="32" cy="33" rx="7" ry="4" fill="#C8A951"/>
+  <!-- Llamas -->
+  <path d="M32 18 C28 23 27 28 29 32 C26 26 28 19 32 18Z" fill="url(#fg)"/>
+  <path d="M32 18 C36 23 37 28 35 32 C38 26 36 19 32 18Z" fill="url(#fg)"/>
+  <path d="M32 21 C30 25 30 29 32 32 C34 29 34 25 32 21Z" fill="#FFF176" opacity="0.85"/>
+</svg>

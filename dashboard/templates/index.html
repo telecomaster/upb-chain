@@ -1,0 +1,1359 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>UPB-Chain — Dashboard Blockchain Académico</title>
+  <link rel="icon" type="image/svg+xml" href="/static/upb-icon.svg"/>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    /* ── Paleta institucional UPB ─────────────────────────── */
+    :root {
+      --upb-blue:      #1B3A7A;
+      --upb-blue-mid:  #2A5298;
+      --upb-blue-light:#4472C4;
+      --upb-gold:      #C8A951;
+      --upb-gold-light:#FFD700;
+      --upb-dark:      #0D1B3E;
+      --upb-surface:   #112055;
+      --upb-border:    #1E3A6E;
+      --upb-text:      #D4DFF5;
+      --upb-muted:     #7A95C4;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--upb-dark);
+      color: var(--upb-text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+    }
+
+    /* ── Header ──────────────────────────────────────────── */
+    .upb-header {
+      background: linear-gradient(135deg, var(--upb-blue) 0%, var(--upb-dark) 100%);
+      border-bottom: 2px solid var(--upb-gold);
+      padding: 0;
+    }
+
+    .upb-topbar {
+      background: var(--upb-blue);
+      padding: 6px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: var(--upb-gold);
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      border-bottom: 1px solid rgba(200,169,81,0.3);
+    }
+
+    .upb-nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 24px;
+    }
+
+    .upb-logo-area {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .upb-logo-area img {
+      height: 64px;
+      width: auto;
+    }
+
+    .upb-project-badge {
+      display: flex;
+      flex-direction: column;
+      padding-left: 16px;
+      border-left: 2px solid var(--upb-gold);
+    }
+
+    .upb-project-badge .chain-name {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--upb-gold-light);
+      letter-spacing: 2px;
+      font-family: Georgia, serif;
+    }
+
+    .upb-project-badge .chain-sub {
+      font-size: 10px;
+      color: var(--upb-muted);
+      letter-spacing: 3px;
+      text-transform: uppercase;
+    }
+
+    /* ── Cards ───────────────────────────────────────────── */
+    .card {
+      background: var(--upb-surface);
+      border: 1px solid var(--upb-border);
+      border-radius: 10px;
+    }
+
+    .card-gold-border {
+      border-color: var(--upb-gold);
+      border-top-width: 3px;
+    }
+
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--upb-gold);
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--upb-border);
+      margin-bottom: 16px;
+    }
+
+    /* ── Métricas ─────────────────────────────────────────── */
+    .metric-value {
+      font-size: 28px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+    }
+
+    .metric-label {
+      font-size: 10px;
+      color: var(--upb-muted);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      margin-top: 4px;
+    }
+
+    /* ── Badges de estado ────────────────────────────────── */
+    .badge {
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 1px;
+    }
+
+    .badge-ok       { background: #0f3d1f; color: #4ade80; border: 1px solid #166534; }
+    .badge-warn     { background: #3d2a0f; color: #fbbf24; border: 1px solid #92400e; }
+    .badge-critical { background: #3d0f0f; color: #f87171; border: 1px solid #991b1b; }
+    .badge-info     { background: #0f1e3d; color: #60a5fa; border: 1px solid #1e3a8a; }
+
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .pulse { animation: pulse 2.5s infinite; }
+
+    /* ── Tabla de bloques ────────────────────────────────── */
+    .block-row:hover { background: rgba(44,82,152,0.2); }
+
+    .hash-mono {
+      font-family: 'Courier New', monospace;
+      font-size: 11px;
+      color: var(--upb-muted);
+    }
+
+    /* ── Botones ─────────────────────────────────────────── */
+    .btn-primary {
+      background: var(--upb-blue-mid);
+      border: 1px solid var(--upb-blue-light);
+      color: white;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .2s;
+      letter-spacing: 1px;
+    }
+    .btn-primary:hover { background: var(--upb-blue-light); }
+
+    .btn-gold {
+      background: linear-gradient(135deg, #8B6914, var(--upb-gold));
+      border: none;
+      color: #0D1B3E;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all .2s;
+      letter-spacing: 1px;
+    }
+    .btn-gold:hover { filter: brightness(1.1); }
+
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--upb-gold);
+      color: var(--upb-gold);
+      padding: 7px 14px;
+      border-radius: 6px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all .2s;
+    }
+    .btn-outline:hover { background: rgba(200,169,81,.15); }
+
+    /* ── Inputs ──────────────────────────────────────────── */
+    .upb-input {
+      width: 100%;
+      background: var(--upb-dark);
+      border: 1px solid var(--upb-border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 12px;
+      color: var(--upb-text);
+      outline: none;
+      transition: border-color .2s;
+    }
+    .upb-input:focus { border-color: var(--upb-gold); }
+
+    /* ── Footer ──────────────────────────────────────────── */
+    .upb-footer {
+      background: var(--upb-blue);
+      border-top: 2px solid var(--upb-gold);
+      padding: 20px 24px;
+      margin-top: 32px;
+    }
+
+    /* ── Scrollbar ───────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: var(--upb-dark); }
+    ::-webkit-scrollbar-thumb { background: var(--upb-border); border-radius: 3px; }
+
+    /* ── Divisor dorado ──────────────────────────────────── */
+    .gold-divider {
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--upb-gold), transparent);
+      margin: 24px 0;
+    }
+
+    /* ══════════════════════════════════════════════════════
+       NUEVAS SECCIONES v2.0
+    ══════════════════════════════════════════════════════ */
+
+    /* ── Network Topology ───────────────────────────────── */
+    .node-circle {
+      fill: var(--upb-surface);
+      stroke: var(--upb-blue-light);
+      stroke-width: 2;
+      transition: stroke .4s;
+    }
+    .node-circle.active   { stroke: #4ade80; }
+    .node-circle.inactive { stroke: #f87171; }
+
+    .peer-line {
+      stroke: var(--upb-blue-light);
+      stroke-width: 2;
+      stroke-dasharray: 8 5;
+      animation: dash-flow 1.2s linear infinite;
+      opacity: .65;
+    }
+    .peer-line.active   { stroke: #4ade80; opacity: 1; }
+    .peer-line.inactive { stroke: #f87171; opacity: .35; animation: none; }
+
+    @keyframes dash-flow { to { stroke-dashoffset: -26; } }
+
+    /* ── Block rows clickable ───────────────────────────── */
+    #blocks-body tr.block-row { cursor: pointer !important; }
+
+    /* ── Transaction Feed ───────────────────────────────── */
+    @keyframes slideInTx {
+      from { opacity: 0; transform: translateY(-10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .tx-feed-item { animation: slideInTx .35s ease-out; }
+
+    /* ── Block Detail expand ────────────────────────────── */
+    .block-detail-content {
+      background: var(--upb-dark);
+      border: 1px solid var(--upb-border);
+      border-top: none;
+      border-radius: 0 0 8px 8px;
+      padding: 14px 18px;
+      font-size: 11px;
+      line-height: 1.9;
+    }
+    .copy-hash {
+      cursor: pointer;
+      font-family: 'Courier New', monospace;
+      font-size: 11px;
+      color: var(--upb-muted);
+      background: rgba(68, 114, 196, .1);
+      border: 1px solid var(--upb-border);
+      border-radius: 4px;
+      padding: 4px 8px;
+      transition: all .2s;
+      word-break: break-all;
+      display: inline-block;
+    }
+    .copy-hash:hover  { border-color: var(--upb-gold); color: var(--upb-gold-light); }
+    .copy-hash.copied { border-color: #4ade80; color: #4ade80; }
+  </style>
+</head>
+<body>
+
+<!-- ════ HEADER ════════════════════════════════════════════ -->
+<header class="upb-header">
+  <!-- Barra superior institucional -->
+  <div class="upb-topbar">
+    <span>Universidad Privada Boliviana &nbsp;·&nbsp; Carrera de Ingeniería en Inteligencia Artificial</span>
+    <span id="current-time" class="pulse">● EN VIVO</span>
+  </div>
+
+  <!-- Navegación principal -->
+  <nav class="upb-nav">
+    <div class="upb-logo-area">
+      <!-- Logo SVG institucional -->
+      <img src="/static/upb-logo.svg" alt="Universidad Privada Boliviana" onerror="this.style.display='none'"/>
+      <div class="upb-project-badge">
+        <span class="chain-name">UPB-CHAIN</span>
+        <span class="chain-sub">Blockchain &nbsp;·&nbsp; IA &nbsp;·&nbsp; Ciberseguridad</span>
+      </div>
+    </div>
+
+    <div style="display:flex; gap:12px; align-items:center;">
+      <a href="/docs" target="_blank" class="btn-outline">API Docs</a>
+      <div id="node-info" class="badge badge-info" style="font-size:10px;">Nodo —</div>
+      <div id="status-badge" class="badge badge-ok pulse">● Conectado</div>
+    </div>
+  </nav>
+</header>
+
+<!-- ════ MAIN ══════════════════════════════════════════════ -->
+<main style="padding: 24px; max-width: 1400px; margin: 0 auto;">
+
+  <!-- ── Fila de métricas principales ──────────────────── -->
+  <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:24px;">
+
+    <div class="card card-gold-border" style="padding:20px;">
+      <div class="metric-label">Altura de cadena</div>
+      <div id="chain-height" class="metric-value" style="color:#60a5fa; margin-top:8px;">—</div>
+      <div style="font-size:10px; color:var(--upb-muted); margin-top:6px;">bloques confirmados</div>
+    </div>
+
+    <div class="card card-gold-border" style="padding:20px;">
+      <div class="metric-label">Transacciones</div>
+      <div id="total-tx" class="metric-value" style="color:var(--upb-gold); margin-top:8px;">—</div>
+      <div style="font-size:10px; color:var(--upb-muted); margin-top:6px;">total en la cadena</div>
+    </div>
+
+    <div class="card card-gold-border" style="padding:20px;">
+      <div class="metric-label">Pendientes</div>
+      <div id="pending-tx" class="metric-value" style="color:#fbbf24; margin-top:8px;">—</div>
+      <div style="font-size:10px; color:var(--upb-muted); margin-top:6px;">en mempool</div>
+    </div>
+
+    <div class="card card-gold-border" style="padding:20px;">
+      <div class="metric-label">Pares activos</div>
+      <div id="active-peers" class="metric-value" style="color:#4ade80; margin-top:8px;">—</div>
+      <div style="font-size:10px; color:var(--upb-muted); margin-top:6px;">nodos en la red</div>
+    </div>
+
+  </div>
+
+  <!-- ── Red P2P + Timeline de Bloques ─────────────────── -->
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px;">
+
+    <!-- Topología de Red P2P -->
+    <div class="card" style="padding:20px;">
+      <div class="section-title">Topología de Red P2P</div>
+
+      <svg id="network-svg" viewBox="0 0 400 130" style="width:100%; display:block;">
+        <defs>
+          <filter id="node-glow" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
+            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+
+        <!-- Línea animada entre nodos -->
+        <line id="peer-link" x1="117" y1="65" x2="283" y2="65" class="peer-line"/>
+
+        <!-- Badge de latencia central -->
+        <rect id="lat-bg" x="172" y="55" width="56" height="20" rx="10"
+              fill="#0D1B3E" stroke="#1E3A6E" stroke-width="1"/>
+        <text id="latency-text" x="200" y="69" text-anchor="middle"
+              font-size="10" font-weight="600"
+              font-family="'Courier New',monospace" fill="#C8A951">— ms</text>
+
+        <!-- Nodo 1 (local) -->
+        <circle id="node-circle-1" cx="75" cy="65" r="42" class="node-circle" filter="url(#node-glow)"/>
+        <text x="75" y="60" text-anchor="middle" fill="#60a5fa" font-size="14" font-weight="700"
+              font-family="'Segoe UI',sans-serif">RPi5</text>
+        <text x="75" y="72" text-anchor="middle" fill="#D4DFF5" font-size="9"
+              font-family="'Segoe UI',sans-serif">Nodo 1</text>
+        <text id="node-1-ip" x="75" y="82" text-anchor="middle" fill="#7A95C4" font-size="8"
+              font-family="'Courier New',monospace">—</text>
+
+        <!-- Nodo 2 (par) -->
+        <circle id="node-circle-2" cx="325" cy="65" r="42" class="node-circle" filter="url(#node-glow)"/>
+        <text x="325" y="60" text-anchor="middle" fill="#60a5fa" font-size="14" font-weight="700"
+              font-family="'Segoe UI',sans-serif">RPi5</text>
+        <text x="325" y="72" text-anchor="middle" fill="#D4DFF5" font-size="9"
+              font-family="'Segoe UI',sans-serif">Nodo 2</text>
+        <text id="node-2-status" x="325" y="82" text-anchor="middle" fill="#7A95C4" font-size="8"
+              font-family="'Courier New',monospace">—</text>
+      </svg>
+
+      <!-- Badges de estado bajo el SVG -->
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding:0 4px;">
+        <div style="text-align:center;">
+          <div id="node-1-badge" class="badge badge-info" style="font-size:10px;">Desconocido</div>
+          <div style="font-size:9px; color:var(--upb-muted); margin-top:4px;">Nodo local</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="font-size:22px; font-weight:700; color:var(--upb-gold-light);" id="net-peers">—</div>
+          <div style="font-size:9px; color:var(--upb-muted); letter-spacing:1px; text-transform:uppercase;">pares</div>
+        </div>
+        <div style="text-align:center;">
+          <div id="node-2-badge" class="badge badge-info" style="font-size:10px;">Desconocido</div>
+          <div style="font-size:9px; color:var(--upb-muted); margin-top:4px;">Nodo par</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Timeline de Bloques -->
+    <div class="card" style="padding:20px;">
+      <div class="section-title">Timeline de Bloques — TX por Bloque</div>
+      <div style="position:relative; height:178px;">
+        <canvas id="block-timeline-chart"></canvas>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Fila: Seguridad + Distribución TX ──────────────── -->
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px;">
+
+    <!-- Panel de seguridad -->
+    <div class="card" style="padding:20px;">
+      <div class="section-title">Monitor de Seguridad</div>
+
+      <div style="display:flex; align-items:center; gap:16px; margin-bottom:16px;">
+        <div>
+          <div style="font-size:11px; color:var(--upb-muted); text-transform:uppercase; letter-spacing:2px;">Nivel de amenaza</div>
+          <div id="threat-level" style="font-size:32px; font-weight:800; color:#4ade80; margin-top:4px;">—</div>
+        </div>
+        <div style="flex:1; font-size:11px; color:var(--upb-muted); line-height:1.6;" id="threat-desc">
+          Analizando red…
+        </div>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
+        <div style="background:var(--upb-dark); border-radius:6px; padding:10px; text-align:center;">
+          <div style="font-size:10px; color:var(--upb-muted); text-transform:uppercase;">Críticas</div>
+          <div id="critical-alerts" style="font-size:22px; font-weight:700; color:#f87171;">—</div>
+        </div>
+        <div style="background:var(--upb-dark); border-radius:6px; padding:10px; text-align:center;">
+          <div style="font-size:10px; color:var(--upb-muted); text-transform:uppercase;">Advertencias</div>
+          <div id="warning-alerts" style="font-size:22px; font-weight:700; color:#fbbf24;">—</div>
+        </div>
+        <div style="background:var(--upb-dark); border-radius:6px; padding:10px; text-align:center;">
+          <div style="font-size:10px; color:var(--upb-muted); text-transform:uppercase;">Reorgs</div>
+          <div id="chain-reorgs" style="font-size:22px; font-weight:700; color:#a78bfa;">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Distribución TX -->
+    <div class="card" style="padding:20px;">
+      <div class="section-title">Distribución de Transacciones</div>
+      <div style="position:relative; height:180px;">
+        <canvas id="tx-chart"></canvas>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Tabla de bloques ───────────────────────────────── -->
+  <div class="card" style="padding:20px; margin-bottom:24px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
+      <div class="section-title" style="margin-bottom:0; border:none; padding:0;">Últimos Bloques</div>
+      <div style="display:flex; gap:8px;">
+        <button onclick="loadBlocks()" class="btn-outline">↻ Actualizar</button>
+        <button onclick="mineBlock()" id="mine-btn" class="btn-gold">⛏ Minar Bloque</button>
+      </div>
+    </div>
+
+    <table style="width:100%; border-collapse:collapse; font-size:12px;">
+      <thead>
+        <tr style="border-bottom:1px solid var(--upb-border); color:var(--upb-muted); font-size:10px; text-transform:uppercase; letter-spacing:2px;">
+          <th style="text-align:left; padding:8px 12px;">#</th>
+          <th style="text-align:left; padding:8px 12px;">Hash</th>
+          <th style="text-align:left; padding:8px 12px;">Hash Anterior</th>
+          <th style="text-align:center; padding:8px 12px;">TX</th>
+          <th style="text-align:center; padding:8px 12px;">Dificultad</th>
+          <th style="text-align:right; padding:8px 12px;">Timestamp</th>
+        </tr>
+      </thead>
+      <tbody id="blocks-body"></tbody>
+    </table>
+  </div>
+
+  <!-- ── TX Feed + Métricas de Consenso ────────────────── -->
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px;">
+
+    <!-- Feed de Transacciones en Vivo -->
+    <div class="card" style="padding:20px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+        <div class="section-title" style="margin:0; border:none; padding:0;">Transacciones Recientes</div>
+        <span class="pulse" style="font-size:9px; color:var(--upb-muted); letter-spacing:1px;">● en vivo · 5 s</span>
+      </div>
+      <div id="tx-feed" style="display:flex; flex-direction:column; gap:6px; min-height:120px;">
+        <div style="color:var(--upb-muted); font-size:11px; text-align:center; padding:30px 0;">
+          Cargando transacciones…
+        </div>
+      </div>
+    </div>
+
+    <!-- Métricas de Consenso -->
+    <div class="card" style="padding:20px;">
+      <div class="section-title">Métricas de Consenso</div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+
+        <!-- Proof of Work -->
+        <div style="background:var(--upb-dark); border-radius:8px; padding:14px; border:1px solid var(--upb-border);">
+          <div style="font-size:10px; color:var(--upb-gold); text-transform:uppercase; letter-spacing:2px; margin-bottom:10px;">
+            ⛏ Proof of Work
+          </div>
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            <div>
+              <div style="font-size:9px; color:var(--upb-muted); text-transform:uppercase; letter-spacing:1px;">Dificultad</div>
+              <div id="pow-difficulty" style="font-size:22px; font-weight:700; color:#60a5fa;">—</div>
+            </div>
+            <div>
+              <div style="font-size:9px; color:var(--upb-muted); text-transform:uppercase; letter-spacing:1px;">Hash Rate</div>
+              <div id="pow-hashrate" style="font-size:13px; font-weight:600; color:var(--upb-text);">— H/s</div>
+            </div>
+            <div>
+              <div style="font-size:9px; color:var(--upb-muted); text-transform:uppercase; letter-spacing:1px;">Tiempo / Bloque</div>
+              <div id="pow-blocktime" style="font-size:13px; font-weight:600; color:var(--upb-text);">— s</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- PBFT -->
+        <div style="background:var(--upb-dark); border-radius:8px; padding:14px; border:1px solid var(--upb-border);">
+          <div style="font-size:10px; color:#a78bfa; text-transform:uppercase; letter-spacing:2px; margin-bottom:10px;">
+            ⬡ PBFT
+          </div>
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            <div>
+              <div style="font-size:9px; color:var(--upb-muted); text-transform:uppercase; letter-spacing:1px;">Nodos en Quórum</div>
+              <div id="pbft-quorum" style="font-size:22px; font-weight:700; color:#a78bfa;">—</div>
+            </div>
+            <div>
+              <div style="font-size:9px; color:var(--upb-muted); text-transform:uppercase; letter-spacing:1px;">Vista Actual</div>
+              <div id="pbft-view" style="font-size:13px; font-weight:600; color:var(--upb-text);">—</div>
+            </div>
+            <div>
+              <div style="font-size:9px; color:var(--upb-muted); text-transform:uppercase; letter-spacing:1px;">Bloques PBFT</div>
+              <div id="pbft-committed" style="font-size:13px; font-weight:600; color:var(--upb-text);">—</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Credenciales Académicas ────────────────────────── -->
+  <div class="gold-divider"></div>
+
+  <div style="margin-bottom:16px;">
+    <div class="section-title" style="font-size:13px; letter-spacing:4px;">Sistema de Credenciales Académicas</div>
+    <p style="font-size:11px; color:var(--upb-muted); line-height:1.8; max-width:800px;">
+      Las credenciales se registran en la blockchain mediante transacciones firmadas con ECDSA secp256k1.
+      Una vez minadas en un bloque, son inmutables y verificables por cualquier nodo de la red sin necesidad de contactar a la universidad.
+    </p>
+  </div>
+
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px;">
+
+    <!-- Emisión -->
+    <div class="card" style="padding:20px;">
+      <div class="section-title">Emitir Credencial</div>
+
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <input id="student-addr"  class="upb-input" placeholder="Dirección del estudiante (UPB…)"/>
+        <input id="student-name"  class="upb-input" placeholder="Nombre completo del estudiante"/>
+        <input id="degree"        class="upb-input" placeholder="Título (ej. Ingeniería en Inteligencia Artificial)"/>
+        <input id="program"       class="upb-input" placeholder="Programa académico"/>
+        <input id="grade"         class="upb-input" placeholder="Nota final (0–100)" type="number" min="0" max="100"/>
+      </div>
+
+      <button onclick="generateWalletAndIssue()" class="btn-gold" style="width:100%; margin-top:12px; padding:10px;">
+        Generar Wallet Institucional y Emitir
+      </button>
+      <pre id="credential-result" style="margin-top:12px; font-size:11px; color:#4ade80; white-space:pre-wrap; line-height:1.6;"></pre>
+    </div>
+
+    <!-- Verificación -->
+    <div class="card" style="padding:20px;">
+      <div class="section-title">Verificar Credencial</div>
+
+      <p style="font-size:11px; color:var(--upb-muted); margin-bottom:12px; line-height:1.6;">
+        Cualquier empleador o institución puede verificar la autenticidad de una credencial
+        usando únicamente su ID público, sin revelar información privada del estudiante.
+      </p>
+
+      <input id="verify-id" class="upb-input" placeholder="ID de credencial (32 caracteres hex)"/>
+      <button onclick="verifyCredential()" class="btn-primary" style="width:100%; margin-top:8px; padding:10px;">
+        Verificar en Blockchain
+      </button>
+      <pre id="verify-result" style="margin-top:12px; font-size:11px; white-space:pre-wrap; line-height:1.6;"></pre>
+
+      <div class="gold-divider" style="margin:16px 0;"/>
+
+      <div class="section-title">Historial de Estudiante</div>
+      <input id="student-lookup" class="upb-input" placeholder="Dirección del estudiante (UPB…)"/>
+      <button onclick="lookupStudent()" class="btn-outline" style="width:100%; margin-top:8px; padding:9px;">
+        Consultar Credenciales
+      </button>
+      <div id="student-creds" style="margin-top:8px; font-size:11px; color:var(--upb-text);"></div>
+    </div>
+
+  </div>
+
+  <!-- ── Panel de Inteligencia Artificial ──────────────── -->
+  <div class="gold-divider"></div>
+
+  <div class="card" style="padding:20px; margin-bottom:24px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
+      <div class="section-title" style="margin-bottom:0; border:none; padding:0;">Análisis de Inteligencia Artificial</div>
+      <div style="display:flex; gap:8px;">
+        <button onclick="trainModel()" class="btn-outline">⚙ Entrenar Modelo</button>
+        <button onclick="loadAnalytics()" class="btn-primary">↻ Analizar Cadena</button>
+        <button onclick="exportReport(this)" class="btn-outline">↓ Exportar Reporte</button>
+      </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:16px;">
+      <div style="background:var(--upb-dark); border-radius:8px; padding:14px; border:1px solid var(--upb-border);">
+        <div style="font-size:10px; color:var(--upb-muted); text-transform:uppercase; letter-spacing:2px;">TPS</div>
+        <div id="ai-tps" style="font-size:24px; font-weight:700; color:#60a5fa; margin-top:6px;">—</div>
+      </div>
+      <div style="background:var(--upb-dark); border-radius:8px; padding:14px; border:1px solid var(--upb-border);">
+        <div style="font-size:10px; color:var(--upb-muted); text-transform:uppercase; letter-spacing:2px;">Tiempo/Bloque</div>
+        <div id="ai-block-time" style="font-size:24px; font-weight:700; color:#a78bfa; margin-top:6px;">—</div>
+      </div>
+      <div style="background:var(--upb-dark); border-radius:8px; padding:14px; border:1px solid var(--upb-border);">
+        <div style="font-size:10px; color:var(--upb-muted); text-transform:uppercase; letter-spacing:2px;">Credenciales</div>
+        <div id="ai-creds" style="font-size:24px; font-weight:700; color:#4ade80; margin-top:6px;">—</div>
+      </div>
+      <div style="background:var(--upb-dark); border-radius:8px; padding:14px; border:1px solid var(--upb-border);">
+        <div style="font-size:10px; color:var(--upb-muted); text-transform:uppercase; letter-spacing:2px;">Salud de Red</div>
+        <div id="ai-health" style="font-size:24px; font-weight:700; color:var(--upb-gold); margin-top:6px;">—</div>
+      </div>
+    </div>
+
+    <div id="ai-recommendations" style="background:var(--upb-dark); border-radius:6px; padding:12px; font-size:11px; color:var(--upb-muted); line-height:2;"></div>
+  </div>
+
+  <!-- ── Consola de Seguridad: Simulación de Ataques ───── -->
+  <div class="gold-divider"></div>
+
+  <div class="card" style="padding:20px; margin-bottom:24px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
+      <div>
+        <div class="section-title" style="margin-bottom:4px; border:none; padding:0;">Simulación de Ataques — Módulo Educativo</div>
+        <div style="font-size:10px; color:var(--upb-muted);">
+          Entorno controlado de demostración. Los ataques son simulaciones matemáticas, no afectan la red real.
+        </div>
+      </div>
+      <button onclick="loadAttackSim()" class="btn-outline">▶ Ejecutar Simulación</button>
+    </div>
+    <div id="attack-results" style="font-size:11px; color:var(--upb-text); line-height:1.8;"></div>
+  </div>
+
+</main>
+
+<!-- ════ FOOTER ════════════════════════════════════════════ -->
+<footer class="upb-footer">
+  <div style="max-width:1400px; margin:0 auto; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px;">
+
+    <div style="display:flex; align-items:center; gap:14px;">
+      <img src="/static/upb-icon.svg" alt="UPB" style="height:40px;" onerror="this.style.display='none'"/>
+      <div>
+        <div style="font-size:13px; font-weight:600; color:var(--upb-gold); letter-spacing:2px;">UNIVERSIDAD PRIVADA BOLIVIANA</div>
+        <div style="font-size:10px; color:var(--upb-muted); letter-spacing:1px;">Carrera de Ingeniería en Inteligencia Artificial &nbsp;·&nbsp; Ciberseguridad</div>
+      </div>
+    </div>
+
+    <div style="text-align:right; font-size:10px; color:var(--upb-muted); line-height:1.8;">
+      <div>UPB-Chain v1.0.0 &nbsp;·&nbsp; Proyecto Académico Estrella</div>
+      <div>Implementado en Raspberry Pi 5 (2× 16 GB RAM / 128 GB NVMe)</div>
+      <div id="footer-time" style="color:var(--upb-gold);">—</div>
+    </div>
+
+  </div>
+</footer>
+
+<!-- ════ SCRIPTS ═══════════════════════════════════════════ -->
+<script>
+const API = '';
+
+async function fetchJSON(url, opts) {
+  try {
+    const r = await fetch(API + url, opts);
+    return { ok: r.ok, data: await r.json(), status: r.status };
+  } catch (e) {
+    return { ok: false, data: null, error: e.message };
+  }
+}
+
+// ── Reloj ─────────────────────────────────────────────────
+function updateClock() {
+  const now = new Date().toLocaleString('es-BO', {
+    weekday:'short', year:'numeric', month:'short',
+    day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit'
+  });
+  const el = document.getElementById('footer-time');
+  if (el) el.textContent = now;
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// ── Stats generales ───────────────────────────────────────
+async function loadStats() {
+  const { ok, data } = await fetchJSON('/stats');
+  if (!ok || !data) {
+    document.getElementById('status-badge').textContent = '● Sin conexión';
+    document.getElementById('status-badge').className = 'badge badge-critical';
+    return;
+  }
+
+  document.getElementById('status-badge').textContent = '● Conectado';
+  document.getElementById('status-badge').className = 'badge badge-ok pulse';
+  document.getElementById('node-info').textContent = 'Nodo: ' + (data.chain?.node_id || data.network?.node_id || '—');
+
+  document.getElementById('chain-height').textContent  = data.chain?.height          ?? '—';
+  document.getElementById('total-tx').textContent      = data.chain?.total_transactions ?? '—';
+  document.getElementById('pending-tx').textContent    = data.chain?.pending_transactions ?? '—';
+  document.getElementById('active-peers').textContent  = data.network?.active_peers   ?? '—';
+
+  const t = data.security;
+  if (t) {
+    const el = document.getElementById('threat-level');
+    el.textContent = t.threat_level ?? '—';
+    const colorMap = { BAJO:'#4ade80', MEDIO:'#fbbf24', CRÍTICO:'#f87171' };
+    el.style.color = colorMap[t.threat_level] || 'var(--upb-text)';
+    document.getElementById('critical-alerts').textContent = t.critical_alerts ?? 0;
+    document.getElementById('warning-alerts').textContent  = t.warning_alerts  ?? 0;
+    document.getElementById('chain-reorgs').textContent    = t.chain_reorgs    ?? 0;
+    document.getElementById('threat-desc').textContent =
+      `${t.total_alerts} alertas totales · ${t.chain_reorgs} reorganizaciones · TPS ${(data.chain?.total_transactions/Math.max(data.chain?.height,1)).toFixed(2)} TX/bloque`;
+  }
+}
+
+// ── Bloques ───────────────────────────────────────────────
+async function loadBlocks() {
+  const { ok, data } = await fetchJSON('/blocks?page=0&size=10');
+  if (!ok || !data) return;
+
+  const tbody = document.getElementById('blocks-body');
+  const blocks = [...data.blocks].reverse();
+  tbody.innerHTML = blocks.map(b => {
+    const ts = new Date(b.header.timestamp * 1000).toLocaleString('es-BO');
+    const isGenesis = b.header.index === 0;
+    return `
+    <tr class="block-row" style="border-bottom:1px solid var(--upb-border); cursor:default;">
+      <td style="padding:10px 12px;">
+        <span style="font-weight:700; color:var(--upb-gold-light);">#${b.header.index}</span>
+        ${isGenesis ? '<span style="font-size:9px; background:#0f3d1f; color:#4ade80; padding:2px 6px; border-radius:10px; margin-left:6px;">GÉNESIS</span>' : ''}
+      </td>
+      <td style="padding:10px 12px;" class="hash-mono">${b.hash.slice(0,20)}…</td>
+      <td style="padding:10px 12px;" class="hash-mono">${b.header.previous_hash.slice(0,20)}…</td>
+      <td style="padding:10px 12px; text-align:center;">
+        <span style="background:rgba(44,82,152,.4); padding:2px 8px; border-radius:10px; font-size:11px;">${b.transactions.length}</span>
+      </td>
+      <td style="padding:10px 12px; text-align:center;">
+        <span style="background:rgba(200,169,81,.15); color:var(--upb-gold); padding:2px 8px; border-radius:10px; font-size:11px;">d=${b.header.difficulty}</span>
+      </td>
+      <td style="padding:10px 12px; text-align:right; font-size:11px; color:var(--upb-muted);">${ts}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Mining ─────────────────────────────────────────────────
+async function mineBlock() {
+  const btn = document.getElementById('mine-btn');
+  btn.textContent = '⛏ Minando…';
+  btn.disabled = true;
+  btn.style.opacity = '.7';
+
+  const { ok, data } = await fetchJSON('/blocks/mine', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({miner_address:'DASHBOARD_UPB'})
+  });
+
+  if (ok && data) {
+    btn.textContent = `✓ Bloque #${data.block.header.index} — ${data.mining_stats.time_s.toFixed(2)}s`;
+    setTimeout(() => { btn.textContent='⛏ Minar Bloque'; btn.disabled=false; btn.style.opacity='1'; }, 3000);
+    loadBlocks(); loadStats();
+  } else {
+    btn.textContent = '✗ ' + (data?.detail || 'Error');
+    setTimeout(() => { btn.textContent='⛏ Minar Bloque'; btn.disabled=false; btn.style.opacity='1'; }, 3000);
+  }
+}
+
+// ── Chart TX ──────────────────────────────────────────────
+let txChart = null;
+async function loadAnalytics() {
+  const { ok, data } = await fetchJSON('/ai/analytics');
+  if (!ok || !data) return;
+
+  document.getElementById('ai-tps').textContent        = (data.throughput_tps ?? 0).toFixed(4);
+  document.getElementById('ai-block-time').textContent  = (data.avg_block_time_s ?? 0).toFixed(1) + 's';
+  document.getElementById('ai-creds').textContent       = data.credential_stats?.active ?? 0;
+  document.getElementById('ai-health').textContent      = ((data.network_health_score ?? 1)*100).toFixed(0) + '%';
+
+  const recs = (data.recommendations || []).map(r => `• ${r}`).join('\n');
+  document.getElementById('ai-recommendations').textContent = recs || '• Sin recomendaciones pendientes';
+
+  const dist = data.tx_type_distribution || {};
+  const labels = Object.keys(dist);
+  const counts = labels.map(l => dist[l].count);
+  const palette = ['#4472C4','#C8A951','#4ade80','#f87171','#a78bfa','#60a5fa','#fbbf24'];
+
+  const ctx = document.getElementById('tx-chart').getContext('2d');
+  if (txChart) txChart.destroy();
+  txChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{ data: counts, backgroundColor: palette, borderWidth: 2, borderColor: '#112055' }]
+    },
+    options: {
+      plugins: {
+        legend: { labels: { color:'#7A95C4', font:{size:10}, padding:8 } }
+      },
+      maintainAspectRatio: false,
+    }
+  });
+}
+
+// ── Credenciales ──────────────────────────────────────────
+async function generateWalletAndIssue() {
+  const studentAddr = document.getElementById('student-addr').value.trim();
+  const studentName = document.getElementById('student-name').value.trim();
+  const degree      = document.getElementById('degree').value.trim();
+  const program     = document.getElementById('program').value.trim();
+  const grade       = parseFloat(document.getElementById('grade').value) || 85.0;
+  const resultEl    = document.getElementById('credential-result');
+
+  if (!studentAddr || !studentName || !degree || !program) {
+    resultEl.style.color = '#f87171';
+    resultEl.textContent = '✗ Completa todos los campos requeridos.';
+    return;
+  }
+
+  resultEl.style.color = 'var(--upb-gold)';
+  resultEl.textContent = '⏳ Generando wallet institucional…';
+
+  const { ok: wOk, data: wallet } = await fetchJSON('/wallet/generate', { method:'POST' });
+  if (!wOk) { resultEl.textContent = '✗ Error al generar wallet'; return; }
+
+  resultEl.textContent = '⏳ Registrando emisor UPB…';
+  await fetchJSON('/credentials/issuers', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ issuer_address: wallet.address, institution_code: 'UPB' })
+  });
+
+  resultEl.textContent = '⏳ Emitiendo credencial en blockchain…';
+  const { ok: iOk, data: issued } = await fetchJSON('/credentials/issue', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      issuer_address: wallet.address,
+      student_address: studentAddr,
+      private_key_hex: wallet.private_key,
+      credential_data: {
+        student_name: studentName, degree, program, grade,
+        issue_date: new Date().toISOString().split('T')[0],
+        credential_type: 'DEGREE',
+        institution: 'UPB',
+        metadata: { issued_via: 'UPB-Chain Dashboard', upb_node: 'RPi5' }
+      }
+    })
+  });
+
+  if (iOk && issued) {
+    resultEl.style.color = '#4ade80';
+    resultEl.textContent =
+      `✓ CREDENCIAL EMITIDA EXITOSAMENTE\n\n` +
+      `ID:         ${issued.credential_id}\n` +
+      `TX Hash:    ${issued.tx_id?.slice(0,32)}…\n` +
+      `Emisor:     ${wallet.address.slice(0,28)}…\n` +
+      `Estado:     Pendiente de minado\n\n` +
+      `Guarda el ID para verificación posterior.`;
+    document.getElementById('verify-id').value = issued.credential_id;
+  } else {
+    resultEl.style.color = '#f87171';
+    resultEl.textContent = '✗ Error: ' + (issued?.detail || 'desconocido');
+  }
+  loadStats();
+}
+
+async function verifyCredential() {
+  const id = document.getElementById('verify-id').value.trim();
+  if (!id) return;
+  const { ok, data } = await fetchJSON(`/credentials/verify/${id}`);
+  const el = document.getElementById('verify-result');
+  if (!ok || !data) { el.style.color='#f87171'; el.textContent='✗ Error de conexión'; return; }
+
+  if (data.valid) {
+    el.style.color = '#4ade80';
+    const c = data.credential;
+    el.textContent =
+      `✓ CREDENCIAL VÁLIDA Y ACTIVA\n\n` +
+      `Estudiante:  ${c?.student_name || '—'}\n` +
+      `Grado:       ${c?.degree || '—'}\n` +
+      `Institución: ${c?.institution || '—'}\n` +
+      `Fecha:       ${c?.issue_date || '—'}\n` +
+      `Estado:      ${c?.status || '—'}`;
+  } else {
+    el.style.color = '#f87171';
+    el.textContent = `✗ CREDENCIAL INVÁLIDA\n\nRazón: ${data.reason}`;
+  }
+}
+
+async function lookupStudent() {
+  const addr = document.getElementById('student-lookup').value.trim();
+  if (!addr) return;
+  const { ok, data } = await fetchJSON(`/credentials/student/${addr}`);
+  const el = document.getElementById('student-creds');
+  if (!ok || !data || !data.credentials?.length) {
+    el.textContent = 'Sin credenciales registradas para esta dirección.';
+    el.style.color = 'var(--upb-muted)';
+    return;
+  }
+  el.style.color = '#4ade80';
+  el.textContent = data.credentials.map((c, i) =>
+    `[${i+1}] ${c.degree} — ${c.student_name} (${c.issue_date})`
+  ).join('\n');
+}
+
+async function trainModel() {
+  const { ok, data } = await fetchJSON('/ai/train', { method:'POST' });
+  const el = document.getElementById('ai-recommendations');
+  if (ok && data.trained) {
+    el.textContent = `✓ Modelo entrenado con ${data.samples} muestras · ${data.features?.join(', ')}`;
+  } else {
+    el.textContent = `ℹ Entrenamiento: ${data?.reason || 'Ver consola'}`;
+  }
+}
+
+async function loadAttackSim() {
+  const el = document.getElementById('attack-results');
+  el.textContent = '⏳ Ejecutando simulaciones…';
+  const { ok, data } = await fetchJSON('/security/attack-simulation');
+  if (!ok || !data) { el.textContent = '✗ Error al cargar simulación'; return; }
+
+  const lines = [];
+  for (const [name, result] of Object.entries(data)) {
+    const icon   = result.success ? '⚠' : '✓';
+    const status = result.success ? 'VULNERABLE' : 'PROTEGIDO';
+    const color  = result.success ? '#f87171' : '#4ade80';
+    lines.push(`<span style="color:${color}">${icon} [${status}]</span> ${name.replace(/_/g,' ').toUpperCase()}`);
+    lines.push(`  <span style="color:var(--upb-muted)">→ ${result.description}</span>`);
+    if (result.recommendations?.[0]) {
+      lines.push(`  <span style="color:var(--upb-gold)">✦ ${result.recommendations[0]}</span>`);
+    }
+    lines.push('');
+  }
+  el.innerHTML = `<pre style="font-size:11px; line-height:1.9;">${lines.join('\n')}</pre>`;
+}
+
+// ════════════════════════════════════════════════════════
+// NUEVAS FUNCIONALIDADES v2.0
+// ════════════════════════════════════════════════════════
+
+// ── Utilidades compartidas ────────────────────────────
+function truncate(str, len) {
+  if (!str) return '—';
+  const s = String(str);
+  return s.length > len ? s.slice(0, len) + '…' : s;
+}
+
+function relativeTime(ts) {
+  const ms = Date.now() - (ts > 1e12 ? ts : ts * 1000);
+  const s  = Math.floor(ms / 1000);
+  const m  = Math.floor(s / 60);
+  const h  = Math.floor(m / 60);
+  if (s < 60)  return 'hace ' + s + 's';
+  if (m < 60)  return 'hace ' + m + ' min';
+  return 'hace ' + h + 'h';
+}
+
+// ── 1. Topología de Red P2P ───────────────────────────
+async function loadNetwork() {
+  const { ok, data } = await fetchJSON('/network');
+  if (!ok || !data) return;
+
+  const addr = data.address || data.node_id || '—';
+  document.getElementById('node-1-ip').textContent  = truncate(addr, 16);
+  document.getElementById('net-peers').textContent  = data.active_peers ?? 0;
+
+  const hasActivePeers = (data.active_peers ?? 0) > 0;
+  const peerLine    = document.getElementById('peer-link');
+  const nodeCircle1 = document.getElementById('node-circle-1');
+  const nodeCircle2 = document.getElementById('node-circle-2');
+  const badge1 = document.getElementById('node-1-badge');
+  const badge2 = document.getElementById('node-2-badge');
+
+  if (hasActivePeers) {
+    peerLine.className    = 'peer-line active';
+    nodeCircle1.className = 'node-circle active';
+    nodeCircle2.className = 'node-circle active';
+    badge1.className = 'badge badge-ok';  badge1.textContent = '● Activo';
+    badge2.className = 'badge badge-ok';  badge2.textContent = '● Activo';
+    document.getElementById('node-2-status').textContent =
+      truncate(data.peer_address || 'Par activo', 16);
+  } else {
+    peerLine.className    = 'peer-line inactive';
+    nodeCircle1.className = 'node-circle active';
+    nodeCircle2.className = 'node-circle inactive';
+    badge1.className = 'badge badge-ok';       badge1.textContent = '● Activo';
+    badge2.className = 'badge badge-critical'; badge2.textContent = '✗ Sin pares';
+    document.getElementById('node-2-status').textContent = 'Desconectado';
+  }
+
+  const lat = data.avg_latency_ms;
+  if (lat != null) {
+    const latEl = document.getElementById('latency-text');
+    latEl.textContent = lat.toFixed(0) + ' ms';
+    latEl.setAttribute('fill',
+      lat < 50 ? '#4ade80' : lat < 200 ? '#fbbf24' : '#f87171');
+  }
+}
+
+// ── 2. Block Timeline (Chart.js line) ─────────────────
+let blockTimelineChart = null;
+
+async function loadBlockTimeline() {
+  const { ok, data } = await fetchJSON('/blocks?page=0&size=20');
+  if (!ok || !data?.blocks?.length) return;
+
+  const sorted = [...data.blocks].sort((a, b) => a.header.index - b.header.index);
+  const labels = sorted.map(b => '#' + b.header.index);
+  const values = sorted.map(b => b.transactions.length);
+
+  if (blockTimelineChart) {
+    blockTimelineChart.data.labels = labels;
+    blockTimelineChart.data.datasets[0].data = values;
+    blockTimelineChart.update('none');
+    return;
+  }
+
+  const ctx = document.getElementById('block-timeline-chart').getContext('2d');
+  blockTimelineChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Transacciones',
+        data: values,
+        borderColor: '#4472C4',
+        backgroundColor: 'rgba(68,114,196,0.15)',
+        borderWidth: 2,
+        pointBackgroundColor: '#C8A951',
+        pointBorderColor:     '#C8A951',
+        pointRadius: 4,
+        pointHoverRadius: 6,
+        fill: true,
+        tension: 0.35,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(17,32,85,.95)',
+          borderColor: '#C8A951',
+          borderWidth: 1,
+          titleColor: '#C8A951',
+          bodyColor: '#D4DFF5',
+          callbacks: { label: c => c.parsed.y + ' transacciones' }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: '#7A95C4', font: { size: 10 } },
+          grid:  { color: 'rgba(30,58,110,0.5)' }
+        },
+        y: {
+          ticks: { color: '#7A95C4', font: { size: 10 }, stepSize: 1 },
+          grid:  { color: 'rgba(30,58,110,0.5)' },
+          beginAtZero: true,
+        }
+      }
+    }
+  });
+}
+
+// ── 3. Feed de Transacciones en Vivo ──────────────────
+const TX_COLORS = {
+  CREDENTIAL_ISSUE: '#4ade80',
+  VOTE:             '#60a5fa',
+  DATA_RECORD:      '#94a3b8',
+  TRANSFER:         '#C8A951',
+  GENESIS:          '#a78bfa',
+};
+let _lastTxSet = new Set();
+
+async function loadPendingTransactions() {
+  const { ok, data } = await fetchJSON('/transactions/pending');
+  const feed = document.getElementById('tx-feed');
+  if (!ok || !data) return;
+
+  const txs = Array.isArray(data)
+    ? data
+    : (data.transactions ?? data.pending ?? []);
+
+  if (!txs.length) {
+    if (!_lastTxSet.size) {
+      feed.innerHTML = '<div style="color:var(--upb-muted);font-size:11px;text-align:center;padding:30px 0;">No hay transacciones pendientes</div>';
+    }
+    return;
+  }
+
+  const recent = txs.slice(-5).reverse();
+  const ids = recent.map(t => t.tx_id || t.id || JSON.stringify(t).slice(0, 40));
+  const newSet = new Set(ids);
+
+  if (ids.every(id => _lastTxSet.has(id)) && feed.children.length > 1) return;
+  _lastTxSet = newSet;
+
+  feed.innerHTML = recent.map(function(tx) {
+    const type   = tx.transaction_type || tx.type || 'UNKNOWN';
+    const color  = TX_COLORS[type] || '#7A95C4';
+    const sender = truncate(tx.sender || tx.from_address || tx.issuer_address || '—', 12);
+    const ts     = tx.timestamp ? relativeTime(tx.timestamp) : '—';
+    const txId   = truncate(tx.tx_id || tx.id || '—', 14);
+
+    return '<div class="tx-feed-item" style="' +
+      'background:var(--upb-dark);' +
+      'border:1px solid var(--upb-border);' +
+      'border-left:3px solid ' + color + ';' +
+      'border-radius:6px;padding:8px 12px;' +
+      'display:flex;align-items:center;justify-content:space-between;gap:8px;">' +
+      '<div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;">' +
+        '<span style="color:' + color + ';font-size:10px;font-weight:700;white-space:nowrap;letter-spacing:.5px;">' +
+          type.replace(/_/g, ' ') + '</span>' +
+        '<span style="font-family:\'Courier New\',monospace;font-size:10px;color:var(--upb-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
+          sender + '</span>' +
+      '</div>' +
+      '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">' +
+        '<span style="font-family:\'Courier New\',monospace;font-size:9px;color:var(--upb-muted);">' + txId + '</span>' +
+        '<span style="font-size:9px;color:var(--upb-muted);white-space:nowrap;">' + ts + '</span>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+// ── 4. Métricas de Consenso ───────────────────────────
+async function loadConsensusMetrics() {
+  const { ok, data } = await fetchJSON('/stats');
+  if (!ok || !data) return;
+
+  const mining = data.mining || {};
+  const pbft   = data.pbft   || {};
+
+  document.getElementById('pow-difficulty').textContent =
+    mining.difficulty ?? data.chain?.difficulty ?? '—';
+
+  const hr = mining.hash_rate ?? mining.hashrate ?? null;
+  document.getElementById('pow-hashrate').textContent = hr != null
+    ? (hr >= 1000 ? (hr / 1000).toFixed(1) + ' kH/s' : Math.round(hr) + ' H/s')
+    : '— H/s';
+
+  const bt = mining.avg_block_time ?? mining.avg_block_time_s ?? null;
+  document.getElementById('pow-blocktime').textContent =
+    bt != null ? parseFloat(bt).toFixed(1) + ' s' : '— s';
+
+  document.getElementById('pbft-quorum').textContent =
+    pbft.quorum_size ?? pbft.nodes_in_quorum ?? '—';
+  document.getElementById('pbft-view').textContent =
+    pbft.current_view ?? pbft.view ?? '—';
+  document.getElementById('pbft-committed').textContent =
+    pbft.committed_blocks ?? pbft.total_committed ?? '—';
+}
+
+// ── 5. Block Explorer expandible ─────────────────────
+let _expandedBlock = null;
+
+document.getElementById('blocks-body').addEventListener('click', async function(e) {
+  const row = e.target.closest('tr.block-row');
+  if (!row) return;
+  const match = row.querySelector('td:first-child')?.textContent?.trim().match(/#(\d+)/);
+  if (!match) return;
+  await toggleBlockDetail(row, parseInt(match[1]));
+});
+
+async function toggleBlockDetail(row, idx) {
+  const detailId = 'block-detail-row-' + idx;
+  const existing = document.getElementById(detailId);
+
+  if (existing) {
+    existing.remove();
+    if (_expandedBlock === idx) { _expandedBlock = null; return; }
+  }
+
+  if (_expandedBlock !== null) {
+    const prev = document.getElementById('block-detail-row-' + _expandedBlock);
+    if (prev) prev.remove();
+  }
+  _expandedBlock = idx;
+
+  const tr = document.createElement('tr');
+  tr.id = detailId;
+  tr.innerHTML = '<td colspan="6" style="padding:0 12px 8px;">' +
+    '<div class="block-detail-content" style="color:var(--upb-muted);text-align:center;">' +
+    'Cargando bloque #' + idx + '…</div></td>';
+  row.insertAdjacentElement('afterend', tr);
+
+  const { ok, data } = await fetchJSON('/blocks/' + idx);
+  if (!ok || !data) {
+    tr.innerHTML = '<td colspan="6" style="padding:0 12px 8px;">' +
+      '<div class="block-detail-content" style="color:#f87171;">' +
+      '✗ No se pudo cargar el bloque #' + idx + '</div></td>';
+    return;
+  }
+
+  const b      = data.block || data;
+  const header = b.header || {};
+  const hash   = b.hash || '—';
+  const merkle = header.merkle_root || '—';
+  const nonce  = header.nonce ?? '—';
+  const miningT = b.mining_time_s ?? header.mining_time ?? null;
+
+  const txRows = (b.transactions || []).map(function(tx) {
+    const type  = tx.transaction_type || tx.type || '—';
+    const color = TX_COLORS[type] || '#7A95C4';
+    const tid   = truncate(tx.tx_id || tx.id || '—', 24);
+    return '<div style="display:flex;gap:10px;align-items:center;padding:2px 0;">' +
+      '<span style="color:' + color + ';font-size:10px;font-weight:600;min-width:140px;">' +
+        type.replace(/_/g, ' ') + '</span>' +
+      '<span class="hash-mono">' + tid + '</span>' +
+    '</div>';
+  }).join('') || '<span style="color:var(--upb-muted)">Sin transacciones en este bloque</span>';
+
+  const safeHash = hash.replace(/['"]/g, '');
+  const miningRow = miningT != null
+    ? '<span style="color:var(--upb-muted);font-size:10px;">Tiempo de minado</span>' +
+      '<span style="font-size:11px;color:#4ade80;">' + parseFloat(miningT).toFixed(3) + ' s</span>'
+    : '';
+
+  tr.innerHTML = '<td colspan="6" style="padding:0 12px 10px;">' +
+    '<div class="block-detail-content">' +
+      '<div style="display:grid;grid-template-columns:140px 1fr;gap:8px 14px;align-items:start;">' +
+        '<span style="color:var(--upb-muted);font-size:10px;padding-top:4px;">Hash completo</span>' +
+        '<span class="copy-hash" title="Clic para copiar" onclick="copyToClipboard(\'' + safeHash + '\',this)">' + hash + '</span>' +
+        '<span style="color:var(--upb-muted);font-size:10px;">Merkle Root</span>' +
+        '<span class="hash-mono" style="word-break:break-all;">' + merkle + '</span>' +
+        '<span style="color:var(--upb-muted);font-size:10px;">Nonce</span>' +
+        '<span style="font-family:\'Courier New\',monospace;font-size:11px;color:var(--upb-gold);">' + nonce + '</span>' +
+        miningRow +
+        '<span style="color:var(--upb-muted);font-size:10px;align-self:start;padding-top:4px;">Transacciones</span>' +
+        '<div style="line-height:1.8;">' + txRows + '</div>' +
+      '</div>' +
+    '</div>' +
+  '</td>';
+}
+
+function copyToClipboard(text, el) {
+  function onCopied() {
+    el.classList.add('copied');
+    const orig = el.textContent;
+    el.textContent = '✓ Copiado al portapapeles';
+    setTimeout(function() { el.classList.remove('copied'); el.textContent = orig; }, 2000);
+  }
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(onCopied).catch(fallback);
+  } else {
+    fallback();
+  }
+  function fallback() {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;opacity:0;';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+    onCopied();
+  }
+}
+
+// ── 6. Exportar Reporte JSON ──────────────────────────
+async function exportReport(btn) {
+  const orig = btn.textContent;
+  btn.textContent = '⏳ Generando…';
+  btn.disabled = true;
+
+  try {
+    const { ok, data } = await fetchJSON('/ai/analytics');
+    if (!ok || !data) throw new Error('Sin datos');
+
+    const date    = new Date().toISOString().split('T')[0];
+    const payload = Object.assign({ generated_at: new Date().toISOString() }, data);
+    const blob    = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url     = URL.createObjectURL(blob);
+    const a       = document.createElement('a');
+    a.href = url;
+    a.download = 'upbchain-report-' + date + '.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    btn.textContent = '✓ Descargado';
+    setTimeout(function() { btn.textContent = orig; btn.disabled = false; }, 2500);
+  } catch (_) {
+    btn.textContent = '✗ Error';
+    setTimeout(function() { btn.textContent = orig; btn.disabled = false; }, 2000);
+  }
+}
+
+// ── Wrap mineBlock para actualizar timeline al minar ──
+(function() {
+  const _orig = mineBlock;
+  mineBlock = async function() {
+    await _orig();
+    setTimeout(loadBlockTimeline, 400);
+    setTimeout(loadConsensusMetrics, 400);
+  };
+})();
+
+// ── Inicializar nuevas funciones ──────────────────────
+loadNetwork();
+loadBlockTimeline();
+loadPendingTransactions();
+loadConsensusMetrics();
+
+setInterval(loadNetwork,              15000);
+setInterval(loadBlockTimeline,        15000);
+setInterval(loadPendingTransactions,   5000);
+setInterval(loadConsensusMetrics,     15000);
+
+// ── Ciclo de actualización ────────────────────────────────
+async function refresh() {
+  await Promise.all([loadStats(), loadBlocks()]);
+}
+
+loadAnalytics();
+loadAttackSim();
+refresh();
+setInterval(refresh, 10000);
+setInterval(loadAnalytics, 30000);
+</script>
+</body>
+</html>

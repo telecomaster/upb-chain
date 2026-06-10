@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 120" role="img" aria-label="Universidad Privada Boliviana">
+  <defs>
+    <linearGradient id="torchGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#FFD700"/>
+      <stop offset="40%"  stop-color="#FFA500"/>
+      <stop offset="100%" stop-color="#C8A951"/>
+    </linearGradient>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#1B3A7A"/>
+      <stop offset="100%" stop-color="#0D2459"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Escudo institucional -->
+  <g transform="translate(8, 8)">
+    <!-- Cuerpo del escudo -->
+    <path d="M50 4 L96 4 L96 72 Q73 100 50 108 Q27 100 4 72 L4 4 Z"
+          fill="url(#shieldGrad)" stroke="#C8A951" stroke-width="2.5"/>
+    <!-- Franja horizontal superior del escudo -->
+    <rect x="4" y="4" width="92" height="28" fill="#2A5298" rx="0"/>
+    <!-- Texto UPB en escudo -->
+    <text x="50" y="25" text-anchor="middle" font-family="Georgia,serif"
+          font-size="16" font-weight="bold" fill="#FFD700" letter-spacing="3">UPB</text>
+    <!-- Antorcha — mango -->
+    <rect x="46" y="45" width="8" height="36" fill="#C8A951" rx="3"/>
+    <!-- Antorcha — cabeza -->
+    <ellipse cx="50" cy="46" rx="10" ry="6" fill="#C8A951"/>
+    <!-- Llama exterior -->
+    <path d="M50 14 C44 20 40 28 42 34 C38 28 40 18 50 14 Z"
+          fill="url(#torchGrad)" filter="url(#glow)"/>
+    <path d="M50 14 C56 20 60 28 58 34 C62 28 60 18 50 14 Z"
+          fill="url(#torchGrad)" filter="url(#glow)"/>
+    <!-- Llama interior -->
+    <path d="M50 18 C47 23 47 30 50 34 C53 30 53 23 50 18 Z"
+          fill="#FFF176" opacity="0.9"/>
+    <!-- Laureles laterales del escudo -->
+    <path d="M4 40 Q1 50 4 60" stroke="#C8A951" stroke-width="1.5" fill="none"/>
+    <path d="M96 40 Q99 50 96 60" stroke="#C8A951" stroke-width="1.5" fill="none"/>
+    <!-- Puntos decorativos escudo -->
+    <circle cx="20" cy="78" r="3" fill="#C8A951" opacity="0.7"/>
+    <circle cx="50" cy="88" r="3" fill="#C8A951" opacity="0.7"/>
+    <circle cx="80" cy="78" r="3" fill="#C8A951" opacity="0.7"/>
+  </g>
+
+  <!-- Línea separadora vertical -->
+  <line x1="122" y1="12" x2="122" y2="108" stroke="#C8A951" stroke-width="1" opacity="0.6"/>
+
+  <!-- Texto institucional -->
+  <g transform="translate(134, 0)">
+    <!-- Universidad -->
+    <text y="38" font-family="Georgia,serif" font-size="13"
+          fill="#C8A951" letter-spacing="4" font-weight="normal">UNIVERSIDAD</text>
+    <!-- Privada -->
+    <text y="58" font-family="Georgia,serif" font-size="13"
+          fill="#C8A951" letter-spacing="4">PRIVADA</text>
+    <!-- Boliviana -->
+    <text y="78" font-family="Georgia,serif" font-size="13"
+          fill="#C8A951" letter-spacing="4">BOLIVIANA</text>
+    <!-- Línea decorativa -->
+    <line x1="0" y1="88" x2="320" y2="88" stroke="#C8A951" stroke-width="0.8" opacity="0.5"/>
+    <!-- Subtítulo -->
+    <text y="103" font-family="Arial,sans-serif" font-size="9"
+          fill="#8BA3D4" letter-spacing="2">CARRERA DE INTELIGENCIA ARTIFICIAL</text>
+  </g>
+</svg>
