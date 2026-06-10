@@ -1,7 +1,7 @@
 # UPB-Chain: Blockchain Académica con Inteligencia Artificial
 
-**Universidad Privada Boliviana — Carrera de Ingeniería en Inteligencia Artificial**
-**Área de Ciberseguridad en Electrónica y Telecomunicaciones**
+**Universidad Privada Boliviana: Carrera de Ingeniería en Inteligencia Artificial**
+**Carrera de Electrónica y Telecomunicaciones: mención: Redes y Ciberseguridad**
 
 ---
 
