@@ -226,8 +226,13 @@ async def get_pending():
 
 @app.post("/transactions")
 async def create_transaction(request: TransactionRequest):
+    try:
+        tx_type = TransactionType(request.type)
+    except ValueError:
+        raise HTTPException(422, f"Tipo de transacción inválido: {request.type}")
+
     tx = Transaction(
-        type=TransactionType(request.type),
+        type=tx_type,
         sender=request.sender,
         recipient=request.recipient,
         payload=request.payload,
