@@ -118,7 +118,7 @@ def create_credential_transaction(
     credential_data: dict,
     private_key_hex: str,
 ) -> Transaction:
-    required = {"student_name", "degree", "institution", "date", "grade"}
+    required = {"student_name", "degree", "issue_date"}
     missing = required - set(credential_data.keys())
     if missing:
         raise ValueError(f"Campos faltantes en credential_data: {missing}")
