@@ -134,7 +134,7 @@ Flujos de trabajo y orden de dependencias:
 - [ ] **P2-5** Dificultad por bits y elección de cadena por trabajo acumulado.
 - [ ] **P2-6** Conexiones persistentes con TLS mutuo y lista blanca de nodos.
 - [ ] **P2-7** Dashboard en vivo por WebSocket/SSE con progreso de minado (`mine_async_friendly`).
-- [ ] **P2-8** Docker Compose con 4 nodos y CI en GitHub Actions.
+- [x] **P2-8** Docker Compose con 4 nodos y CI en GitHub Actions.
 - [ ] **P2-9** Configuración tipada (`pydantic-settings`) y app factory en lugar de globales (desbloquea P0-8).
 - [ ] **P2-10** Métricas Prometheus y tablero Grafana.
 - [ ] **P2-11** Contratos desplegables por estudiantes: `CONTRACT_DEPLOY`/`CONTRACT_CALL` sobre una VM de

@@ -197,6 +197,27 @@ pytest tests/test_consensus.py -v  # Solo consenso
 
 ---
 
+## Docker y CI
+
+Red de 4 nodos (`node_1`..`node_4`) con `docker-compose.yml`. Las APIs quedan en `127.0.0.1`
+puertos 8000, 8010, 8020 y 8030. `ADMIN_API_KEY` es obligatoria (desde el host las peticiones
+no son loopback, así que los endpoints de administración exigen la cabecera `X-API-Key`).
+
+```bash
+export ADMIN_API_KEY=cambiame            # PowerShell: $env:ADMIN_API_KEY="cambiame"
+docker compose up --build -d
+for p in 8000 8010 8020 8030; do curl http://127.0.0.1:$p/health; echo; done
+docker compose down          # conserva las cadenas (volúmenes); con -v las borra
+```
+
+Para registrar emisores, descomentar en `node_1` el montaje de `./data/keys/authority.json`
+(solo lectura). Sin esa llave, el registro de emisores responde 503.
+
+La integración continua (`.github/workflows/tests.yml`) corre `python -m pytest tests -q` en
+Ubuntu con Python 3.12 en cada push y pull request a `main`.
+
+---
+
 ## Componentes Académicos Clave
 
 ### Mecanismos de Consenso

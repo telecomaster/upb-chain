@@ -1,0 +1,83 @@
+# P2-8: red de 4 nodos UPB-Chain.
+# Requiere ADMIN_API_KEY: desde el host las peticiones llegan al contenedor como
+# no loopback, y sin llave los endpoints de administración responden 403.
+#   ADMIN_API_KEY=cambiame docker compose up --build -d
+x-nodo: &nodo
+  build: .
+  restart: unless-stopped
+  networks: [upbnet]
+
+x-entorno: &entorno
+  API_PORT: "8000"
+  NODE_PORT: "8001"
+  NODE_HOST: 0.0.0.0
+  DATA_DIR: /data
+  MINING_DIFFICULTY: "2"
+  LOG_LEVEL: INFO
+  ADMIN_API_KEY: ${ADMIN_API_KEY:?definir ADMIN_API_KEY}
+  AUTHORITY_KEY_FILE: /run/secrets/authority.json
+
+services:
+  node_1:
+    <<: *nodo
+    container_name: upb_node_1
+    environment:
+      <<: *entorno
+      NODE_ID: node_1
+      NODE_ADVERTISE_HOST: node_1
+      PEERS: "node_2:8001,node_3:8001,node_4:8001"
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - datos_node_1:/data
+      # Opcional: llave de la autoridad (solo node_1). Sin ella, registrar emisores devuelve 503.
+      # - ./data/keys/authority.json:/run/secrets/authority.json:ro
+
+  node_2:
+    <<: *nodo
+    container_name: upb_node_2
+    environment:
+      <<: *entorno
+      NODE_ID: node_2
+      NODE_ADVERTISE_HOST: node_2
+      PEERS: "node_1:8001,node_3:8001,node_4:8001"
+    ports:
+      - "127.0.0.1:8010:8000"
+    volumes:
+      - datos_node_2:/data
+
+  node_3:
+    <<: *nodo
+    container_name: upb_node_3
+    environment:
+      <<: *entorno
+      NODE_ID: node_3
+      NODE_ADVERTISE_HOST: node_3
+      PEERS: "node_1:8001,node_2:8001,node_4:8001"
+    ports:
+      - "127.0.0.1:8020:8000"
+    volumes:
+      - datos_node_3:/data
+
+  node_4:
+    <<: *nodo
+    container_name: upb_node_4
+    environment:
+      <<: *entorno
+      NODE_ID: node_4
+      NODE_ADVERTISE_HOST: node_4
+      PEERS: "node_1:8001,node_2:8001,node_3:8001"
+    ports:
+      - "127.0.0.1:8030:8000"
+    volumes:
+      - datos_node_4:/data
+
+networks:
+  upbnet:
+    driver: bridge
+
+volumes:
+  datos_node_1:
+  datos_node_2:
+  datos_node_3:
+  datos_node_4:
