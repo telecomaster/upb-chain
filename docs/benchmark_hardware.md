@@ -16,16 +16,20 @@ extrapolan desde el portátil.
 | Temperatura | `vcgencmd measure_temp`; si no existe, `/sys/class/thermal/thermal_zone0/temp`; si no, "no disponible". Se lee antes y después de la carga |
 | RAM | `/proc/meminfo` (total y disponible) y `/proc/self/status` (RSS y pico del proceso); solo biblioteca estándar, sin `psutil` |
 | TPS | en proceso y en un solo nodo: construir y firmar, admitir al mempool (firma + contratos) y minar, validar y aplicar bloques de hasta 50 TX `TOKEN_TRANSFER`; se reporta cada fase y el total |
+| TPS con PBFT | 4 réplicas en proceso (f=1, red en memoria, sin sockets), `TOKEN_TRANSFER` firmadas en bloques de hasta 50 TX con certificado de commit (2f+1 firmas); fases firma / admisión al mempool de las 4 réplicas / consenso, y latencia de commit por bloque (mediana y p95) |
 
 Cada informe lleva el equipo (anfitrión, plataforma, CPU, núcleos, Python, fecha UTC): ninguna cifra
 se debe citar sin él.
 
 Alcance y límites:
 
-- El TPS es de **un nodo con consenso PoW** y dificultad de minado baja (4 bits), de modo que
-  refleja firma ECDSA, validación y SQLite, no el minado. No incluye red P2P ni PBFT: el TPS con
-  PBFT de 4 réplicas no se mide aquí (queda para una extensión; la latencia comparada PoW/PBFT en
-  una sola máquina está en `scripts/experiments/carrera_consensos.py`).
+- El TPS de PoW es de **un nodo** con dificultad de minado baja (4 bits), de modo que
+  refleja firma ECDSA, validación y SQLite, no el minado. No incluye red P2P.
+- El TPS de PBFT usa 4 réplicas en un solo intérprete con red en memoria (entrega síncrona): mide
+  el coste de CPU del protocolo (firmas de los mensajes, certificado, validación y SQLite en cada
+  réplica), no la latencia de una red real ni de una LAN entre Pi. La latencia comparada PoW/PBFT
+  con P2P real por loopback está en `scripts/experiments/carrera_consensos.py`.
+- La latencia de commit de un bloque es el tiempo hasta que las 4 réplicas lo tienen en su cadena.
 - La temperatura bajo carga sostenida y el estrangulamiento térmico requieren una corrida larga en
   la Pi; este script toma solo dos lecturas (antes/después).
 
@@ -34,7 +38,8 @@ Alcance y límites:
 ```bash
 git pull && venv/bin/python -m pip install -r requirements.txt   # o uv pip install
 venv/bin/python scripts/bench_rpi.py --rapido      # prueba de humo (segundos)
-venv/bin/python scripts/bench_rpi.py               # medición completa (hasta 18 bits)
+venv/bin/python scripts/bench_rpi.py               # medición completa (hasta 18 bits), PoW y PBFT
+venv/bin/python scripts/bench_rpi.py --consenso pbft   # solo PBFT (opciones: pow | pbft | ambos)
 ```
 
 Los resultados se escriben en `docs/mediciones/bench_<anfitrion>_<perfil>_<fecha>.md` y `.csv`
@@ -80,6 +85,9 @@ Medido en el portátil de desarrollo (2026-11-25, 456 pruebas): **90 % de cobert
 | Hash rate (H/s) | pendiente | pendiente |
 | TPS total (TX/s) | pendiente | pendiente |
 | TPS firma / admisión / bloques | pendiente | pendiente |
+| TPS PBFT (4 réplicas) total (TX/s) | pendiente | pendiente |
+| TPS PBFT firma / admisión / consenso | pendiente | pendiente |
+| Latencia de commit PBFT por bloque, mediana / p95 (ms) | pendiente | pendiente |
 | Temperatura antes / después (°C) | pendiente | pendiente |
 | RAM total / pico del proceso (MiB) | pendiente | pendiente |
 
@@ -123,3 +131,16 @@ reportan también los intentos medios frente a `2**bits`.
 | Total | 2.971 | 168.3 |
 
 RAM: proceso 35.3 MiB (pico 35.8 MiB).
+
+TPS con PBFT, medido con `scripts/bench_rpi.py --consenso pbft` (perfil completo, mismo equipo,
+2026-11-25; 500 TX `TOKEN_TRANSFER` en 10 bloques, 4 réplicas en memoria, f=1). Es una sola corrida,
+sin repetir:
+
+| Fase | Segundos | TX/s |
+|---|---:|---:|
+| Construir y firmar | 1.06 | 471.8 |
+| Admitir al mempool de las 4 réplicas | 6.984 | 71.6 |
+| Consenso PBFT (commit con certificado) | 3.937 | 127.0 |
+| Total | 11.981 | 41.7 |
+
+Latencia de commit por bloque: mediana 391.2 ms, p95 445.2 ms (10 bloques).

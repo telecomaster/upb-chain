@@ -49,3 +49,24 @@ def test_semilla_50_bloques_y_un_nodo_nuevo_la_acepta(tmp_path):
     bc = app.state.node.blockchain
     assert bc.height >= 50
     assert bc.validate_chain()[0]
+
+
+def test_bench_rapido_pbft_estructura_y_selector(tmp_path):
+    r = bench_rpi.ejecutar("rapido", consenso="pbft")
+    assert "tps" not in r and "hash_rate" not in r     # solo PBFT
+    t = r["tps_pbft"]
+    assert t["txs"] == bench_rpi.PERFILES["rapido"]["txs_pbft"]
+    assert (t["replicas"], t["f"]) == (4, 1)
+    assert t["bloques"] >= 2                            # bloques de hasta 50 TX
+    assert t["tps"] > 0 and t["tps_consenso"] > 0
+    assert 0 < t["latencia_commit_mediana_ms"] <= t["latencia_commit_p95_ms"]
+    md, cs = bench_rpi.guardar(r, tmp_path)
+    assert "## TPS con PBFT" in md.read_text(encoding="utf-8")
+    with open(cs, encoding="utf-8", newline="") as f:
+        assert any(fila[0] == "tps_pbft" and fila[1] == "tps" for fila in csv.reader(f))
+
+
+def test_bench_consenso_invalido():
+    import pytest
+    with pytest.raises(ValueError):
+        bench_rpi.ejecutar("rapido", consenso="raft")

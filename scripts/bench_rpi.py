@@ -9,6 +9,9 @@ Mide, con el MISMO código que usa el nodo:
   4. RAM: total/disponible del sistema y pico de memoria del propio proceso.
   5. TPS: construir+firmar, admitir al mempool (validación de firma y contratos) y
      minar+validar+aplicar bloques de 50 TXs, en proceso, con un DATA_DIR temporal.
+  6. TPS con PBFT: 4 réplicas en proceso (f=1, red en memoria), bloques de hasta 50 TXs
+     con certificado de commit; fases firma/admisión/consenso y latencia de commit por
+     bloque (mediana/p95). Se elige con ``--consenso pow|pbft|ambos`` (por defecto ambos).
 
 Escribe un informe Markdown y un CSV; cada número lleva el equipo donde se midió
 (plataforma, CPU, Python, fecha). No toca ``data/`` ni abre puertos. Los números
@@ -18,6 +21,7 @@ debe ejecutarlo en cada Pi (ver ``docs/benchmark_hardware.md``).
 Uso (desde la raíz del repo)::
 
     venv/bin/python scripts/bench_rpi.py                  # medición completa
+    venv/bin/python scripts/bench_rpi.py --consenso pbft  # pow | pbft | ambos
     venv/bin/python scripts/bench_rpi.py --rapido         # corrida corta (CI/pruebas)
     venv/bin/python scripts/bench_rpi.py --salida /ruta   # directorio de resultados
 """
@@ -52,8 +56,8 @@ NO_DISPONIBLE = "no disponible"
 # Parámetros por modo: segundos de hash rate, bits de la curva, bloques por punto, TXs.
 PERFILES = {
     "completo": dict(seg_hash=3.0, bits=[8, 12, 14, 16, 18], repeticiones=5, txs=500,
-                     remitentes=10),
-    "rapido": dict(seg_hash=0.3, bits=[4, 8, 10], repeticiones=3, txs=60, remitentes=4),
+                     remitentes=10, txs_pbft=500),
+    "rapido": dict(seg_hash=0.3, bits=[4, 8, 10], repeticiones=3, txs=60, remitentes=4, txs_pbft=60),
 }
 
 
@@ -276,19 +280,135 @@ def medir_tps(n_txs: int, remitentes: int, bits: int = 4) -> dict:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def ejecutar(perfil: str = "completo") -> dict:
-    """Corre todas las mediciones del perfil y devuelve los resultados."""
+def _percentil(valores: list, q: float):
+    """Percentil por rango más cercano (sin interpolar); None si no hay datos."""
+    if not valores:
+        return None
+    ordenados = sorted(valores)
+    return ordenados[min(len(ordenados) - 1, max(0, round(q * len(ordenados) + 0.5) - 1))]
+
+
+def medir_tps_pbft(n_txs: int, remitentes: int, replicas: int = 4) -> dict:
+    """TPS con PBFT: ``replicas`` réplicas (f=1 con 4) en proceso y red en memoria.
+
+    La entrega es síncrona (``InMemoryNetwork``): no hay red ni hilos, así que se mide
+    el coste de CPU del protocolo (firmas ECDSA de los mensajes, certificado de commit,
+    validación y SQLite en cada réplica), no la latencia de una red. Usa directorios
+    temporales y una autoridad local de usar y tirar."""
+    from blockchain.consensus.pbft import InMemoryNetwork, PBFTReplica, ReplicaSet
+
+    tmp = tempfile.mkdtemp(prefix="upb_bench_pbft_")
+    cadenas = []
+    try:
+        autoridad = Wallet.generate()
+        wallets = [Wallet.generate() for _ in range(replicas)]
+        ids = [f"r{i}" for i in range(replicas)]
+        rs = ReplicaSet.from_list([
+            {"id": rid, "address": f"127.0.0.1:{9000 + i}", "public_key": w.public_key_hex}
+            for i, (rid, w) in enumerate(zip(ids, wallets))])
+        red = InMemoryNetwork()
+        reps = []
+        for rid, w in zip(ids, wallets):
+            bc = Blockchain(rid, os.path.join(tmp, rid), consensus="pbft", replica_set=rs,
+                            authority_address=autoridad.address)
+            cadenas.append(bc)
+            r = PBFTReplica(rid, w.private_key_hex, rs, bc, red.sender(rid),
+                            view_timeout=60.0, batch_interval=0.0)
+            red.add(r)
+            reps.append(r)
+
+        def difundir(tx) -> None:
+            """Gossip simulado: la TX entra al mempool de todas las réplicas."""
+            for bc in cadenas:
+                ok, motivo = bc.add_transaction(tx)
+                if not ok:
+                    raise RuntimeError(f"TX rechazada en el benchmark PBFT: {motivo}")
+
+        def confirmar() -> list:
+            """Tick hasta vaciar el mempool; devuelve la latencia de commit de cada bloque
+            (desde que el primario propone hasta que las réplicas lo tienen en su cadena)."""
+            lat = []
+            while cadenas[0].mempool:
+                h0 = cadenas[0].height
+                t0 = time.perf_counter()
+                for _ in range(20):
+                    for r in reps:
+                        r.tick()
+                    if all(bc.height > h0 for bc in cadenas):
+                        break
+                else:
+                    raise RuntimeError("PBFT no confirmó el bloque en el benchmark")
+                lat.append(time.perf_counter() - t0)
+            return lat
+
+        cuentas = [Wallet.generate() for _ in range(remitentes)]
+        destino = Wallet.generate().address
+        for c in cuentas:   # saldo inicial (no se cuenta)
+            difundir(create_mint_transaction(autoridad.address, c.address, 10 ** 9,
+                                             autoridad.private_key_hex,
+                                             cadenas[0].next_nonce(autoridad.address)))
+        confirmar()
+
+        nonces = {c.address: cadenas[0].next_nonce(c.address) for c in cuentas}
+        t0 = time.perf_counter()
+        txs = []
+        for i in range(n_txs):
+            c = cuentas[i % remitentes]
+            txs.append(create_transfer_transaction(c.address, destino, 1, c.private_key_hex,
+                                                   nonces[c.address]))
+            nonces[c.address] += 1
+        t_firma = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        for tx in txs:
+            difundir(tx)
+        t_admision = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        lat = confirmar()
+        t_consenso = time.perf_counter() - t0
+        alturas = {bc.height for bc in cadenas}
+        if len(alturas) != 1:
+            raise RuntimeError(f"las réplicas divergieron: {alturas}")
+
+        total = t_firma + t_admision + t_consenso
+        ms = lambda x: None if x is None else round(x * 1000, 1)  # noqa: E731
+        return {
+            "txs": n_txs, "replicas": replicas, "f": rs.f, "bloques": len(lat),
+            "firma_s": round(t_firma, 3), "admision_s": round(t_admision, 3),
+            "consenso_s": round(t_consenso, 3),
+            "tps_firma": round(n_txs / t_firma, 1) if t_firma else None,
+            "tps_admision": round(n_txs / t_admision, 1) if t_admision else None,
+            "tps_consenso": round(n_txs / t_consenso, 1) if t_consenso else None,
+            "tps": round(n_txs / total, 1) if total else None,
+            "latencia_commit_mediana_ms": ms(statistics.median(lat)) if lat else None,
+            "latencia_commit_p95_ms": ms(_percentil(lat, 0.95)),
+        }
+    finally:
+        for bc in cadenas:
+            bc.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def ejecutar(perfil: str = "completo", consenso: str = "ambos") -> dict:
+    """Corre las mediciones del perfil y devuelve los resultados.
+
+    ``consenso``: "pow" (hash rate, curva y TPS de un nodo), "pbft" (solo el TPS con
+    PBFT) o "ambos"."""
+    if consenso not in ("pow", "pbft", "ambos"):
+        raise ValueError("consenso debe ser pow, pbft o ambos")
     p = PERFILES[perfil]
-    host = info_host()
+    r = {"perfil": perfil, "consenso": consenso, "host": info_host()}
     temp_ini = leer_temperatura()
-    hash_rate = medir_hash_rate(p["seg_hash"])
-    curva = medir_curva(p["bits"], p["repeticiones"])
-    tps = medir_tps(p["txs"], p["remitentes"])
-    return {
-        "perfil": perfil, "host": host, "hash_rate": hash_rate, "curva": curva, "tps": tps,
-        "temperatura_inicial_c": temp_ini, "temperatura_final_c": leer_temperatura(),
-        "ram": leer_ram(),
-    }
+    if consenso in ("pow", "ambos"):
+        r["hash_rate"] = medir_hash_rate(p["seg_hash"])
+        r["curva"] = medir_curva(p["bits"], p["repeticiones"])
+        r["tps"] = medir_tps(p["txs"], p["remitentes"])
+    if consenso in ("pbft", "ambos"):
+        r["tps_pbft"] = medir_tps_pbft(p["txs_pbft"], p["remitentes"])
+    r.update(temperatura_inicial_c=temp_ini, temperatura_final_c=leer_temperatura(),
+             ram=leer_ram())
+    return r
 
 
 # ── Informe ──────────────────────────────────────────────────────────────────
@@ -298,12 +418,30 @@ def _t(valor, unidad="") -> str:
 
 
 def informe_markdown(r: dict) -> str:
-    h, hr, tps, ram = r["host"], r["hash_rate"], r["tps"], r["ram"]
+    h, ram = r["host"], r["ram"]
     L = [f"# Resultados de benchmark UPB-Chain ({r['perfil']})", "",
          "Medido en el equipo descrito abajo; los números NO se extrapolan a otro hardware.", "",
          "## Equipo", "",
          "| Campo | Valor |", "|---|---|"]
     L += [f"| {k} | {v} |" for k, v in h.items()]
+    if "tps" in r:
+        L += _md_pow(r)
+    if "tps_pbft" in r:
+        L += _md_pbft(r["tps_pbft"])
+    L += ["", "## Temperatura", "",
+          f"- Antes de la carga: {_t(r['temperatura_inicial_c'], ' °C')}",
+          f"- Después de la carga: {_t(r['temperatura_final_c'], ' °C')}", "",
+          "## RAM", "",
+          f"- Total del sistema: {_t(ram['total_mib'], ' MiB')}",
+          f"- Disponible: {_t(ram['disponible_mib'], ' MiB')}",
+          f"- Proceso (actual / pico): {_t(ram['proceso_mib'], ' MiB')} / "
+          f"{_t(ram['proceso_pico_mib'], ' MiB')}", ""]
+    return "\n".join(L)
+
+
+def _md_pow(r: dict) -> list:
+    hr, tps = r["hash_rate"], r["tps"]
+    L = []
     L += ["", "## Hash rate", "",
           "| Hashes | Segundos | Hashes/s |", "|---:|---:|---:|",
           f"| {hr['hashes']} | {hr['segundos']} | {hr['hashes_por_s']} |", "",
@@ -322,25 +460,39 @@ def informe_markdown(r: dict) -> str:
           f"{_t(tps['tps_total'])} |", "",
           f"{tps['txs']} TX TOKEN_TRANSFER en {tps['bloques']} bloques, minado a "
           f"{tps['bits_minado']} bits (el minado casi no pesa: el TPS refleja firma, "
-          "validación y SQLite).", "",
-          "## Temperatura", "",
-          f"- Antes de la carga: {_t(r['temperatura_inicial_c'], ' °C')}",
-          f"- Después de la carga: {_t(r['temperatura_final_c'], ' °C')}", "",
-          "## RAM", "",
-          f"- Total del sistema: {_t(ram['total_mib'], ' MiB')}",
-          f"- Disponible: {_t(ram['disponible_mib'], ' MiB')}",
-          f"- Proceso (actual / pico): {_t(ram['proceso_mib'], ' MiB')} / "
-          f"{_t(ram['proceso_pico_mib'], ' MiB')}", ""]
-    return "\n".join(L)
+          "validación y SQLite).", ""]
+    return L
+
+
+def _md_pbft(t: dict) -> list:
+    return ["", "## TPS con PBFT (en proceso, réplicas en memoria)", "",
+            "| Fase | Segundos | TX/s |", "|---|---:|---:|",
+            f"| Construir y firmar | {t['firma_s']} | {_t(t['tps_firma'])} |",
+            f"| Admitir al mempool de las {t['replicas']} réplicas | {t['admision_s']} | "
+            f"{_t(t['tps_admision'])} |",
+            f"| Consenso PBFT (commit con certificado) | {t['consenso_s']} | "
+            f"{_t(t['tps_consenso'])} |",
+            f"| Total | {round(t['firma_s'] + t['admision_s'] + t['consenso_s'], 3)} | "
+            f"{_t(t['tps'])} |", "",
+            f"{t['txs']} TX TOKEN_TRANSFER en {t['bloques']} bloques (hasta 50 TX), "
+            f"{t['replicas']} réplicas (f={t['f']}). Latencia de commit por bloque "
+            f"(hasta que las {t['replicas']} réplicas lo tienen): mediana "
+            f"{_t(t['latencia_commit_mediana_ms'], ' ms')}, p95 "
+            f"{_t(t['latencia_commit_p95_ms'], ' ms')}. Red en memoria y un solo "
+            "intérprete: mide CPU del protocolo, no red.", ""]
+
 
 
 def escribir_csv(r: dict, ruta: Path) -> None:
     """CSV en formato largo (``seccion,clave,valor``), fácil de pegar en una hoja."""
     filas = [("equipo", k, v) for k, v in r["host"].items()]
-    filas += [("hash_rate", k, v) for k, v in r["hash_rate"].items()]
-    for c in r["curva"]:
-        filas += [(f"curva_{c['bits']}bits", k, v) for k, v in c.items()]
-    filas += [("tps", k, v) for k, v in r["tps"].items()]
+    if "tps" in r:
+        filas += [("hash_rate", k, v) for k, v in r["hash_rate"].items()]
+        for c in r["curva"]:
+            filas += [(f"curva_{c['bits']}bits", k, v) for k, v in c.items()]
+        filas += [("tps", k, v) for k, v in r["tps"].items()]
+    if "tps_pbft" in r:
+        filas += [("tps_pbft", k, v) for k, v in r["tps_pbft"].items()]
     filas += [("temperatura", "inicial_c", _t(r["temperatura_inicial_c"])),
               ("temperatura", "final_c", _t(r["temperatura_final_c"]))]
     filas += [("ram", k, _t(v)) for k, v in r["ram"].items()]
@@ -365,10 +517,12 @@ def main() -> None:
     ap.add_argument("--rapido", action="store_true", help="corrida corta (CI/pruebas)")
     ap.add_argument("--salida", default=str(RAIZ / "docs" / "mediciones"),
                     help="directorio de resultados (.md y .csv)")
+    ap.add_argument("--consenso", choices=("pow", "pbft", "ambos"), default="ambos",
+                    help="qué medir: pow (un nodo), pbft (4 réplicas) o ambos (por defecto)")
     args = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    r = ejecutar("rapido" if args.rapido else "completo")
+    r = ejecutar("rapido" if args.rapido else "completo", args.consenso)
     md, cs = guardar(r, Path(args.salida))
     print(informe_markdown(r))
     print(f"Escrito: {md}\nEscrito: {cs}")
