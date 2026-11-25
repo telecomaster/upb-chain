@@ -111,8 +111,9 @@ p2p = P2PNode(
     host=NODE_HOST,
     port=NODE_PORT,
     advertise_host=settings.node_advertise_host or None,
-    on_new_block=lambda b: blockchain.add_block(__import__("blockchain.core.block", fromlist=["Block"]).Block.from_dict(b)),
-    on_new_tx=lambda t: blockchain.add_transaction(Transaction.from_dict(t)),
+    # P0-5: el nodo valida/añade bloques y TXs recibidos y, si un bloque no
+    # extiende la punta, sincroniza con el emisor (replace_chain por trabajo).
+    blockchain=blockchain,
     on_pbft_message=lambda m: logger.info(f"PBFT msg recibido: {m}"),
 )
 
@@ -120,10 +121,11 @@ p2p = P2PNode(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     p2p.start()
+    # Los pares de PEERS se conectan (y reconectan con backoff) en segundo plano.
     for peer in PEERS:
         if ":" in peer:
-            host, port = peer.split(":")
-            p2p.connect_to_peer(host, int(port))
+            host, port = peer.rsplit(":", 1)
+            p2p.add_peer(host, int(port))
     logger.info(f"UPB-Chain nodo {NODE_ID} iniciado")
     yield
     mining_stop.set()
@@ -282,7 +284,8 @@ async def mine_block(request: MineRequest, background_tasks: BackgroundTasks):
         if not ok:
             # Típico: llegó un bloque de un peer y la punta cambió durante el minado.
             raise HTTPException(409, f"Bloque minado ya no es válido: {reason}")
-    p2p.broadcast_block(result.block.to_dict())
+    # Difusión a los pares (E/S de red bloqueante) fuera del event loop (P0-5).
+    await asyncio.to_thread(p2p.broadcast_block, result.block.to_dict())
     return {
         "block": result.block.to_dict(),
         "mining_stats": {
@@ -577,7 +580,8 @@ async def network_info():
 
 
 @app.post("/network/peers")
-async def add_peer(host: str, port: int):
+def add_peer(host: str, port: int):
+    # `def` (no async): el handshake es E/S bloqueante y FastAPI lo corre en un hilo.
     ok = p2p.connect_to_peer(host, port)
     return {"connected": ok}
 
@@ -585,3 +589,10 @@ async def add_peer(host: str, port: int):
 @app.get("/network/sync")
 async def sync_chain():
     return {"chain": [b.to_dict() for b in blockchain.chain], "height": blockchain.height}
+
+
+@app.post("/network/sync")
+def sync_now():
+    """Fuerza la sincronización con todos los pares activos (P0-5)."""
+    adopted = p2p.sync_with_peers()
+    return {"adopted": adopted, "height": blockchain.height, "work": blockchain.total_work}

@@ -1,0 +1,217 @@
+"""Tests de P0-5: sincronización P2P con sockets reales en 127.0.0.1.
+
+Cada nodo = Blockchain (directorio propio en tmp_path) + P2PNode en un puerto
+efímero (port=0). Se espera con sondeo y timeout, nunca con sleeps largos fijos.
+"""
+import socket
+import time
+
+import pytest
+
+from blockchain.core.chain import Blockchain
+from blockchain.core.transaction import Transaction, TransactionType
+from blockchain.core.wallet import Wallet
+from blockchain.network.node import MSG_GET_PEERS, MSG_SYNC_REQUEST, P2PNode
+from tests.helpers import mine_candidate
+
+pytestmark = pytest.mark.integration
+
+HOST = "127.0.0.1"
+
+
+def _esperar(condicion, timeout=10.0, intervalo=0.05):
+    limite = time.time() + timeout
+    while time.time() < limite:
+        if condicion():
+            return True
+        time.sleep(intervalo)
+    return condicion()
+
+
+def _puerto_libre():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((HOST, 0))
+        return s.getsockname()[1]
+
+
+class _Red:
+    """Crea nodos y garantiza que todos se detengan al final del test."""
+
+    def __init__(self, tmp_path):
+        self.tmp_path = tmp_path
+        self.nodos = []
+
+    def cadena(self, nombre):
+        return Blockchain(nombre, str(self.tmp_path / nombre), initial_difficulty=1, max_difficulty=2)
+
+    def nodo(self, nombre, peers=(), bc=None, port=0, **kw):
+        bc = bc or self.cadena(nombre)
+        params = dict(sync_interval=0.5, retry_base=0.2, retry_max=1.0, timeout=5.0)
+        params.update(kw)
+        node = P2PNode(nombre, HOST, port, blockchain=bc, **params)
+        node.start()
+        self.nodos.append(node)
+        for p in peers:
+            node.add_peer(HOST, p.port if isinstance(p, P2PNode) else p)
+        return node
+
+    def detener(self):
+        for n in self.nodos:
+            n.stop()
+
+
+@pytest.fixture
+def red(tmp_path):
+    r = _Red(tmp_path)
+    yield r
+    r.detener()
+
+
+def _minar(node, n=1, txs=None):
+    for _ in range(n):
+        bloque = mine_candidate(node.blockchain, txs)
+        ok, motivo = node.blockchain.add_block(bloque)
+        assert ok, motivo
+        node.broadcast_block(bloque.to_dict())
+
+
+def _alcanzo(b, a):
+    return lambda: b.blockchain.last_block.hash == a.blockchain.last_block.hash
+
+
+def test_nodo_arrancado_despues_alcanza_al_primero(red):
+    a = red.nodo("a")
+    _minar(a, 5)
+    b = red.nodo("b", peers=[a])
+    assert _esperar(_alcanzo(b, a)), f"B quedó en altura {b.blockchain.height}"
+    assert b.blockchain.height == 5
+    # A aprendió a B por el handshake, con la dirección anunciada (no 0.0.0.0).
+    assert _esperar(lambda: f"{HOST}:{b.port}" in a.peers and a.peers[f"{HOST}:{b.port}"].is_active)
+
+
+def test_reinicio_de_b_recupera_lo_minado_mientras_estaba_caido(red, tmp_path):
+    a = red.nodo("a")
+    _minar(a, 2)
+    b = red.nodo("b", peers=[a])
+    assert _esperar(_alcanzo(b, a))
+    b.stop()
+
+    _minar(a, 3)            # B está caído: el broadcast a B falla
+    assert b.blockchain.height == 2
+
+    # B "reinicia": recarga su cadena desde disco y vuelve a conectarse a A.
+    b2 = red.nodo("b", peers=[a], bc=red.cadena("b"))
+    assert b2.blockchain.height == 2
+    assert _esperar(_alcanzo(b2, a))
+    assert b2.blockchain.height == 5
+
+
+def test_reconexion_con_backoff_cuando_el_par_vuelve(red):
+    puerto_a = _puerto_libre()
+    b = red.nodo("b", peers=[puerto_a])          # A todavía no existe
+    assert _esperar(lambda: b.peers[f"{HOST}:{puerto_a}"].failed_attempts >= 1)
+    assert not b.peers[f"{HOST}:{puerto_a}"].is_active
+
+    bc_a = red.cadena("a")
+    for _ in range(3):
+        bc_a.add_block(mine_candidate(bc_a))
+    red.nodo("a", bc=bc_a, port=puerto_a)          # A aparece con 3 bloques
+    assert _esperar(lambda: b.blockchain.height == 3)
+    assert b.peers[f"{HOST}:{puerto_a}"].is_active
+
+
+def test_bloque_minado_en_b_se_propaga_a_a(red):
+    # sync_interval largo: sólo la propagación (push) puede explicar la llegada.
+    a = red.nodo("a", sync_interval=60)
+    b = red.nodo("b", peers=[a], sync_interval=60)
+    assert _esperar(lambda: any(p.is_active for p in a.peers.values()))
+    assert _esperar(lambda: any(p.is_active for p in b.peers.values()))
+
+    _minar(b, 1)
+    assert _esperar(_alcanzo(a, b))
+    _minar(a, 1)
+    assert _esperar(_alcanzo(b, a))
+    assert a.blockchain.height == b.blockchain.height == 2
+
+
+def test_bloque_que_no_extiende_la_punta_dispara_sincronizacion(red):
+    a = red.nodo("a", sync_interval=60)
+    b = red.nodo("b", peers=[a], sync_interval=60)
+    assert _esperar(lambda: any(p.is_active for p in a.peers.values()))
+    # A mina 3 bloques SIN anunciarlos; luego anuncia sólo el último.
+    for _ in range(3):
+        a.blockchain.add_block(mine_candidate(a.blockchain))
+    a.broadcast_block(a.blockchain.last_block.to_dict())
+    assert _esperar(_alcanzo(b, a))
+
+
+def test_bloque_invalido_se_ignora(red):
+    a = red.nodo("a", sync_interval=60)
+    b = red.nodo("b", peers=[a], sync_interval=60)
+    assert _esperar(lambda: any(p.is_active for p in a.peers.values()))
+    falso = mine_candidate(a.blockchain)
+    falso.header.difficulty = 0
+    falso.hash = falso.compute_hash()
+    a.broadcast_block(falso.to_dict())
+    _minar(a, 1)                       # un bloque válido posterior sí llega
+    assert _esperar(_alcanzo(b, a))
+    assert b.blockchain.height == 1
+    assert b.blockchain.get_block_by_hash(falso.hash) is None
+
+
+def test_tx_se_propaga_al_mempool_del_par(red):
+    a = red.nodo("a", sync_interval=60)
+    b = red.nodo("b", peers=[a], sync_interval=60)
+    assert _esperar(lambda: any(p.is_active for p in a.peers.values()))
+    w = Wallet.generate()
+    tx = Transaction(type=TransactionType.DATA_RECORD, sender=w.address,
+                     recipient="DEST", payload={"x": 1})
+    tx.sign(w.private_key_hex)
+    assert a.blockchain.add_transaction(tx)[0]
+    a.broadcast_transaction(tx.to_dict())
+    assert _esperar(lambda: any(t.tx_id == tx.tx_id for t in b.blockchain.mempool))
+    assert len(b.blockchain.mempool) == 1
+
+
+def test_par_con_otro_genesis_es_rechazado(red):
+    a = red.nodo("a")
+    _minar(a, 2)
+    c = red.nodo("c", sync_interval=60)
+    c.genesis_hash = "f" * 64          # simula una red distinta
+    assert c.connect_to_peer(HOST, a.port) is False
+    assert f"{HOST}:{a.port}" not in c.peers
+    assert not any(p.node_id == "c" for p in a.peers.values())
+    assert c.blockchain.height == 0
+    # Y A tampoco acepta a C cuando es A quien marca.
+    assert a.connect_to_peer(HOST, c.port) is False
+    assert f"{HOST}:{c.port}" not in a.peers
+
+
+def test_get_chain_sync_request_y_peers_responden_datos_reales(red):
+    """Regresión: GET_CHAIN devolvía la petición, SYNC_REQUEST altura 0, PEERS fallaba."""
+    a = red.nodo("a")
+    _minar(a, 2)
+    b = red.nodo("b", peers=[a])
+    assert _esperar(_alcanzo(b, a))
+
+    cadena = b.request_chain_sync(f"{HOST}:{a.port}")
+    assert [blk["hash"] for blk in cadena] == [blk.hash for blk in a.blockchain.chain]
+
+    estado = b._request(HOST, a.port, {"type": MSG_SYNC_REQUEST})
+    assert estado["height"] == 2
+    assert estado["work"] == a.blockchain.total_work
+    assert estado["genesis_hash"] == a.blockchain.chain[0].hash
+
+    peers = b._request(HOST, a.port, {"type": MSG_GET_PEERS})["data"]
+    assert {"host": HOST, "port": b.port}.items() <= peers[0].items()
+
+
+def test_par_que_anuncia_0000_se_registra_con_su_ip_real(red):
+    a = red.nodo("a")
+    x = P2PNode("x", HOST, 0, advertise_host="0.0.0.0", blockchain=red.cadena("x"),
+                sync_interval=60, retry_base=0.2, retry_max=1.0)
+    x.start()
+    red.nodos.append(x)
+    assert x.connect_to_peer(HOST, a.port)
+    assert f"{HOST}:{x.port}" in a.peers
+    assert not any(p.host == "0.0.0.0" for p in a.peers.values())

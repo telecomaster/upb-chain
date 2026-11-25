@@ -56,7 +56,7 @@ Flujos de trabajo y orden de dependencias:
   sobrescribe la dificultad del encabezado y `/blocks/mine` bloquea el event loop. Tomar la dificultad
   de `chain._calculate_difficulty()`, minar en un thread pool con un lock.
   *Listo cuando:* `/health` responde durante el minado y la dificultad tiende a ~10 s por bloque.
-- [ ] **P0-5 Sincronización P2P.** `node.py`: `GET_CHAIN` devuelve la petición en lugar de la cadena,
+- [x] **P0-5 Sincronización P2P.** `node.py`: `GET_CHAIN` devuelve la petición en lugar de la cadena,
   `SYNC_REQUEST` responde altura 0, los peers anuncian `0.0.0.0`, no hay reconexión.
   `replace_chain` debe comprobar génesis y trabajo acumulado, devolver TXs huérfanas al mempool y
   llamar `on_chain_reorg`. *Listo cuando:* el nodo 2, arrancado después, alcanza al nodo 1 y se

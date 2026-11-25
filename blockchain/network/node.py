@@ -1,6 +1,6 @@
 """
 Nodo P2P de UPB-Chain.
-Gestiona descubrimiento de pares, sincronización de cadena y propagación de transacciones.
+Gestiona pares, sincronización de cadena y propagación de bloques y transacciones.
 
 Protocolo de mensajería (v2 — length-prefix framing)
 =====================================================
@@ -8,14 +8,32 @@ Cada mensaje se transmite como::
 
     [ 4 bytes big-endian uint32 = longitud del payload ][ payload JSON UTF-8 ]
 
+Cada intercambio usa una conexión TCP corta: el cliente abre, envía un mensaje,
+lee (si corresponde) una respuesta y cierra. No hay conexiones persistentes, así
+que "reconectar" significa volver a hacer HANDSHAKE con un par caído.
+
+Mensajes (P0-5)
+---------------
+- ``HANDSHAKE``  → ``HANDSHAKE`` | ``REJECT``. Ambos lados envían su estado
+  (``_status()``): node_id, host/port anunciados, genesis_hash, height, work
+  (trabajo acumulado), tip y peers conocidos. Génesis distinto → ``REJECT``.
+  Quien tenga menos trabajo pide la cadena del otro.
+- ``SYNC_REQUEST`` → ``SYNC_RESPONSE`` con el mismo estado (consulta periódica).
+- ``GET_CHAIN`` → ``CHAIN`` con la cadena completa (lista de bloques).
+- ``NEW_BLOCK`` (sin respuesta): si extiende la punta se valida, se añade y se
+  re-propaga una vez; si no la extiende se sincroniza con el emisor
+  (``origin``); si es inválido se ignora con un log.
+- ``NEW_TX`` (sin respuesta): admisión al mempool; si entra, se re-propaga.
+- ``GET_PEERS`` → ``PEERS``; ``PING`` → ``PONG``; ``PBFT``.
+
 Compatibilidad backward
 -----------------------
 Si el primer byte recibido es ``{`` o ``[`` (inicio de JSON plano),
-``_recv_framed`` asume protocolo legado (JSON + newline) y lo decodifica
-correctamente.  Esto permite convivir con nodos que aún no actualizaron.
+``_recv_framed`` asume protocolo legado (JSON + newline) y lo decodifica.
 """
 import json
 import logging
+import os
 import socket
 import struct
 import threading
@@ -24,10 +42,14 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Set
 
+from blockchain.core.block import GENESIS_HASH, Block
+from blockchain.core.transaction import Transaction
+
 logger = logging.getLogger("upb_chain.network")
 
-# ── Tipos de mensaje existentes ───────────────────────────────────────────────
+# ── Tipos de mensaje ──────────────────────────────────────────────────────────
 MSG_HANDSHAKE   = "HANDSHAKE"
+MSG_REJECT      = "REJECT"
 MSG_BLOCK       = "NEW_BLOCK"
 MSG_TRANSACTION = "NEW_TX"
 MSG_GET_CHAIN   = "GET_CHAIN"
@@ -37,12 +59,11 @@ MSG_PEERS       = "PEERS"
 MSG_PING        = "PING"
 MSG_PONG        = "PONG"
 MSG_PBFT        = "PBFT"
-
-# ── Tipos de mensaje nuevos (sincronización) ──────────────────────────────────
 MSG_SYNC_REQUEST  = "SYNC_REQUEST"
 MSG_SYNC_RESPONSE = "SYNC_RESPONSE"
-MSG_BLOCK_REQUEST = "GET_BLOCK"
-MSG_BLOCK_RESPONSE = "BLOCK"
+
+# Direcciones que no sirven para que otro nodo nos contacte.
+_UNSPECIFIED_HOSTS = {"", "0.0.0.0", "::", "[::]"}
 
 
 @dataclass
@@ -52,8 +73,12 @@ class Peer:
     node_id: str = ""
     last_seen: float = field(default_factory=time.time)
     latency_ms: float = 0.0
-    is_active: bool = True
-    failed_pings: int = 0          # pings consecutivos fallidos
+    is_active: bool = False        # True tras un HANDSHAKE exitoso
+    failed_attempts: int = 0       # fallos consecutivos (para el backoff)
+    next_retry: float = 0.0        # instante del próximo intento de reconexión
+    next_status: float = 0.0       # instante de la próxima consulta de estado
+    height: int = 0
+    work: int = 0
 
     @property
     def address(self) -> str:
@@ -61,17 +86,18 @@ class Peer:
 
     def to_dict(self) -> dict:
         return {
-            "host": self.advertise_host,
+            "host": self.host,
             "port": self.port,
             "node_id": self.node_id,
             "last_seen": self.last_seen,
+            "is_active": self.is_active,
+            "height": self.height,
         }
 
 
 class P2PNode:
     BUFFER_SIZE = 65536
-    _MAX_PAYLOAD  = 10_000_000   # 10 MB — límite de seguridad
-    _FAILED_PING_THRESHOLD = 3   # pings fallidos antes de marcar inactivo
+    _MAX_PAYLOAD = 10_000_000   # 10 MB — límite de seguridad
 
     def __init__(
         self,
@@ -82,16 +108,39 @@ class P2PNode:
         on_new_tx: Optional[Callable] = None,
         on_pbft_message: Optional[Callable] = None,
         advertise_host: Optional[str] = None,
+        blockchain=None,
+        sync_interval: float = 15.0,
+        retry_base: float = 1.0,
+        retry_max: float = 60.0,
+        timeout: float = 10.0,
     ):
+        """
+        - ``blockchain``: si se pasa, el nodo valida y añade bloques/TXs recibidos,
+          responde ``GET_CHAIN`` y sincroniza con ``replace_chain``. ``on_new_block``
+          y ``on_new_tx`` pasan a ser avisos DESPUÉS de aceptar (dict recibido).
+        - ``port=0`` elige un puerto libre (útil en tests); ver ``self.port`` tras ``start()``.
+        - ``sync_interval``: cada cuánto se consulta el estado de los pares activos.
+        - ``retry_base``/``retry_max``: backoff exponencial de reconexión (segundos).
+        """
         self.node_id = node_id
         self.host = host
         self.port = port
         # Dirección que se anuncia a los pares (NODE_ADVERTISE_HOST); por defecto, host.
-        # TODO(P0-5): usar también al guardar/propagar pares conocidos.
         self.advertise_host = advertise_host or host
+        self.blockchain = blockchain
+        self.genesis_hash = blockchain.chain[0].hash if blockchain is not None else GENESIS_HASH
+        self.sync_interval = sync_interval
+        self.retry_base = retry_base
+        self.retry_max = retry_max
+        self.timeout = timeout
+
         self.peers: Dict[str, Peer] = {}
+        self._peers_lock = threading.Lock()
         self._seen_messages: Set[str] = set()
+        self._seen_lock = threading.Lock()
+        self._sync_lock = threading.Lock()
         self._running = False
+        self._stop_event = threading.Event()
 
         self.on_new_block = on_new_block
         self.on_new_tx = on_new_tx
@@ -108,47 +157,62 @@ class P2PNode:
         self._bytes_received: int = 0
         self._stats_lock = threading.Lock()
 
-    # ── Servidor ──────────────────────────────────────────────────────────────
+    # ── Ciclo de vida ─────────────────────────────────────────────────────────
 
     def start(self) -> None:
         self._running = True
+        self._stop_event.clear()
         self._start_time = time.time()
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # En Windows SO_REUSEADDR permite que DOS procesos usen el mismo puerto: sólo en POSIX.
+        if os.name != "nt":
+            self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._server.bind((self.host, self.port))
+        self.port = self._server.getsockname()[1]
         self._server.listen(32)
+        self._server.settimeout(0.5)   # para que stop() no quede colgado en accept()
+        if self.advertise_host in _UNSPECIFIED_HOSTS:
+            logger.warning(
+                "NODE_ADVERTISE_HOST no definido: los pares usarán la IP de origen de la conexión"
+            )
         logger.info(f"Nodo {self.node_id} escuchando en {self.host}:{self.port}")
 
-        listener = threading.Thread(target=self._accept_loop, daemon=True)
-        listener.start()
-        self._threads.append(listener)
-
-        heartbeat = threading.Thread(target=self._heartbeat_loop, daemon=True)
-        heartbeat.start()
-        self._threads.append(heartbeat)
+        for target in (self._accept_loop, self._maintenance_loop):
+            t = threading.Thread(target=target, daemon=True, name=f"p2p-{self.node_id}")
+            t.start()
+            self._threads.append(t)
 
     def stop(self) -> None:
+        """Detiene los hilos y cierra el socket de escucha (espera hasta ~2 s)."""
         self._running = False
+        self._stop_event.set()
         if self._server:
-            self._server.close()
+            try:
+                self._server.close()
+            except OSError:
+                pass
+        for t in self._threads:
+            if t is not threading.current_thread():
+                t.join(timeout=2)
+        self._threads = []
 
     def _accept_loop(self) -> None:
         while self._running:
             try:
                 conn, addr = self._server.accept()
-                t = threading.Thread(
-                    target=self._handle_connection,
-                    args=(conn, addr),
-                    daemon=True,
-                )
-                t.start()
-            except Exception:
+            except socket.timeout:
+                continue
+            except OSError:
                 if self._running:
                     logger.exception("Error en accept loop")
+                break
+            t = threading.Thread(target=self._handle_connection, args=(conn, addr), daemon=True)
+            t.start()
 
     def _handle_connection(self, conn: socket.socket, addr) -> None:
         """Recibe un mensaje del socket y lo despacha. Usa _recv_framed."""
         try:
+            conn.settimeout(self.timeout)
             message = self._recv_framed(conn)
             self._dispatch(message, conn)
         except Exception:
@@ -164,7 +228,7 @@ class P2PNode:
         [ 4 bytes big-endian uint32 ][ payload JSON UTF-8 ]
         Actualiza contadores de métricas de forma thread-safe.
         """
-        payload = json.dumps(message).encode()
+        payload = json.dumps(message).encode("utf-8")
         header = struct.pack(">I", len(payload))
         conn.sendall(header + payload)
         with self._stats_lock:
@@ -176,7 +240,6 @@ class P2PNode:
         Recibe un mensaje usando length-prefix framing.
         Compatibilidad backward: si el primer byte es ``{`` o ``[`` (JSON plano),
         lee hasta newline usando el protocolo legado.
-        Actualiza contadores de métricas de forma thread-safe.
         """
         header = self._recv_exact(conn, 4)
 
@@ -192,7 +255,7 @@ class P2PNode:
             with self._stats_lock:
                 self._messages_received += 1
                 self._bytes_received += len(full)
-            return json.loads(full.decode().strip())
+            return json.loads(full.decode("utf-8").strip())
 
         # ── Protocolo moderno: length-prefix ─────────────────────────────────
         length = struct.unpack(">I", header)[0]
@@ -202,7 +265,7 @@ class P2PNode:
         with self._stats_lock:
             self._messages_received += 1
             self._bytes_received += 4 + length
-        return json.loads(payload.decode())
+        return json.loads(payload.decode("utf-8"))
 
     @staticmethod
     def _recv_exact(conn: socket.socket, n: int) -> bytes:
@@ -215,61 +278,305 @@ class P2PNode:
             data += chunk
         return data
 
-    # ── Protocolo de mensajería ───────────────────────────────────────────────
+    def _request(self, host: str, port: int, message: dict, expect_reply: bool = True) -> Optional[dict]:
+        """Abre una conexión, envía `message` y (opcional) devuelve la respuesta."""
+        with socket.create_connection((host, port), timeout=self.timeout) as conn:
+            conn.settimeout(self.timeout)
+            self._send_framed(conn, message)
+            return self._recv_framed(conn) if expect_reply else None
 
-    def _dispatch(self, message: dict, conn: socket.socket) -> None:
-        msg_type = message.get("type")
-        msg_id = message.get("id", "")
+    # ── Estado local ──────────────────────────────────────────────────────────
 
-        if msg_id and msg_id in self._seen_messages:
-            return
-        if msg_id:
+    def _status(self) -> dict:
+        """Estado que se anuncia en HANDSHAKE y SYNC_RESPONSE."""
+        bc = self.blockchain
+        with self._peers_lock:
+            known = [p.address for p in self.peers.values() if p.is_active]
+        return {
+            "node_id": self.node_id,
+            "host": self.advertise_host,
+            "port": self.port,
+            "genesis_hash": self.genesis_hash,
+            "height": bc.height if bc is not None else 0,
+            "work": bc.total_work if bc is not None else 0,
+            "tip": bc.last_block.hash if bc is not None else self.genesis_hash,
+            "peers": known,
+        }
+
+    def _local_work(self) -> int:
+        return self.blockchain.total_work if self.blockchain is not None else 0
+
+    @staticmethod
+    def _peer_host(advertised: str, conn: Optional[socket.socket]) -> str:
+        """Host anunciado por el par; si es 0.0.0.0/vacío, la IP de origen del socket."""
+        if advertised not in _UNSPECIFIED_HOSTS:
+            return advertised
+        try:
+            return conn.getpeername()[0] if conn is not None else ""
+        except OSError:
+            return ""
+
+    def _is_self(self, host: str, port: int, node_id: str = "") -> bool:
+        if node_id and node_id == self.node_id:
+            return True
+        return port == self.port and host in ({self.advertise_host, "127.0.0.1", "localhost"} - {""})
+
+    def _mark_seen(self, msg_id: str) -> bool:
+        """Registra `msg_id`; devuelve False si ya se había visto (dedupe)."""
+        if not msg_id:
+            return True
+        with self._seen_lock:
+            if msg_id in self._seen_messages:
+                return False
             self._seen_messages.add(msg_id)
             if len(self._seen_messages) > 10_000:
                 self._seen_messages = set(list(self._seen_messages)[-5000:])
+        return True
+
+    # ── Despacho de mensajes ──────────────────────────────────────────────────
+
+    def _dispatch(self, message: dict, conn: socket.socket) -> None:
+        msg_type = message.get("type")
+        if not self._mark_seen(message.get("id", "")):
+            return
 
         if msg_type == MSG_HANDSHAKE:
             self._handle_handshake(message, conn)
-        elif msg_type == MSG_BLOCK and self.on_new_block:
-            self.on_new_block(message["data"])
-            self._gossip(message)
-        elif msg_type == MSG_TRANSACTION and self.on_new_tx:
-            self.on_new_tx(message["data"])
-            self._gossip(message)
+        elif msg_type == MSG_BLOCK:
+            self._handle_block(message, conn)
+        elif msg_type == MSG_TRANSACTION:
+            self._handle_tx(message)
         elif msg_type == MSG_GET_CHAIN:
-            self._send_framed(conn, {"type": MSG_GET_CHAIN})
+            chain = list(self.blockchain.chain) if self.blockchain is not None else []
+            self._send_framed(conn, {"type": MSG_CHAIN, "data": [b.to_dict() for b in chain]})
+        elif msg_type == MSG_SYNC_REQUEST:
+            self._send_framed(conn, {"type": MSG_SYNC_RESPONSE, **self._status()})
         elif msg_type == MSG_GET_PEERS:
-            peer_list = [p.to_dict() for p in self.peers.values() if p.is_active]
+            with self._peers_lock:
+                peer_list = [p.to_dict() for p in self.peers.values() if p.is_active]
             self._send_framed(conn, {"type": MSG_PEERS, "data": peer_list})
         elif msg_type == MSG_PING:
             self._send_framed(conn, {"type": MSG_PONG, "node_id": self.node_id})
         elif msg_type == MSG_PBFT and self.on_pbft_message:
             self.on_pbft_message(message["data"])
-        elif msg_type == MSG_SYNC_REQUEST:
-            self._send_framed(conn, {
-                "type": MSG_SYNC_RESPONSE,
-                "node_id": self.node_id,
-                "height": 0,
-            })
-        elif msg_type == MSG_BLOCK_REQUEST:
-            self._send_framed(conn, {"type": MSG_BLOCK_RESPONSE, "data": None})
 
-    # TODO(P0-5): incluir genesis_hash en el handshake y rechazar pares con otro génesis.
     def _handle_handshake(self, message: dict, conn: socket.socket) -> None:
         peer_id = message.get("node_id", "unknown")
-        peer_host = message.get("host", "")
-        peer_port = message.get("port", 0)
-        if peer_host and peer_port:
-            peer = Peer(host=peer_host, port=peer_port, node_id=peer_id)
-            self.peers[peer.address] = peer
-            logger.info(f"Par conectado: {peer_id} @ {peer.address}")
-        response = {
-            "type": MSG_HANDSHAKE,
-            "node_id": self.node_id,
-            "host": self.advertise_host,
-            "port": self.port,
-        }
-        self._send_framed(conn, response)
+        if message.get("genesis_hash") != self.genesis_hash:
+            logger.warning(f"Par {peer_id} rechazado: génesis distinto")
+            self._send_framed(conn, {"type": MSG_REJECT, "reason": "Génesis distinto"})
+            return
+        self._send_framed(conn, {"type": MSG_HANDSHAKE, **self._status()})
+        host = self._peer_host(message.get("host", ""), conn)
+        port = int(message.get("port") or 0)
+        if not host or not port or self._is_self(host, port, peer_id):
+            return
+        self._register_peer(host, port, message)
+        self._learn_peers(message.get("peers", []))
+        if int(message.get("work", 0)) > self._local_work():
+            self._spawn(self.sync_with, f"{host}:{port}")
+
+    def _handle_block(self, message: dict, conn: socket.socket) -> None:
+        data = message.get("data") or {}
+        if self.blockchain is None:          # modo sin cadena: sólo aviso + gossip
+            if self.on_new_block:
+                self.on_new_block(data)
+            self._gossip(message)
+            return
+        try:
+            block = Block.from_dict(data)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            logger.warning("Bloque malformado ignorado")
+            return
+        bc = self.blockchain
+        if bc.get_block_by_hash(block.hash) is not None:
+            return
+        tip = bc.last_block
+        extends = block.header.index == tip.header.index + 1 and block.header.previous_hash == tip.hash
+        if extends:
+            ok, reason = bc.add_block(block)
+            if ok:
+                logger.info(f"Bloque #{block.header.index} recibido y añadido")
+                if self.on_new_block:
+                    self.on_new_block(data)
+                self._gossip(message)
+                return
+            if bc.last_block.hash == tip.hash:   # la punta no cambió: el bloque es inválido
+                logger.warning(f"Bloque #{block.header.index} inválido ignorado: {reason}")
+                return
+        # No extiende nuestra punta: puede venir de una cadena con más trabajo.
+        origin = message.get("origin") or {}
+        host = self._peer_host(origin.get("host", ""), conn)
+        port = int(origin.get("port") or 0)
+        if host and port and not self._is_self(host, port):
+            logger.info(f"Bloque #{block.header.index} no extiende la punta: sincronizando con {host}:{port}")
+            self.sync_with(f"{host}:{port}")
+
+    def _handle_tx(self, message: dict) -> None:
+        data = message.get("data") or {}
+        if self.blockchain is None:
+            if self.on_new_tx:
+                self.on_new_tx(data)
+            self._gossip(message)
+            return
+        try:
+            tx = Transaction.from_dict(data)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            logger.warning("TX malformada ignorada")
+            return
+        ok, reason = self.blockchain.add_transaction(tx)
+        if not ok:
+            logger.debug(f"TX {str(data.get('tx_id'))[:8]}… no admitida: {reason}")
+            return
+        if self.on_new_tx:
+            self.on_new_tx(data)
+        self._gossip(message)
+
+    # ── Pares ─────────────────────────────────────────────────────────────────
+
+    def _register_peer(self, host: str, port: int, status: dict) -> Peer:
+        """Marca un par como activo con el estado recibido en HANDSHAKE/SYNC_RESPONSE."""
+        address = f"{host}:{port}"
+        now = time.time()
+        with self._peers_lock:
+            peer = self.peers.get(address)
+            if peer is None:
+                peer = Peer(host=host, port=port)
+                self.peers[address] = peer
+                logger.info(f"Par conectado: {status.get('node_id', '?')} @ {address}")
+            peer.node_id = status.get("node_id", peer.node_id)
+            peer.height = int(status.get("height", 0))
+            peer.work = int(status.get("work", 0))
+            peer.is_active = True
+            peer.failed_attempts = 0
+            peer.last_seen = now
+            peer.next_status = now + self.sync_interval
+        return peer
+
+    def add_peer(self, host: str, port: int) -> None:
+        """Agrega un par conocido (p. ej. de PEERS); el hilo de mantenimiento lo conecta."""
+        if self._is_self(host, port):
+            return
+        with self._peers_lock:
+            self.peers.setdefault(f"{host}:{port}", Peer(host=host, port=port))
+
+    def _learn_peers(self, addresses: List[str]) -> None:
+        for address in addresses or []:
+            try:
+                host, port = str(address).rsplit(":", 1)
+                if host not in _UNSPECIFIED_HOSTS:
+                    self.add_peer(host, int(port))
+            except ValueError:
+                continue
+
+    def _mark_failed(self, peer: Peer) -> None:
+        """Marca un par inactivo y agenda la reconexión con backoff exponencial."""
+        with self._peers_lock:
+            if peer.is_active:
+                logger.warning(f"Par {peer.address} desconectado")
+            peer.is_active = False
+            peer.failed_attempts += 1
+            delay = min(self.retry_max, self.retry_base * 2 ** (peer.failed_attempts - 1))
+            peer.next_retry = time.time() + delay
+
+    def connect_to_peer(self, host: str, port: int) -> bool:
+        """HANDSHAKE con un par; si tiene más trabajo, se sincroniza. False si falla o se rechaza."""
+        self.add_peer(host, port)
+        peer = self.peers.get(f"{host}:{port}")
+        try:
+            start = time.perf_counter()
+            reply = self._request(host, port, {"type": MSG_HANDSHAKE, **self._status()})
+        except Exception as e:
+            logger.debug(f"No se pudo conectar a {host}:{port}: {e}")
+            if peer is not None:
+                self._mark_failed(peer)
+            return False
+        if reply.get("type") != MSG_HANDSHAKE or reply.get("genesis_hash") != self.genesis_hash:
+            logger.warning(f"Par {host}:{port} rechazado: génesis distinto o respuesta inválida")
+            with self._peers_lock:
+                self.peers.pop(f"{host}:{port}", None)
+            return False
+        if self._is_self(host, port, reply.get("node_id", "")):
+            with self._peers_lock:
+                self.peers.pop(f"{host}:{port}", None)
+            return False
+        peer = self._register_peer(host, port, reply)
+        peer.latency_ms = (time.perf_counter() - start) * 1000
+        self._learn_peers(reply.get("peers", []))
+        if peer.work > self._local_work():
+            self.sync_with(peer.address)
+        return True
+
+    # ── Sincronización ────────────────────────────────────────────────────────
+
+    def request_chain_sync(self, peer_address: str) -> Optional[List[dict]]:
+        """Pide la cadena completa (``GET_CHAIN``) a ``"host:port"``. None si falla."""
+        try:
+            host, port = peer_address.rsplit(":", 1)
+            response = self._request(host, int(port), {"type": MSG_GET_CHAIN, "node_id": self.node_id})
+            if response.get("type") == MSG_CHAIN:
+                return response.get("data", [])
+            logger.debug(f"request_chain_sync: respuesta inesperada de {peer_address}: {response.get('type')}")
+        except Exception as e:
+            logger.warning(f"request_chain_sync falló para {peer_address}: {e}")
+        return None
+
+    def sync_with(self, peer_address: str) -> bool:
+        """Descarga la cadena del par y llama ``replace_chain`` (que decide por trabajo)."""
+        if self.blockchain is None:
+            return False
+        with self._sync_lock:
+            chain = self.request_chain_sync(peer_address)
+            if not chain:
+                return False
+            ok, reason = self.blockchain.replace_chain(chain)
+        if ok:
+            logger.info(f"Sincronizado con {peer_address}: altura {self.blockchain.height}")
+        else:
+            logger.debug(f"Cadena de {peer_address} no adoptada: {reason}")
+        return ok
+
+    def sync_with_peers(self) -> int:
+        """Sincroniza con todos los pares activos; devuelve cuántas veces se adoptó cadena."""
+        with self._peers_lock:
+            active = [p.address for p in self.peers.values() if p.is_active]
+        return sum(1 for address in active if self.sync_with(address))
+
+    def _check_status(self, peer: Peer) -> None:
+        """Consulta periódica (SYNC_REQUEST): latencia, altura y trabajo del par."""
+        try:
+            start = time.perf_counter()
+            reply = self._request(peer.host, peer.port, {"type": MSG_SYNC_REQUEST})
+        except Exception:
+            self._mark_failed(peer)
+            return
+        if reply.get("type") != MSG_SYNC_RESPONSE or reply.get("genesis_hash") != self.genesis_hash:
+            self._mark_failed(peer)
+            return
+        self._register_peer(peer.host, peer.port, reply)
+        peer.latency_ms = (time.perf_counter() - start) * 1000
+        if peer.work > self._local_work():
+            self.sync_with(peer.address)
+
+    def _maintenance_loop(self) -> None:
+        """Reconecta pares caídos (con backoff) y consulta el estado de los activos."""
+        tick = max(0.05, min(0.5, self.retry_base, self.sync_interval))
+        while not self._stop_event.is_set():
+            now = time.time()
+            with self._peers_lock:
+                peers = list(self.peers.values())
+            for peer in peers:
+                if self._stop_event.is_set():
+                    break
+                if not peer.is_active and now >= peer.next_retry:
+                    self.connect_to_peer(peer.host, peer.port)
+                elif peer.is_active and now >= peer.next_status:
+                    self._check_status(peer)
+            self._stop_event.wait(tick)
+
+    @staticmethod
+    def _spawn(target, *args) -> None:
+        threading.Thread(target=target, args=args, daemon=True).start()
 
     # ── Envío de mensajes ─────────────────────────────────────────────────────
 
@@ -277,142 +584,64 @@ class P2PNode:
         """Alias de _send_framed para compatibilidad con código existente."""
         self._send_framed(conn, message)
 
+    def _new_message(self, msg_type: str, data: dict) -> dict:
+        msg = {"type": msg_type, "data": data, "id": str(uuid.uuid4())}
+        self._mark_seen(msg["id"])   # no re-procesar nuestro propio mensaje
+        return msg
+
     def broadcast_block(self, block_dict: dict) -> int:
-        msg = {"type": MSG_BLOCK, "data": block_dict, "id": str(uuid.uuid4())}
-        return self._broadcast(msg)
+        return self._broadcast(self._new_message(MSG_BLOCK, block_dict))
 
     def broadcast_transaction(self, tx_dict: dict) -> int:
-        msg = {"type": MSG_TRANSACTION, "data": tx_dict, "id": str(uuid.uuid4())}
-        return self._broadcast(msg)
+        return self._broadcast(self._new_message(MSG_TRANSACTION, tx_dict))
 
     def broadcast_pbft(self, pbft_dict: dict) -> int:
-        msg = {"type": MSG_PBFT, "data": pbft_dict, "id": str(uuid.uuid4())}
-        return self._broadcast(msg)
-
-    def connect_to_peer(self, host: str, port: int) -> bool:
-        try:
-            conn = socket.create_connection((host, port), timeout=5)
-            handshake = {
-                "type": MSG_HANDSHAKE,
-                "node_id": self.node_id,
-                "host": self.advertise_host,
-                "port": self.port,
-            }
-            self._send_framed(conn, handshake)
-            conn.close()
-            peer = Peer(host=host, port=port)
-            self.peers[peer.address] = peer
-            logger.info(f"Conectado a {host}:{port}")
-            return True
-        except Exception as e:
-            logger.warning(f"No se pudo conectar a {host}:{port}: {e}")
-            return False
+        return self._broadcast(self._new_message(MSG_PBFT, pbft_dict))
 
     def _broadcast(self, message: dict) -> int:
+        # `origin`: a quién pedir la cadena si el bloque no extiende la punta del receptor.
+        message = {**message, "origin": {"host": self.advertise_host, "port": self.port}}
         sent = 0
-        for peer in list(self.peers.values()):
-            if not peer.is_active:
-                continue
+        with self._peers_lock:
+            active = [p for p in self.peers.values() if p.is_active]
+        for peer in active:
             try:
-                conn = socket.create_connection((peer.host, peer.port), timeout=3)
-                self._send_framed(conn, message)
-                conn.close()
+                self._request(peer.host, peer.port, message, expect_reply=False)
                 sent += 1
             except Exception:
-                peer.is_active = False
+                self._mark_failed(peer)
         return sent
 
     def broadcast_to_subset(self, message: dict, max_peers: int = 3) -> int:
         """
         Envía *message* únicamente a los *max_peers* peers con menor latencia.
-        Reduce la carga en redes grandes respecto a ``_broadcast``.
         Retorna el número de peers a los que se envió exitosamente.
         """
-        active = sorted(
-            [p for p in self.peers.values() if p.is_active],
-            key=lambda p: p.latency_ms if p.latency_ms > 0 else float("inf"),
-        )
+        with self._peers_lock:
+            active = sorted(
+                [p for p in self.peers.values() if p.is_active],
+                key=lambda p: p.latency_ms if p.latency_ms > 0 else float("inf"),
+            )
         sent = 0
         for peer in active[:max_peers]:
             try:
-                conn = socket.create_connection((peer.host, peer.port), timeout=3)
-                self._send_framed(conn, message)
-                conn.close()
+                self._request(peer.host, peer.port, message, expect_reply=False)
                 sent += 1
             except Exception as e:
                 logger.debug(f"broadcast_to_subset: error con {peer.address}: {e}")
-                peer.is_active = False
+                self._mark_failed(peer)
         return sent
 
-    def request_chain_sync(self, peer_address: str) -> Optional[List[dict]]:
-        """
-        Solicita la cadena completa al peer indicado en formato ``"host:port"``.
-        Envía ``MSG_GET_CHAIN`` y espera una respuesta ``MSG_CHAIN`` con la lista
-        de bloques serializada.
-
-        Timeout: 30 segundos.
-        Retorna lista de dicts de bloques, o ``None`` si la operación falla.
-        """
-        try:
-            parts = peer_address.rsplit(":", 1)
-            if len(parts) != 2:
-                raise ValueError(f"Dirección inválida: {peer_address!r}")
-            host = parts[0]
-            port = int(parts[1])
-            conn = socket.create_connection((host, port), timeout=30)
-            conn.settimeout(30)
-            self._send_framed(conn, {"type": MSG_GET_CHAIN, "node_id": self.node_id})
-            response = self._recv_framed(conn)
-            conn.close()
-            if response.get("type") == MSG_CHAIN:
-                return response.get("data", [])
-            logger.debug(
-                f"request_chain_sync: respuesta inesperada de {peer_address}: "
-                f"{response.get('type')}"
-            )
-            return None
-        except Exception as e:
-            logger.warning(f"request_chain_sync falló para {peer_address}: {e}")
-            return None
-
     def _gossip(self, message: dict) -> None:
-        """Re-propaga mensajes a pares distintos al origen."""
+        """Re-propaga un mensaje aceptado (mismo id: los pares lo deduplican)."""
         self._broadcast(message)
-
-    # ── Heartbeat ─────────────────────────────────────────────────────────────
-
-    def _heartbeat_loop(self) -> None:
-        """
-        Envía PING a cada peer cada 30 s.
-        Un peer se marca inactivo solo tras ``_FAILED_PING_THRESHOLD`` pings
-        consecutivos fallidos (no en el primero), reduciendo falsos negativos
-        por fluctuaciones breves de red.
-        """
-        while self._running:
-            time.sleep(30)
-            for peer in list(self.peers.values()):
-                try:
-                    start = time.perf_counter()
-                    conn = socket.create_connection((peer.host, peer.port), timeout=3)
-                    self._send_framed(conn, {"type": MSG_PING})
-                    conn.close()
-                    peer.latency_ms = (time.perf_counter() - start) * 1000
-                    peer.last_seen = time.time()
-                    peer.is_active = True
-                    peer.failed_pings = 0
-                except Exception:
-                    peer.failed_pings += 1
-                    if peer.failed_pings >= self._FAILED_PING_THRESHOLD:
-                        peer.is_active = False
-                        logger.warning(
-                            f"Peer {peer.address} marcado inactivo tras "
-                            f"{peer.failed_pings} pings fallidos consecutivos"
-                        )
 
     # ── Estadísticas ──────────────────────────────────────────────────────────
 
     def get_network_stats(self) -> dict:
-        active = [p for p in self.peers.values() if p.is_active]
+        with self._peers_lock:
+            peers = list(self.peers.values())
+        active = [p for p in peers if p.is_active]
         latencies = [p.latency_ms for p in active if p.latency_ms > 0]
         with self._stats_lock:
             msgs_sent     = self._messages_sent
@@ -421,9 +650,10 @@ class P2PNode:
             bytes_received = self._bytes_received
         return {
             "node_id":          self.node_id,
-            "address":          f"{self.host}:{self.port}",
-            "total_peers":      len(self.peers),
+            "address":          f"{self.advertise_host}:{self.port}",
+            "total_peers":      len(peers),
             "active_peers":     len(active),
+            "peers":            [p.to_dict() for p in peers],
             "avg_latency_ms":   sum(latencies) / len(latencies) if latencies else 0,
             "uptime_seconds":   time.time() - self._start_time,
             "messages_sent":    msgs_sent,

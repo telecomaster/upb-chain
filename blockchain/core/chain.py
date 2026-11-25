@@ -17,9 +17,10 @@ Propiedades de seguridad:
     porque cada hash incluye el hash anterior (efecto avalancha en la cadena).
 
 Manejo de forks (fork resolution):
-    Regla de la cadena más larga: ante dos cadenas válidas, se acepta la
-    de mayor altura (mayor trabajo acumulado). Es la regla de Nakamoto.
-    Ref: Nakamoto (2008), Sección 5 — Longest chain rule.
+    Regla del mayor trabajo acumulado: ante dos cadenas válidas con el mismo
+    génesis se acepta la de mayor Σ 16**dificultad (no la más larga); en
+    empate se conserva la propia. Es la regla de Nakamoto.
+    Ref: Nakamoto (2008), Sección 5.
 
 Complejidades:
     add_transaction()  → O(m) donde m = tamaño del mempool (búsqueda de duplicados)
@@ -38,7 +39,7 @@ import os
 import time
 from pathlib import Path
 from threading import Lock
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from blockchain.core.block import GENESIS_HASH, Block, BlockHeader
 from blockchain.core.transaction import Transaction, TransactionType
@@ -78,6 +79,8 @@ class Blockchain:
         self._lock = Lock()
         # Estados derivados de la cadena (P0-6), p. ej. el contrato de credenciales.
         self._state_listeners: List = []
+        # Avisos de reorganización para red/log (P0-5): ver add_reorg_listener().
+        self.on_chain_reorg: List[Callable[[int, List[Block], List[Block]], None]] = []
 
         self._load_or_init()
 
@@ -156,18 +159,19 @@ class Blockchain:
         valid, reason = tx.is_valid()
         if not valid:
             return False, reason
-        if tx.tx_id in self._confirmed_ids:
-            return False, "Transacción ya confirmada en la cadena"
-        if any(t.tx_id == tx.tx_id for t in self.mempool):
-            return False, "Transacción duplicada"
-        if self._state_listeners:
-            tx_dict = tx.to_dict()
-            pending = [t.to_dict() for t in self.mempool]
-            for listener in self._state_listeners:
-                valid, reason = listener.check_transaction(tx_dict, pending)
-                if not valid:
-                    return False, reason
+        # Todo bajo el lock: la red (P0-5) admite TXs desde otros hilos.
         with self._lock:
+            if tx.tx_id in self._confirmed_ids:
+                return False, "Transacción ya confirmada en la cadena"
+            if any(t.tx_id == tx.tx_id for t in self.mempool):
+                return False, "Transacción duplicada"
+            if self._state_listeners:
+                tx_dict = tx.to_dict()
+                pending = [t.to_dict() for t in self.mempool]
+                for listener in self._state_listeners:
+                    valid, reason = listener.check_transaction(tx_dict, pending)
+                    if not valid:
+                        return False, reason
             self.mempool.append(tx)
         logger.debug(f"TX {tx.tx_id[:8]}… añadida al mempool")
         return True, "OK"
@@ -407,21 +411,105 @@ class Blockchain:
         """Dificultad esperada del PRÓXIMO bloque (la que debe usar el minado)."""
         return self.expected_difficulty(self.chain)
 
-    # ── Reemplazo de cadena (fork resolution) ────────────────────────────────
+    # ── Reemplazo de cadena (fork resolution, P0-5) ──────────────────────────
+
+    @staticmethod
+    def block_work(block: Block) -> int:
+        """Trabajo esperado para minar `block`: 16**dificultad intentos (entero)."""
+        return 16 ** block.header.difficulty
+
+    @classmethod
+    def cumulative_work(cls, chain: List[Block]) -> int:
+        """Trabajo acumulado de una cadena = Σ 16**dificultad (determinista, sin floats)."""
+        return sum(cls.block_work(b) for b in chain)
+
+    @property
+    def total_work(self) -> int:
+        return self.cumulative_work(self.chain)
+
+    def add_reorg_listener(self, callback: Callable[[int, List[Block], List[Block]], None]) -> None:
+        """Suscribe `callback(fork_height, dropped, added)` a los reemplazos de cadena.
+
+        Se invoca DESPUÉS de cada `replace_chain` exitoso, fuera del lock, con:
+          - fork_height: altura del último bloque común (0 = sólo el génesis).
+          - dropped: bloques nuestros que salieron de la cadena (puede estar vacío
+            si la cadena nueva sólo extendía la nuestra).
+          - added: bloques nuevos que entraron (de fork_height+1 a la punta).
+        Al invocarse, `self.chain` ya es la cadena nueva y los estados derivados
+        (``register_state_listener``, P0-6) ya se reconstruyeron: este aviso es
+        para la red, métricas o logs, no para mantener estado de contratos.
+        Las excepciones del callback se registran en el log y no deshacen el reemplazo.
+        """
+        self.on_chain_reorg.append(callback)
 
     def replace_chain(self, new_chain: List[dict]) -> Tuple[bool, str]:
-        candidate = [Block.from_dict(b) for b in new_chain]
-        if len(candidate) <= len(self.chain):
-            return False, "Cadena recibida no es más larga"
-        # TODO(P0-5): rehacer replace_chain (trabajo acumulado, TXs huérfanas).
+        """Adopta `new_chain` si es válida y tiene MÁS trabajo acumulado (P0-5).
+
+        Reglas:
+          1. Mismo génesis y validez de consenso completa (`_validate_blocks`).
+          2. Trabajo acumulado estrictamente mayor que el nuestro (no basta con
+             ser más larga). Empate: nos quedamos con la nuestra (determinista).
+          3. TXs de nuestros bloques descartados que no están en la cadena nueva
+             vuelven al mempool si siguen siendo admisibles (``add_transaction``);
+             las TXs del mempool ya confirmadas en la cadena nueva se retiran.
+          4. Se persiste, se reconstruyen los estados derivados (``rebuild``,
+             P0-6) y luego se notifica a ``on_chain_reorg``.
+        """
+        try:
+            candidate = [Block.from_dict(b) for b in new_chain]
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
+            return False, f"Cadena recibida malformada: {e}"
+        # Validación costosa fuera del lock: una cadena válida lo sigue siendo.
         valid, reason = self._validate_blocks(candidate)
         if not valid:
             return False, f"Cadena recibida inválida: {reason}"
+        new_work = self.cumulative_work(candidate)
+
         with self._lock:
+            our_work = self.cumulative_work(self.chain)
+            if new_work <= our_work:
+                return False, (
+                    f"Cadena recibida sin más trabajo acumulado ({new_work} <= {our_work})"
+                )
+            # Último bloque común (el génesis siempre coincide).
+            fork = 0
+            limit = min(len(self.chain), len(candidate))
+            while fork + 1 < limit and self.chain[fork + 1].hash == candidate[fork + 1].hash:
+                fork += 1
+            dropped = self.chain[fork + 1:]
+            added = candidate[fork + 1:]
+            new_ids = self._collect_ids(candidate)
+
+            # Candidatas al mempool: TXs huérfanas (en orden de cadena) y luego
+            # las pendientes, salvo las ya confirmadas en la cadena nueva.
+            readmit: List[Transaction] = []
+            for block in dropped:
+                for raw in block.transactions:
+                    if raw.get("tx_id") in new_ids:
+                        continue
+                    try:
+                        readmit.append(Transaction.from_dict(raw))
+                    except (KeyError, ValueError, TypeError, AttributeError):
+                        continue
+            readmit.extend(t for t in self.mempool if t.tx_id not in new_ids)
+
             self.chain = candidate
-            self._confirmed_ids = self._collect_ids(candidate)
+            self._confirmed_ids = new_ids
+            self.mempool = []
             for listener in self._state_listeners:
                 listener.rebuild(self.chain)
             self._save_to_disk()
-        logger.info(f"Cadena reemplazada: ahora altura {self.height}")
+        # Re-admisión por la puerta normal (fuera del lock): expiración, duplicados
+        # y check_transaction de los estados derivados ya reconstruidos (P0-6).
+        for tx in readmit:
+            self.add_transaction(tx)
+        logger.info(
+            f"Cadena reemplazada: altura {self.height}, bifurcación en {fork}, "
+            f"{len(dropped)} bloque(s) descartado(s), {len(added)} nuevo(s)"
+        )
+        for callback in list(self.on_chain_reorg):
+            try:
+                callback(fork, dropped, added)
+            except Exception:
+                logger.exception("Error en un listener de on_chain_reorg")
         return True, "OK"
