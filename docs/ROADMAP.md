@@ -71,7 +71,7 @@ Flujos de trabajo y orden de dependencias:
   `LOG_LEVEL` se ignoran. Un worker por nodo, `load_dotenv`, cablear las variables, agregar
   `NODE_ADVERTISE_HOST`. *Listo cuando:* dos nodos locales usan directorios separados y un reinicio
   conserva la cadena.
-- [ ] **P0-8 Test de integración multinodo.** 2 (idealmente 4) nodos en puertos locales: minar en A
+- [x] **P0-8 Test de integración multinodo.** 2 (idealmente 4) nodos en puertos locales: minar en A
   y ver en B, partir y reunir la red, emitir en A y verificar en B. *Listo cuando:* corre en la suite y
   falla con el código actual.
 - [ ] **P0-9 Estado de cuentas.** Base para tokens y protección contra replay: saldo y `nonce` por
