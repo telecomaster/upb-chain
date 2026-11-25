@@ -3,6 +3,7 @@ Demo completo de UPB-Chain — ejecución sin servidor, ideal para presentacione
 Muestra el flujo completo: wallet → transacción → minado → verificación → IA → seguridad.
 """
 import sys
+import tempfile
 import time
 import json
 from pathlib import Path
@@ -10,11 +11,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from blockchain.core.chain import Blockchain
-from blockchain.core.transaction import Transaction, TransactionType, create_credential_transaction
+from blockchain.core.transaction import (
+    Transaction,
+    TransactionType,
+    create_credential_transaction,
+    create_issuer_register_transaction,
+    create_vote_transaction,
+)
 from blockchain.core.wallet import Wallet
 from blockchain.consensus.proof_of_work import ProofOfWork, estimate_rpi5_performance
 from blockchain.consensus.pbft import PBFTNode
-from blockchain.contracts.credential import CredentialContract
+from blockchain.contracts.credential import CredentialContract, credential_id_of_tx
 from ai.anomaly.detector import TransactionAnomalyDetector
 from ai.analytics.chain_stats import ChainAnalytics
 from security.crypto_utils import benchmark_crypto, generate_keypair, sign_data, verify_signature
@@ -38,7 +45,12 @@ def demo():
 
     # ── 1. Blockchain ────────────────────────────────────────────
     separator("1. INICIALIZACIÓN DE LA CADENA")
-    chain = Blockchain(node_id="rpi5_node1", data_dir="data/demo_chain")
+    # La llave real de la autoridad UPB no está en el repo: el demo usa una
+    # autoridad propia (solo cambia quién puede registrar emisores, no el génesis)
+    # y una cadena nueva en un directorio temporal en cada ejecución.
+    authority_wallet = Wallet.generate()
+    chain = Blockchain(node_id="rpi5_node1", data_dir=tempfile.mkdtemp(prefix="upbchain-demo-"),
+                       authority_address=authority_wallet.address)
     print(f"✓ Génesis creado: hash={chain.last_block.hash[:24]}…")
     print(f"  Altura: {chain.height} | Nodo: {chain.node_id}")
 
@@ -63,8 +75,14 @@ def demo():
 
     # ── 4. Contrato de credenciales ──────────────────────────────
     separator("4. CONTRATO INTELIGENTE — CREDENCIALES ACADÉMICAS")
-    contract = CredentialContract()
-    contract.register_issuer(university_wallet.address, "UPB")
+    # Interfaz única de contratos (P1-13): validate + apply sobre un estado.
+    contract = CredentialContract(authority_wallet.address)
+    state = contract.initial_state()
+    tx_reg = create_issuer_register_transaction(
+        authority_wallet.address, university_wallet.address, "UPB",
+        authority_wallet.private_key_hex, nonce=1)
+    ok, reason, state = contract.execute(state, tx_reg.to_dict())
+    print(f"✓ Emisor registrado por la autoridad: {ok} ({reason})")
 
     credential_data = {
         "student_name": "Ana Lucía Mamani Quispe",
@@ -79,33 +97,30 @@ def demo():
             "honors": True,
         },
     }
-    ok, reason, credential = contract.issue_credential(
-        university_wallet.address, student_wallet.address, credential_data
-    )
-    print(f"✓ Credencial emitida: {credential.credential_id}")
-    print(f"  Estudiante: {credential.student_name}")
-    print(f"  Grado: {credential.degree}")
-    print(f"  Nota: {credential.grade}/100 {'(con honores)' if credential_data['metadata']['honors'] else ''}")
-
-    ok_v, reason_v, _ = contract.verify_credential(credential.credential_id)
-    print(f"✓ Verificación:       {'VÁLIDA ✓' if ok_v else 'INVÁLIDA'} — {reason_v}")
-
-    # ── 5. Transacciones ─────────────────────────────────────────
-    separator("5. TRANSACCIONES EN MEMPOOL")
     tx_cred = create_credential_transaction(
         issuer_address=university_wallet.address,
         student_address=student_wallet.address,
         credential_data=credential_data,
         private_key_hex=university_wallet.private_key_hex,
-        nonce=chain.next_nonce(university_wallet.address),   # P0-9: 1.ª TX del emisor
+        nonce=1,   # P0-9: 1.ª TX del emisor
     )
-    tx_vote = Transaction(
-        type=TransactionType.VOTE,
-        sender=student_wallet.address,
-        recipient="VOTING_CONTRACT",
-        payload={"proposal_id": "prop_001", "vote": True},
-        nonce=chain.next_nonce(student_wallet.address),
-    )
+    ok, reason, state = contract.execute(state, tx_cred.to_dict())
+    credential = state.get(credential_id_of_tx(tx_cred.to_dict()))
+    print(f"✓ Credencial emitida: {credential.credential_id}")
+    print(f"  Estudiante: {credential.student_name}")
+    print(f"  Grado: {credential.degree}")
+    print(f"  Nota: {credential.grade}/100 {'(con honores)' if credential_data['metadata']['honors'] else ''}")
+
+    ok_v, reason_v, _ = state.verify_credential(credential.credential_id)
+    print(f"✓ Verificación:       {'VÁLIDA ✓' if ok_v else 'INVÁLIDA'} — {reason_v}")
+    ok_d, reason_d, _ = contract.execute(state, tx_cred.to_dict())
+    print(f"✓ Emitirla otra vez:  {'aceptada' if ok_d else 'rechazada'} — {reason_d}")
+
+    # ── 5. Transacciones ─────────────────────────────────────────
+    separator("5. TRANSACCIONES EN MEMPOOL")
+    tx_vote = create_vote_transaction(
+        student_wallet.address, "consejo-2025", "lista-A",
+        student_wallet.private_key_hex, nonce=chain.next_nonce(student_wallet.address))
     tx_data = Transaction(
         type=TransactionType.DATA_RECORD,
         sender=university_wallet.address,
@@ -113,11 +128,10 @@ def demo():
         payload={"record": "Acta de grado 2025-11"},
         nonce=2,   # 2.ª TX de la universidad (la credencial usa el nonce 1)
     )
-    tx_vote.sign(student_wallet.private_key_hex)
     tx_data.sign(university_wallet.private_key_hex)
-    for tx in [tx_cred, tx_vote, tx_data]:
-        ok, _ = chain.add_transaction(tx)
-        print(f"✓ TX {tx.type:<22} id={tx.tx_id[:16]}…  {'en mempool' if ok else 'rechazada'}")
+    for tx in [tx_reg, tx_cred, tx_vote, tx_data]:
+        ok, why = chain.add_transaction(tx)
+        print(f"✓ TX {tx.type:<22} id={tx.tx_id[:16]}…  {'en mempool' if ok else 'rechazada: ' + why}")
 
     # ── 6. Proof of Work ─────────────────────────────────────────
     separator("6. MINADO — PROOF OF WORK (dificultad 3)")

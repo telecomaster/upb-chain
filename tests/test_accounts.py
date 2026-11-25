@@ -16,7 +16,8 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from blockchain.core.chain import Blockchain
-from blockchain.core.state import AccountState
+from blockchain.contracts.accounts import AccountContract
+from blockchain.contracts.registry import ContractRegistry
 from blockchain.core.transaction import (
     Transaction,
     TransactionType,
@@ -41,10 +42,9 @@ def nodo(tmp_path, monkeypatch):
     data_dir = str(tmp_path / "nodo")
 
     def reiniciar():
-        bc, contrato = app_mod.build_node_state(data_dir, "nodo_test", autoridad.address,
-                                                initial_difficulty=DIFICULTAD)
+        bc = app_mod.build_node_state(data_dir, "nodo_test", autoridad.address,
+                                      initial_difficulty=DIFICULTAD)
         monkeypatch.setattr(app_mod, "blockchain", bc)
-        monkeypatch.setattr(app_mod, "credential_contract", contrato)
         return bc
 
     monkeypatch.setattr(app_mod, "authority_wallet", autoridad)
@@ -238,7 +238,7 @@ async def test_credenciales_consumen_nonce_del_firmante(client, nodo):
     await _minar(client)
     assert (await _cuenta(client, nodo.autoridad.address))["nonce"] == 2
     assert (await _cuenta(client, emisor.address))["balance"] == 7
-    assert nodo.app.credential_contract.is_registered_issuer(emisor.address)
+    assert nodo.app.blockchain.contract_state("credentials").is_registered_issuer(emisor.address)
 
 
 # ── Consenso: bloques con TXs inválidas para las cuentas ─────────────────────
@@ -350,8 +350,9 @@ def test_estado_de_cuentas_es_determinista():
     b1 = Block(header=h, transactions=txs)
     estados = []
     for _ in range(2):
-        s = AccountState(autoridad.address)
-        s.rebuild([g, b1])
+        registro = ContractRegistry([AccountContract(autoridad.address)])
+        registro.rebuild([g, b1])
+        s = registro.state("accounts")
         estados.append((s.balances, s.nonces, s.total_supply, s.burned_fees))
     assert estados[0] == estados[1]
     assert estados[0][0] == {ana.address: 3, autoridad.address: 4}

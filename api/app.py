@@ -13,7 +13,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,7 +36,7 @@ from blockchain.core.transaction import (
 from blockchain.core.wallet import Wallet, derive_address, public_key_from_private
 from blockchain.consensus.proof_of_work import ProofOfWork
 from blockchain.consensus.pbft import PBFTNode
-from blockchain.contracts.credential import CredentialContract
+from blockchain.contracts.credential import CredentialState, credential_id_of_tx
 from blockchain.network.node import P2PNode
 from ai.anomaly.detector import TransactionAnomalyDetector, BlockAnomalyDetector
 from ai.analytics.chain_stats import ChainAnalytics
@@ -60,20 +60,17 @@ API_PORT   = settings.api_port
 PEERS      = settings.peers
 
 def build_node_state(data_dir: str, node_id: str, authority_address: Optional[str] = None,
-                     initial_difficulty: int = 4) -> Tuple[Blockchain, CredentialContract]:
-    """Carga la cadena y deriva de ella el estado del contrato de credenciales (P0-6).
+                     initial_difficulty: int = 4) -> Blockchain:
+    """Carga la cadena con sus contratos (P1-13): cuentas, credenciales y votación.
 
-    El contrato se registra como observador de la cadena: se reproduce ahora
-    (arranque) y luego en cada bloque nuevo o reemplazo de cadena. El estado de
-    cuentas (P0-9) lo posee la propia cadena (``chain.accounts``) y usa la misma
-    autoridad (la única que puede firmar TOKEN_MINT).
+    El estado de cada contrato se deriva reproduciendo la cadena al arrancar y
+    se actualiza con cada bloque o reemplazo de cadena; la API lo lee con
+    ``blockchain.contract_state(nombre)``. ``authority_address`` (por defecto la
+    del génesis) es la única que firma TOKEN_MINT e ISSUER_REGISTER.
     """
-    chain = Blockchain(node_id=node_id, data_dir=data_dir,
-                       initial_difficulty=initial_difficulty,
-                       authority_address=authority_address)
-    contract = CredentialContract(authority_address=authority_address)
-    chain.register_state_listener(contract)
-    return chain, contract
+    return Blockchain(node_id=node_id, data_dir=data_dir,
+                      initial_difficulty=initial_difficulty,
+                      authority_address=authority_address)
 
 
 def load_authority_wallet(path: str, expected_address: str) -> Optional[Wallet]:
@@ -98,10 +95,10 @@ def load_authority_wallet(path: str, expected_address: str) -> Optional[Wallet]:
                   address=address)
 
 
-blockchain, credential_contract = build_node_state(
+blockchain = build_node_state(
     settings.data_dir, NODE_ID, initial_difficulty=settings.mining_difficulty)
-authority_wallet = load_authority_wallet(settings.authority_key_file,
-                                         credential_contract.authority_address)
+authority_wallet = load_authority_wallet(
+    settings.authority_key_file, blockchain.contracts.contract("accounts").authority_address)
 # La dificultad NO vive aquí: la dicta Blockchain._calculate_difficulty() (P0-4).
 pow_engine      = ProofOfWork()
 mining_lock     = asyncio.Lock()        # un solo minado a la vez (409 si ya hay uno)
@@ -547,6 +544,11 @@ async def transfer_tokens(request: TransferRequest):
 
 # ── Endpoints: credenciales ───────────────────────────────────────────────────
 
+def _credentials() -> CredentialState:
+    """Estado confirmado del contrato de credenciales (P0-6, P1-13)."""
+    return blockchain.contract_state("credentials")
+
+
 def _submit_contract_tx(tx: Transaction) -> None:
     """Admite una TX al mempool (límite por emisor, firma, cuentas y reglas del contrato) o lanza 400/429."""
     _enforce_tx_rate_limit(tx.sender)
@@ -600,7 +602,7 @@ async def issue_credential(request: CredentialRequest):
     _submit_contract_tx(tx)
 
     data = request.credential_data
-    credential_id = credential_contract.credential_id_of_tx(tx.to_dict())
+    credential_id = credential_id_of_tx(tx.to_dict())
     return {
         "credential_id": credential_id,
         "tx_id": tx.tx_id,
@@ -639,16 +641,16 @@ async def revoke_credential(request: RevokeRequest):
 async def verify_credential(credential_id: str):
     """Estado de la credencial: PENDING, CONFIRMED (con bloque y confirmaciones),
     REVOKED, EXPIRED o NOT_FOUND. ``valid`` es true solo si está CONFIRMED."""
-    pending = [t.to_dict() for t in blockchain.mempool]
-    return credential_contract.credential_status(credential_id, pending=pending)
+    return _credentials().credential_status(credential_id, blockchain.height,
+                                            pending=blockchain.pending_dicts())
 
 
 # ── Verificación pública por QR (P1-3) ────────────────────────────────────────
 
 def _estado_publico(credential_id: str) -> dict:
     """Misma lógica de estado que ``/credentials/verify/{id}`` (sin duplicarla)."""
-    pending = [t.to_dict() for t in blockchain.mempool]
-    return credential_contract.credential_status(credential_id, pending=pending)
+    return _credentials().credential_status(credential_id, blockchain.height,
+                                            pending=blockchain.pending_dicts())
 
 
 def _url_verificacion(request: Request, credential_id: str) -> str:
@@ -708,17 +710,17 @@ async def verify_page(credential_id: str):
 @app.get("/credentials/issuer/{address}")
 async def get_issuer_credentials(address: str):
     """Credenciales de un emisor (confirmadas y pendientes), solo resumen público."""
-    pending = [t.to_dict() for t in blockchain.mempool]
-    ids = credential_contract.issuer_credential_ids(address, pending=pending)
-    items = [credential_contract.credential_summary(i, pending=pending) for i in ids]
+    pending, state = blockchain.pending_dicts(), _credentials()
+    ids = state.issuer_credential_ids(address, pending=pending)
+    items = [state.credential_summary(i, blockchain.height, pending=pending) for i in ids]
     return {"issuer_address": address, "count": len(items), "credentials": items}
 
 
 @app.get("/credentials/{credential_id}/history")
 async def credential_history(credential_id: str):
     """Historial: emitida en el bloque X, revocada en el bloque Y (derivado del contrato)."""
-    pending = [t.to_dict() for t in blockchain.mempool]
-    r = credential_contract.credential_summary(credential_id, pending=pending)
+    r = _credentials().credential_summary(credential_id, blockchain.height,
+                                          pending=blockchain.pending_dicts())
     if r["status"] == "NOT_FOUND":
         raise HTTPException(404, "Credencial no encontrada")
     if r["block_index"] is not None:
@@ -735,7 +737,7 @@ async def credential_history(credential_id: str):
 
 @app.get("/credentials/student/{address}")
 async def get_student_credentials(address: str):
-    return {"credentials": credential_contract.get_student_credentials(address)}
+    return {"credentials": _credentials().get_student_credentials(address)}
 
 
 @app.get("/credentials/search")
@@ -747,7 +749,7 @@ async def search_credentials(q: str):
     """
     if not q or not q.strip():
         raise HTTPException(400, "El parámetro 'q' no puede estar vacío")
-    results = credential_contract.search_credentials(q)
+    results = _credentials().search_credentials(q)
     return {"query": q, "count": len(results), "credentials": results}
 
 
@@ -759,11 +761,53 @@ async def get_all_credentials(status: Optional[str] = None):
         status: Filtro opcional de estado — ACTIVE | REVOKED | EXPIRED.
                 Si se omite, retorna todas las credenciales.
     """
-    credentials = credential_contract.get_all_credentials(status_filter=status)
+    credentials = _credentials().get_all_credentials(status_filter=status)
     return {
         "count": len(credentials),
         "status_filter": status,
         "credentials": credentials,
+    }
+
+
+# ── Endpoints: contratos (P1-13) ─────────────────────────────────────────────
+
+@app.get("/contracts")
+async def list_contracts():
+    """Contratos que corre este nodo, en orden, con los tipos de TX que manejan."""
+    registry = blockchain.contracts
+    return {
+        "height": registry.height,
+        "contracts": [
+            {"name": name,
+             "handled_types": (None if registry.contract(name).HANDLED_TYPES is None
+                               else sorted(registry.contract(name).HANDLED_TYPES))}
+            for name in registry.names
+        ],
+    }
+
+
+@app.get("/contracts/voting/{election_id}")
+async def get_election(election_id: str):
+    """Recuento de una elección del contrato de votación (votos confirmados).
+
+    Para votar: ``POST /transactions`` con ``type=VOTE`` y payload
+    ``{"election_id": ..., "choice": ...}``; un segundo voto de la misma
+    dirección en la misma elección responde 400.
+    """
+    state = blockchain.contract_state("voting")
+    votes = state.elections.get(election_id, {})
+    pending = sum(1 for tx in blockchain.pending_dicts()
+                  if tx.get("type") == TransactionType.VOTE.value
+                  and (tx.get("payload") or {}).get("election_id") == election_id)
+    if not votes and not pending:
+        raise HTTPException(404, "Elección sin votos")
+    return {
+        "election_id": election_id,
+        "total_votes": len(votes),
+        "tally": state.tally(election_id),
+        "voters": list(votes),
+        "pending_votes": pending,
+        "height": blockchain.contracts.height,
     }
 
 

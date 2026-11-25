@@ -1,0 +1,159 @@
+"""
+Registro de contratos (P1-13): enruta cada TX a los contratos que la manejan
+y guarda el estado CONFIRMADO de cada uno.
+
+La cadena (``Blockchain``) lo usa en cuatro momentos:
+
+    validar un bloque     ``check_block(block)``  → (ok, motivo, estados_nuevos)
+                          sin tocar el estado confirmado; si el bloque entra,
+                          ``commit(estados_nuevos, altura)``.
+    cargar / reorg        ``replay(chain)`` reproduce la cadena desde el estado
+                          inicial (valida cada bloque) y ``commit`` adopta el resultado.
+    admitir al mempool    ``check_transaction(tx, pendientes)`` sobre el estado
+                          especulativo = confirmado + pendientes.
+    armar un bloque       ``filter_valid(txs)``: las pendientes que siguen
+                          siendo válidas una tras otra.
+
+Una TX puede interesar a varios contratos (las cuentas cobran nonce y fee a
+TODA TX). Para cada TX se validan primero todos los contratos interesados y
+solo si todos aceptan se aplican: una TX es atómica.
+
+Copia al escribir: antes de que un contrato aplique su primera TX en un
+bloque se copia (``deepcopy``) su estado; los contratos que el bloque no toca
+no se copian. Así el estado confirmado nunca se modifica a medias.
+"""
+import copy
+from typing import Any, Dict, Iterable, List, Set, Tuple
+
+from blockchain.contracts.base import MEMPOOL, Contract, TxContext
+
+States = Dict[str, Any]
+
+
+class ContractRegistry:
+    """Conjunto ordenado de contratos + su estado confirmado."""
+
+    def __init__(self, contracts: Iterable[Contract]) -> None:
+        self._contracts: Dict[str, Contract] = {}
+        for contract in contracts:
+            if not contract.NAME:
+                raise ValueError(f"{type(contract).__name__} no define NAME")
+            if contract.NAME in self._contracts:
+                raise ValueError(f"Contrato duplicado: {contract.NAME}")
+            self._contracts[contract.NAME] = contract
+        self._states: States = self.initial_states()
+        self.height = -1     # altura del último bloque reflejado en el estado
+
+    # ── Consultas ─────────────────────────────────────────────────────────────
+
+    @property
+    def names(self) -> List[str]:
+        return list(self._contracts)
+
+    def contract(self, name: str) -> Contract:
+        return self._contracts[name]
+
+    def state(self, name: str) -> Any:
+        """Estado confirmado del contrato ``name`` (solo lectura para la API).
+
+        Cada bloque aceptado reemplaza el objeto (no lo modifica), así que
+        quien lo leyó sigue viendo una foto coherente.
+        """
+        return self._states[name]
+
+    def handlers(self, tx: dict) -> List[Contract]:
+        """Contratos interesados en ``tx``, en orden de registro."""
+        return [c for c in self._contracts.values() if c.handles(tx)]
+
+    def initial_states(self) -> States:
+        return {name: c.initial_state() for name, c in self._contracts.items()}
+
+    # ── Núcleo: una TX sobre una copia de trabajo ─────────────────────────────
+
+    def _try_tx(self, working: States, copied: Set[str], tx: dict,
+                ctx: TxContext) -> Tuple[bool, str]:
+        """Valida ``tx`` en todos sus contratos y, si todos aceptan, la aplica.
+
+        ``working`` es la copia de trabajo (se modifica); ``copied`` son los
+        contratos cuyo estado ya se copió en esta copia de trabajo.
+        """
+        handlers = self.handlers(tx)
+        for contract in handlers:
+            ok, reason = contract.validate(working[contract.NAME], tx, ctx)
+            if not ok:
+                return False, f"{contract.NAME}: {reason}"
+        for contract in handlers:
+            name = contract.NAME
+            if name not in copied:
+                working[name] = copy.deepcopy(working[name])
+                copied.add(name)
+            working[name] = contract.apply(working[name], tx, ctx)
+        return True, "OK"
+
+    def run_block(self, states: States, block) -> Tuple[bool, str, States]:
+        """Aplica en orden las TXs de ``block`` sobre ``states`` (que no se modifica).
+
+        Devuelve ``(ok, motivo, estados_nuevos)``. Una TX inválida para
+        cualquier contrato invalida el bloque entero (regla de consenso).
+        """
+        working, copied = dict(states), set()
+        ctx = TxContext.of_block(block)
+        for tx in block.transactions:
+            ok, reason = self._try_tx(working, copied, tx, ctx)
+            if not ok:
+                return False, f"TX {str(tx.get('tx_id'))[:8]}… inválida para {reason}", states
+        return True, "OK", working
+
+    # ── Uso desde la cadena ───────────────────────────────────────────────────
+
+    def check_block(self, block) -> Tuple[bool, str, States]:
+        """``run_block`` sobre el estado confirmado (no lo modifica)."""
+        return self.run_block(self._states, block)
+
+    def commit(self, states: States, height: int) -> None:
+        """Adopta ``states`` (resultado de ``check_block`` o ``replay``) como confirmado."""
+        self._states = states
+        self.height = height
+
+    def replay(self, chain: List) -> Tuple[bool, str, States]:
+        """Reproduce ``chain`` desde el estado inicial (el génesis no lleva TXs de estado)."""
+        states = self.initial_states()
+        for block in chain[1:]:
+            ok, reason, states = self.run_block(states, block)
+            if not ok:
+                return False, f"Bloque {block.header.index}: {reason}", states
+        return True, "OK", states
+
+    def rebuild(self, chain: List) -> None:
+        """Reproduce y adopta ``chain`` (debe ser válida: lo es si la cadena la aceptó)."""
+        ok, reason, states = self.replay(chain)
+        if not ok:
+            raise ValueError(f"La cadena no es válida para los contratos: {reason}")
+        self.commit(states, len(chain) - 1)
+
+    def check_transaction(self, tx: dict, pending: Iterable[dict] = ()) -> Tuple[bool, str]:
+        """¿Sería válida ``tx`` minada después de las pendientes? (admisión al mempool)
+
+        Mismo ``validate`` que en un bloque, contra el estado especulativo.
+        Las pendientes que ya no son válidas se saltan (el minero tampoco las
+        incluiría). El estado confirmado no cambia. El motivo es el del contrato,
+        sin prefijo, para que la API lo muestre tal cual.
+        """
+        working, copied = dict(self._states), set()
+        for p in pending:
+            self._try_tx(working, copied, p, MEMPOOL)
+        for contract in self.handlers(tx):
+            ok, reason = contract.validate(working[contract.NAME], tx, MEMPOOL)
+            if not ok:
+                return False, reason
+        return True, "OK"
+
+    def filter_valid(self, txs: Iterable[dict]) -> List[dict]:
+        """Las TXs de ``txs`` que, aplicadas en orden, serían válidas (sin mutar).
+
+        Política local del minero/mempool (no consenso): no armar un bloque que
+        la red rechazaría por una TX que caducó (nonce usado, credencial ya
+        emitida en otro bloque, voto ya contado, …).
+        """
+        working, copied = dict(self._states), set()
+        return [tx for tx in txs if self._try_tx(working, copied, tx, MEMPOOL)[0]]

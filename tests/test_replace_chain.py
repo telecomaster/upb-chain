@@ -4,9 +4,9 @@ import time
 import pytest
 
 from blockchain.consensus.proof_of_work import ProofOfWork
+from blockchain.contracts.base import Contract
 from blockchain.core.block import Block
 from blockchain.core.chain import Blockchain
-from blockchain.core.state import ReplayState
 from blockchain.core.transaction import Transaction, TransactionType
 from blockchain.core.wallet import Wallet
 from tests.helpers import mine_and_add, mine_candidate
@@ -163,43 +163,50 @@ def test_listener_que_falla_no_deshace_el_reemplazo(tmp_path):
     assert ok and b.height == 1
 
 
-class _EstadoDePrueba(ReplayState):
-    """Estado derivado mínimo (P0-6): cuenta reconstrucciones y veta payload {"n": 99}."""
+class _RegistroUnico(Contract):
+    """Contrato mínimo de prueba (P1-13): cada valor ``n`` de un DATA_RECORD se
+    registra una sola vez. Cuenta cuántas veces se crea el estado inicial."""
+    NAME = "registro_unico"
     HANDLED_TYPES = frozenset({TransactionType.DATA_RECORD.value})
 
-    def reset(self):
-        self.aplicadas = []
-        self.rebuilds = getattr(self, "rebuilds", 0) + 1
+    def __init__(self):
+        self.estados_iniciales = 0
 
-    def validate_tx(self, tx):
-        if tx.get("payload", {}).get("n") == 99:
-            return False, "vetada por el estado"
+    def initial_state(self):
+        self.estados_iniciales += 1
+        return {}
+
+    def validate(self, state, tx, ctx):
+        if tx["payload"].get("n") in state:
+            return False, "n ya registrado"
         return True, "OK"
 
-    def _apply_valid_tx(self, tx, block_index, block_timestamp):
-        self.aplicadas.append(tx["tx_id"])
+    def apply(self, state, tx, ctx):
+        state[tx["payload"]["n"]] = tx["tx_id"]
+        return state
 
 
 def test_reorg_reconstruye_estados_y_readmite_por_check_transaction(tmp_path):
-    w = Wallet.generate()
-    a, b = _nuevo(tmp_path, "a"), _nuevo(tmp_path, "b")
-    t_ok, t_vetada = _tx(w, 1, nonce=1), _tx(w, 99, nonce=2)
+    w, x, v = Wallet.generate(), Wallet.generate(), Wallet.generate()
+    contrato_a, contrato_b = _RegistroUnico(), _RegistroUnico()
+    a = _nuevo(tmp_path, "a", contracts=[contrato_a])
+    b = _nuevo(tmp_path, "b", contracts=[contrato_b])
+    t_ok, t_vetada = _tx(x, 2, nonce=1), _tx(w, 1, nonce=1)
+    assert b.add_transaction(t_vetada)[0]
     assert b.add_transaction(t_ok)[0]
-    assert b.add_transaction(t_vetada)[0]     # aún sin estado registrado
     mine_and_add(b)
+    t_a = _tx(v, 1, nonce=1)              # el mismo n=1, de otro firmante
+    assert a.add_transaction(t_a)[0]
     for _ in range(2):
         mine_and_add(a)
-
-    estado = _EstadoDePrueba()
-    b.register_state_listener(estado)
-    assert estado.aplicadas == [t_ok.tx_id]   # la vetada se ignora al reproducir
-    antes = estado.rebuilds
+    assert b.contract_state("registro_unico") == {1: t_vetada.tx_id, 2: t_ok.tx_id}
+    antes = contrato_b.estados_iniciales
 
     ok, motivo = b.replace_chain(_dicts(a))
     assert ok, motivo
-    assert estado.rebuilds == antes + 1       # rebuild sobre la cadena nueva
-    assert estado.aplicadas == []             # t_ok ya no está confirmada
-    # Re-admisión vía add_transaction: pasa t_ok, check_transaction veta t_vetada.
+    assert contrato_b.estados_iniciales == antes + 1   # reproducción de la cadena nueva
+    assert b.contract_state("registro_unico") == {1: t_a.tx_id}
+    # Re-admisión vía add_transaction: pasa t_ok; check_transaction veta t_vetada (n=1).
     assert [t.tx_id for t in b.mempool] == [t_ok.tx_id]
 
 

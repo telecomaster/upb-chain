@@ -121,9 +121,18 @@ Flujos de trabajo y orden de dependencias:
   premio del docente (individual o CSV), automático al emitir credencial, código QR de un solo uso en
   eventos, recompensas del laboratorio de ataques. Sin recompensa por minado (los mineros son nodos
   de la UPB). Puntos de circuito cerrado, sin valor monetario: confirmar con el área legal de la UPB.
-- [ ] **P1-13 Interfaz única de contratos.** `apply(state, tx) -> state` determinista (sin reloj,
+- [x] **P1-13 Interfaz única de contratos.** `apply(state, tx) -> state` determinista (sin reloj,
   azar ni floats), reproducida en cada nodo. Credential, Token, Badge y Voting como contratos de
   referencia; los estudiantes agregan nuevos por pull request.
+  Hecho: `Contract` (`validate`/`apply`/`initial_state`, `ctx` = índice, hash y timestamp del
+  bloque) en `blockchain/contracts/base.py` y `ContractRegistry` (enruta por tipo, copia al
+  escribir, `replay` en carga y reorg) usado por `Blockchain` en lugar de los listeners. Cuentas
+  (`AccountContract`, antes `AccountState` en `core/state.py`), credenciales y `VotingContract`
+  (`VOTE` = `{election_id, choice}`, un voto por dirección y elección) portados; Token y Badge
+  quedan para P1-12 sobre esta interfaz. **Política única (cambio de consenso):** una TX inválida
+  para cualquier contrato invalida el bloque entero (antes las de credenciales se ignoraban); el
+  mempool y el minero filtran con las mismas reglas. API: `GET /contracts`,
+  `GET /contracts/voting/{election_id}`. Guía: `docs/contratos.md`.
 
 ## P2 — Mejoras
 

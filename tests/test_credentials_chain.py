@@ -17,7 +17,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from blockchain.contracts.credential import CredentialContract
-from blockchain.core.block import GENESIS_AUTHORITY_ADDRESS, Block, BlockHeader
+from blockchain.core.block import GENESIS_AUTHORITY_ADDRESS, Block
 from blockchain.core.chain import Blockchain
 from blockchain.core.transaction import (
     Transaction,
@@ -27,7 +27,7 @@ from blockchain.core.transaction import (
     create_revoke_transaction,
 )
 from blockchain.core.wallet import Wallet
-from tests.helpers import mine_and_add
+from tests.helpers import mine_and_add, mine_candidate
 
 pytestmark = pytest.mark.integration
 
@@ -49,8 +49,9 @@ def _datos(**extra) -> dict:
 DIFICULTAD = 1
 
 
-def _cadena(directorio) -> Blockchain:
-    return Blockchain(f"nodo_{directorio.name}", str(directorio), initial_difficulty=DIFICULTAD)
+def _cadena(directorio, autoridad=None) -> Blockchain:
+    return Blockchain(f"nodo_{directorio.name}", str(directorio), initial_difficulty=DIFICULTAD,
+                      authority_address=autoridad.address if autoridad else None)
 
 
 def _minar(bc: Blockchain) -> None:
@@ -73,11 +74,10 @@ def nodo(tmp_path, monkeypatch):
     data_dir = str(tmp_path / "nodo")
 
     def reiniciar():
-        bc, contrato = app_mod.build_node_state(data_dir, "nodo_test", autoridad.address,
-                                                initial_difficulty=DIFICULTAD)
+        bc = app_mod.build_node_state(data_dir, "nodo_test", autoridad.address,
+                                      initial_difficulty=DIFICULTAD)
         monkeypatch.setattr(app_mod, "blockchain", bc)
-        monkeypatch.setattr(app_mod, "credential_contract", contrato)
-        return bc, contrato
+        return bc
 
     monkeypatch.setattr(app_mod, "authority_wallet", autoridad)
     reiniciar()
@@ -140,7 +140,7 @@ async def test_flujo_emitir_minar_reiniciar_revocar(client, nodo):
     v = (await client.get(f"/credentials/verify/{cid}")).json()
     assert v["status"] == "PENDING" and v["valid"] is False
     # La API no mutó el estado confirmado.
-    assert nodo.app.credential_contract.get_stats()["total_credentials"] == 0
+    assert nodo.app.blockchain.contract_state("credentials").get_stats()["total_credentials"] == 0
 
     bloque = await _minar_api(client)
     v = (await client.get(f"/credentials/verify/{cid}")).json()
@@ -243,20 +243,19 @@ async def test_verificar_inexistente(client):
 
 # ── Dos nodos: misma cadena ⇒ mismo estado ───────────────────────────────────
 
-def _estado(contrato: CredentialContract) -> dict:
+def _estado(bc: Blockchain) -> dict:
+    estado = bc.contract_state("credentials")
     return {
-        "emisores": dict(contrato._issuer_registry),
+        "emisores": dict(estado._issuer_registry),
         "credenciales": sorted((c["credential_id"], c["status"], c["block_number"])
-                               for c in contrato.get_all_credentials()),
-        "altura": contrato.height,
+                               for c in estado.get_all_credentials()),
+        "altura": bc.contracts.height,
     }
 
 
 def test_dos_nodos_derivan_el_mismo_estado(tmp_path):
     autoridad, emisor = Wallet.generate(), Wallet.generate()
-    a = _cadena(tmp_path / "a")
-    ca = CredentialContract(authority_address=autoridad.address)
-    a.register_state_listener(ca)
+    a = _cadena(tmp_path / "a", autoridad)
 
     ok, why = a.add_transaction(create_issuer_register_transaction(
         autoridad.address, emisor.address, "UPB", autoridad.private_key_hex, nonce=1))
@@ -267,71 +266,107 @@ def test_dos_nodos_derivan_el_mismo_estado(tmp_path):
     for tx in txs:
         assert a.add_transaction(tx)[0]
     _minar(a)
-    cid = ca.credential_id_of_tx(txs[0].to_dict())
+    cid = CredentialContract.credential_id_of_tx(txs[0].to_dict())
     assert a.add_transaction(create_revoke_transaction(emisor.address, cid, "x",
                                                        emisor.private_key_hex, nonce=4))[0]
     _minar(a)
-    assert ca.get_stats()["total_credentials"] == 3 and ca.get_stats()["revoked"] == 1
+    stats = a.contract_state("credentials").get_stats()
+    assert stats["total_credentials"] == 3 and stats["revoked"] == 1
 
     # Nodo B recibe la cadena por replace_chain.
-    b = _cadena(tmp_path / "b")
-    cb = CredentialContract(authority_address=autoridad.address)
-    b.register_state_listener(cb)
+    b = _cadena(tmp_path / "b", autoridad)
     ok, why = b.replace_chain([blk.to_dict() for blk in a.chain])
     assert ok, why
-    assert _estado(cb) == _estado(ca)
+    assert _estado(b) == _estado(a)
 
     # Nodo C arranca desde el chain.json de A.
-    c = _cadena(tmp_path / "a")
-    cc = CredentialContract(authority_address=autoridad.address)
-    c.register_state_listener(cc)
-    assert _estado(cc) == _estado(ca)
+    c = _cadena(tmp_path / "a", autoridad)
+    assert _estado(c) == _estado(a)
 
 
-# ── Reproducción: TXs inválidas dentro de un bloque se ignoran ───────────────
+# ── Política única (P1-13): una TX inválida invalida el bloque entero ────────
 
-def _bloque(index, prev, txs):
-    h = BlockHeader(index=index, timestamp=1767225600.0 + index * 10, previous_hash=prev.hash,
-                    merkle_root=Block.compute_merkle_root(txs), node_id="x")
-    return Block(header=h, transactions=txs)
-
-
-def test_reproduccion_ignora_txs_invalidas_de_forma_determinista():
+def test_bloque_con_tx_de_credencial_invalida_se_rechaza_entero(tmp_path):
+    """Antes de P1-13 estas TXs se ignoraban al reproducir; ahora el bloque no entra."""
     autoridad, emisor, intruso = Wallet.generate(), Wallet.generate(), Wallet.generate()
     alumno = Wallet.generate().address
+    bc = _cadena(tmp_path / "a", autoridad)
 
-    registro_falso = create_issuer_register_transaction(
-        intruso.address, intruso.address, "UPB", intruso.private_key_hex).to_dict()
-    # Sin firma pero declarando ser la autoridad: debe ignorarse aunque llegue en un bloque.
-    sin_firma = Transaction(TransactionType.ISSUER_REGISTER, autoridad.address, intruso.address,
-                            {"issuer_address": intruso.address, "institution_code": "UPB"}).to_dict()
     registro = create_issuer_register_transaction(
-        autoridad.address, emisor.address, "UPB", autoridad.private_key_hex).to_dict()
+        autoridad.address, emisor.address, "UPB", autoridad.private_key_hex, nonce=1)
     datos = _datos()
     emision = create_credential_transaction(emisor.address, alumno, datos,
-                                            emisor.private_key_hex).to_dict()
+                                            emisor.private_key_hex, nonce=1)
+    # Misma credencial con otro nonce: válida para las cuentas, no para el contrato.
     duplicada = create_credential_transaction(emisor.address, alumno, datos,
-                                              emisor.private_key_hex).to_dict()
+                                              emisor.private_key_hex, nonce=2)
+    registro_falso = create_issuer_register_transaction(
+        intruso.address, intruso.address, "UPB", intruso.private_key_hex, nonce=1)
     emision_intruso = create_credential_transaction(intruso.address, alumno, _datos(),
-                                                    intruso.private_key_hex).to_dict()
+                                                    intruso.private_key_hex, nonce=1)
+    # Sin firma pero declarando ser la autoridad: la cadena la rechaza antes del contrato.
+    sin_firma = Transaction(TransactionType.ISSUER_REGISTER, autoridad.address, intruso.address,
+                            {"issuer_address": intruso.address, "institution_code": "UPB"},
+                            nonce=1)
 
-    g = Block.create_genesis()
-    b1 = _bloque(1, g, [registro_falso, sin_firma, registro, emision, duplicada, emision_intruso])
-    cid = CredentialContract().credential_id_of_tx(emision)
+    for txs, motivo in [
+        ([registro_falso], "autoridad"),
+        ([sin_firma], "inválida"),
+        ([registro, emision_intruso], "no registrado"),
+        ([registro, emision, duplicada], "ya existe"),
+    ]:
+        ok, why = bc.add_block(mine_candidate(bc, txs))
+        assert not ok and motivo in why, why
+        assert bc.height == 0
+    assert bc.contract_state("credentials").get_stats()["registered_issuers"] == 0
+
+    ok, why = bc.add_block(mine_candidate(bc, [registro, emision]))
+    assert ok, why
+    cid = CredentialContract.credential_id_of_tx(emision.to_dict())
     revoca_intruso = create_revoke_transaction(intruso.address, cid, "x",
-                                               intruso.private_key_hex).to_dict()
-    b2 = _bloque(2, b1, [revoca_intruso])
+                                               intruso.private_key_hex, nonce=1)
+    ok, why = bc.add_block(mine_candidate(bc, [revoca_intruso]))
+    assert not ok and "emisor original" in why
 
-    estados = []
-    for _ in range(2):
-        contrato = CredentialContract(authority_address=autoridad.address)
-        contrato.rebuild([g, b1, b2])
-        estados.append(_estado(contrato))
-        assert list(contrato._issuer_registry) == [emisor.address]
-        assert contrato.get_stats()["total_credentials"] == 1
-        assert contrato.credential_status(cid)["status"] == "CONFIRMED"
-        assert contrato.credential_status(cid)["confirmations"] == 2
-    assert estados[0] == estados[1]
+    # Otro nodo tampoco acepta, por replace_chain, una cadena con ese bloque.
+    falsa = [blk.to_dict() for blk in bc.chain] + [mine_candidate(bc, [duplicada]).to_dict()]
+    otra = _cadena(tmp_path / "b", autoridad)
+    ok, why = otra.replace_chain(falsa)
+    assert not ok and "ya existe" in why
+
+    # El estado no cambió por los bloques rechazados.
+    st = bc.contract_state("credentials").credential_status(cid, bc.height)
+    assert st["status"] == "CONFIRMED" and st["confirmations"] == 1
+
+
+def test_mempool_descarta_emision_que_otro_bloque_ya_confirmo(tmp_path):
+    """Carrera entre nodos: A confirma la credencial X (nonce 2) mientras B tiene X con
+    nonce 3 en su mempool. Para las cuentas la de B sigue siendo válida, para el contrato
+    no: B debe retirarla, o su próximo bloque sería inválido (P1-13)."""
+    autoridad, emisor = Wallet.generate(), Wallet.generate()
+    alumno = Wallet.generate().address
+    a, b = _cadena(tmp_path / "a", autoridad), _cadena(tmp_path / "b", autoridad)
+    assert a.add_transaction(create_issuer_register_transaction(
+        autoridad.address, emisor.address, "UPB", autoridad.private_key_hex, nonce=1))[0]
+    _minar(a)
+    assert b.add_block(a.last_block)[0]
+
+    def emitir(datos, nonce, estudiante=alumno):
+        return create_credential_transaction(emisor.address, estudiante, datos,
+                                             emisor.private_key_hex, nonce=nonce)
+
+    datos_x = _datos()
+    otra = emitir(_datos(), 1, Wallet.generate().address)
+    assert a.add_transaction(otra)[0] and a.add_transaction(emitir(datos_x, 2))[0]
+    assert b.add_transaction(otra)[0]
+    assert b.add_transaction(emitir(_datos(), 2, Wallet.generate().address))[0]
+    assert b.add_transaction(emitir(datos_x, 3))[0]
+
+    _minar(a)
+    ok, why = b.add_block(a.last_block)
+    assert ok, why
+    assert b.mempool == []          # nonce 2 ocupado y X ya emitida
+    _minar(b)
 
 
 def test_contrato_por_defecto_usa_la_autoridad_del_genesis():

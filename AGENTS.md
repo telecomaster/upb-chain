@@ -39,12 +39,16 @@ overstate what works).
 ## Layout
 
 - `config.py` settings from env/.env
-- `blockchain/core` block, chain (persistence, fork resolution), transaction, wallet (ECDSA secp256k1),
-  state (`ReplayState`: estado = reproducción de las TXs confirmadas; `AccountState` (P0-9): saldo y
-  nonce por dirección, montos enteros, regla de consenso — cada TX firmada lleva `nonce` = confirmado + 1)
+- `blockchain/core` block, chain (persistence, fork resolution; owns the `ContractRegistry`),
+  transaction, wallet (ECDSA secp256k1)
 - `blockchain/consensus` proof_of_work, pbft · `blockchain/network` P2P node (sincronización y peers en `node.py`)
-- `blockchain/contracts/credential.py` credential issue/verify/revoke, derived from the chain (P0-6);
-  issuers registered by `ISSUER_REGISTER` TXs signed by the genesis authority (key in `data/keys/authority.json`, never committed)
+- `blockchain/contracts` (P1-13, guía en `docs/contratos.md`): `base.py` interfaz `Contract`
+  (`validate`/`apply`/`initial_state`, estado = reproducción de las TXs confirmadas; una TX inválida
+  invalida el bloque entero), `registry.py` `ContractRegistry`, `__init__.py` `default_contracts`;
+  `accounts.py` saldo y nonce (P0-9, cada TX firmada lleva `nonce` = confirmado + 1, montos enteros),
+  `credential.py` credential issue/verify/revoke (P0-6; issuers registered by `ISSUER_REGISTER` TXs
+  signed by the genesis authority, key in `data/keys/authority.json`, never committed),
+  `voting.py` contrato de referencia (un voto por dirección y elección)
 - `ai/anomaly/detector.py`, `ai/analytics/chain_stats.py`
 - `security/` crypto_utils, monitor, hardening (checklist de solo lectura en `GET /security/hardening`),
   `attacks/` simulator, eclipse (usado por el simulador y `POST /security/eclipse-simulation`)

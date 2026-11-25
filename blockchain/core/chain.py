@@ -42,8 +42,11 @@ from pathlib import Path
 from threading import Lock
 from typing import Callable, Dict, List, Optional, Tuple
 
+from blockchain.contracts import default_contracts
+from blockchain.contracts.accounts import AccountContract, Accounts
+from blockchain.contracts.base import Contract
+from blockchain.contracts.registry import ContractRegistry
 from blockchain.core.block import GENESIS_HASH, Block, BlockHeader
-from blockchain.core.state import AccountState
 from blockchain.core.transaction import Transaction, TransactionType
 
 logger = logging.getLogger("upb_chain.core")
@@ -64,6 +67,7 @@ class Blockchain:
         target_block_time: float = 10.0,
         difficulty_window: int = 10,
         authority_address: Optional[str] = None,
+        contracts: Optional[List[Contract]] = None,
     ):
         self.node_id = node_id
         # Parámetros de la regla de dificultad (parte del consenso: deben ser
@@ -80,18 +84,18 @@ class Blockchain:
         self.chain: List[Block] = []
         self.mempool: List[Transaction] = []
         self._lock = Lock()
-        # Estado de cuentas (P0-9): saldo y nonce por dirección. Es parte del
-        # CONSENSO (un bloque que lo viola se rechaza), por eso lo posee la
-        # cadena y es siempre el primer estado derivado. ``authority_address``
-        # es quien puede firmar TOKEN_MINT (por defecto, la del génesis).
-        self.accounts = AccountState(authority_address)
-        # Estados derivados de la cadena (P0-6), p. ej. el contrato de credenciales.
-        self._state_listeners: List = [self.accounts]
+        # Contratos (P1-13): reglas de consenso sobre el estado derivado de la
+        # cadena. El de cuentas (P0-9: saldo y nonce) va siempre primero; luego
+        # los de aplicación (por defecto credenciales y votación). Se fijan al
+        # construir la cadena porque la carga desde disco ya los necesita para
+        # validar. ``authority_address`` firma TOKEN_MINT e ISSUER_REGISTER.
+        if contracts is None:
+            contracts = default_contracts(authority_address)
+        self.contracts = ContractRegistry([AccountContract(authority_address), *contracts])
         # Avisos de reorganización para red/log (P0-5): ver add_reorg_listener().
         self.on_chain_reorg: List[Callable[[int, List[Block], List[Block]], None]] = []
 
         self._load_or_init()
-        self.accounts.rebuild(self.chain)
 
     # ── Inicialización ────────────────────────────────────────────────────────
 
@@ -101,6 +105,7 @@ class Blockchain:
         if not chain_file.exists() and not bak_file.exists():
             genesis = Block.create_genesis(self.node_id)
             self.chain.append(genesis)
+            self.contracts.rebuild(self.chain)
             self._save_to_disk()
             logger.info("Génesis creado")
             return
@@ -136,12 +141,14 @@ class Blockchain:
         ok, reason = self._check_genesis(chain)
         if not ok:
             raise ValueError(f"{path}: {reason}")
-        # Revalidar TODA la cadena al cargar (P0-3): un archivo manipulado se rechaza.
-        ok, reason = self._validate_blocks(chain)
+        # Revalidar TODA la cadena al cargar (P0-3): un archivo manipulado se
+        # rechaza. La misma pasada deja el estado de los contratos (P1-13).
+        ok, reason, states = self._replay_blocks(chain)
         if not ok:
             raise ValueError(f"{path}: cadena inválida en disco: {reason}")
         self.chain = chain
         self._confirmed_ids = self._collect_ids(chain)
+        self.contracts.commit(states, len(chain) - 1)
 
     @staticmethod
     def _collect_ids(chain: List[Block]) -> set:
@@ -189,19 +196,21 @@ class Blockchain:
     def height(self) -> int:
         return len(self.chain) - 1
 
-    # ── Estado derivado (P0-6) ────────────────────────────────────────────────
+    # ── Estado de los contratos (P0-6, P1-13) ──────────────────────────────────
 
-    def register_state_listener(self, listener) -> None:
-        """Registra un estado derivado (ver ``blockchain/core/state.py``).
+    @property
+    def accounts(self) -> Accounts:
+        """Estado confirmado del contrato de cuentas (P0-9)."""
+        return self.contracts.state("accounts")
 
-        Se reproduce de inmediato sobre la cadena cargada; luego la cadena le
-        avisa de cada bloque nuevo (``apply_block``), de cada reemplazo de
-        cadena (``rebuild``) y le consulta la admisión de TXs al mempool
-        (``check_transaction``).
-        """
+    def contract_state(self, name: str):
+        """Estado confirmado del contrato ``name`` (``ContractRegistry.state``)."""
+        return self.contracts.state(name)
+
+    def pending_dicts(self) -> List[dict]:
+        """TXs del mempool como dicts, en orden de llegada."""
         with self._lock:
-            listener.rebuild(self.chain)
-            self._state_listeners.append(listener)
+            return [t.to_dict() for t in self.mempool]
 
     # ── Mempool ───────────────────────────────────────────────────────────────
 
@@ -215,13 +224,11 @@ class Blockchain:
                 return False, "Transacción ya confirmada en la cadena"
             if any(t.tx_id == tx.tx_id for t in self.mempool):
                 return False, "Transacción duplicada"
-            if self._state_listeners:
-                tx_dict = tx.to_dict()
-                pending = [t.to_dict() for t in self.mempool]
-                for listener in self._state_listeners:
-                    valid, reason = listener.check_transaction(tx_dict, pending)
-                    if not valid:
-                        return False, reason
+            # Mismas reglas que en un bloque, contra confirmado + pendientes (P1-13).
+            valid, reason = self.contracts.check_transaction(
+                tx.to_dict(), [t.to_dict() for t in self.mempool])
+            if not valid:
+                return False, reason
             self.mempool.append(tx)
         logger.debug(f"TX {tx.tx_id[:8]}… añadida al mempool")
         return True, "OK"
@@ -233,15 +240,17 @@ class Blockchain:
 
     def add_block(self, block: Block) -> Tuple[bool, str]:
         with self._lock:
-            valid, reason = self._validate_block(block)
+            valid, reason, states = self._validate_block_at(
+                block, self.chain, set(self._confirmed_ids), time.time(),
+                self.contracts.check_block)
             if not valid:
                 return False, reason
             self.chain.append(block)
             self._confirmed_ids.update(tx.get("tx_id") for tx in block.transactions)
-            for listener in self._state_listeners:
-                listener.apply_block(block)
+            self.contracts.commit(states, block.header.index)
             # Remueve del mempool las TXs confirmadas y las que ya no pueden
-            # confirmarse (P0-9): p. ej. otra TX del mismo sender ocupó su nonce.
+            # confirmarse: p. ej. otra TX del mismo sender ocupó su nonce (P0-9)
+            # o la misma credencial ya se emitió en este bloque (P1-13).
             confirmed_ids = {tx.get("tx_id") for tx in block.transactions}
             self.mempool = self._still_valid(
                 [t for t in self.mempool if t.tx_id not in confirmed_ids])
@@ -250,24 +259,26 @@ class Blockchain:
         return True, "OK"
 
     def _still_valid(self, txs: List[Transaction]) -> List[Transaction]:
-        """Las TXs de ``txs`` (en orden) que el estado de cuentas aceptaría una tras otra."""
+        """Las TXs de ``txs`` (en orden) que todos los contratos aceptarían una tras otra."""
         dicts = [t.to_dict() for t in txs]
-        keep = {d["tx_id"] for d in self.accounts.filter_valid(dicts)}
+        keep = {d["tx_id"] for d in self.contracts.filter_valid(dicts)}
         return [t for t in txs if t.tx_id in keep]
 
     def next_nonce(self, address: str) -> int:
         """Nonce que debe firmar la próxima TX de ``address`` (confirmadas + mempool, P0-9)."""
         with self._lock:
-            return self.accounts.next_nonce(address, [t.to_dict() for t in self.mempool])
+            return AccountContract.next_nonce(self.accounts, address,
+                                              [t.to_dict() for t in self.mempool])
 
     def account_info(self, address: str) -> dict:
         """Saldo, nonce confirmado y próximo nonce de ``address`` (P0-9)."""
         with self._lock:
-            return self.accounts.account_info(address, [t.to_dict() for t in self.mempool])
+            return self.contracts.contract("accounts").account_info(
+                self.accounts, address, self.height, [t.to_dict() for t in self.mempool])
 
     def create_candidate_block(self, transactions: Optional[List[Transaction]] = None) -> Block:
-        # Del mempool solo se toman TXs válidas para las cuentas (P0-9): si no,
-        # una TX caducada (nonce ya usado) haría inválido el bloque entero.
+        # Del mempool solo se toman TXs válidas para los contratos (P0-9, P1-13):
+        # si no, una TX caducada (nonce ya usado) haría inválido el bloque entero.
         if not transactions:
             with self._lock:   # la red puede estar aplicando un bloque en otro hilo
                 transactions = self._still_valid(list(self.mempool))[:50]
@@ -287,82 +298,97 @@ class Blockchain:
     # ── Validación ────────────────────────────────────────────────────────────
 
     def _validate_block(self, block: Block, now: Optional[float] = None) -> Tuple[bool, str]:
-        """Valida `block` como siguiente bloque de la cadena actual."""
-        return self._validate_block_at(
+        """Valida `block` como siguiente bloque de la cadena actual (sin agregarlo)."""
+        ok, reason, _ = self._validate_block_at(
             block, self.chain, set(self._confirmed_ids),
-            now if now is not None else time.time(), self.accounts,
+            now if now is not None else time.time(), self.contracts.check_block,
         )
+        return ok, reason
 
     def _validate_block_at(
         self, block: Block, prefix: List[Block], seen_ids: set, now: float,
-        accounts: AccountState, commit: bool = False,
-    ) -> Tuple[bool, str]:
+        run_contracts: Callable,
+    ) -> Tuple[bool, str, Optional[dict]]:
         """Validez de CONSENSO de `block` dado `prefix` = chain[:h] (h = block.index).
 
-        Determinista: depende sólo de (block, prefix, seen_ids, accounts, now).
-        `seen_ids` se actualiza con los tx_id del bloque si es válido. `accounts`
-        es el estado de cuentas tras `prefix` (P0-9): con ``commit=True`` se le
-        aplica el bloque si es válido. `now` sólo acota el timestamp futuro. La
-        expiración de 1 h del mempool NO aplica aquí.
+        Determinista: depende sólo de (block, prefix, seen_ids, estado, now).
+        `seen_ids` se actualiza con los tx_id del bloque si es válido.
+        `run_contracts(block) -> (ok, motivo, estados)` aplica el bloque a los
+        contratos (P1-13) sobre el estado tras `prefix`, sin modificarlo; los
+        estados resultantes se devuelven para que el llamador los adopte.
+        `now` sólo acota el timestamp futuro. La expiración de 1 h del mempool
+        NO aplica aquí.
         """
         h = block.header
         prev = prefix[-1]
         if h.index != len(prefix):
-            return False, f"Índice incorrecto: esperado {len(prefix)}, recibido {h.index}"
+            return False, f"Índice incorrecto: esperado {len(prefix)}, recibido {h.index}", None
         if h.previous_hash != prev.hash:
-            return False, "Hash previo no coincide"
+            return False, "Hash previo no coincide", None
         if block.compute_hash() != block.hash:
-            return False, "Hash del bloque inválido"
+            return False, "Hash del bloque inválido", None
         expected = self.expected_difficulty(prefix)
         if h.difficulty != expected:
-            return False, f"Dificultad incorrecta: esperada {expected}, recibida {h.difficulty}"
+            return False, (f"Dificultad incorrecta: esperada {expected}, "
+                           f"recibida {h.difficulty}"), None
         if not block.hash.startswith("0" * h.difficulty):
-            return False, "Proof of Work insuficiente: el hash no cumple la dificultad"
+            return False, "Proof of Work insuficiente: el hash no cumple la dificultad", None
         if Block.compute_merkle_root(block.transactions) != h.merkle_root:
-            return False, "Merkle root inválido"
+            return False, "Merkle root inválido", None
         # Timestamp: estrictamente mayor que la mediana de los últimos bloques
         # y no más de MAX_FUTURE_SECONDS en el futuro respecto a `now`.
         recent = sorted(b.header.timestamp for b in prefix[-self.MEDIAN_WINDOW:])
         median = recent[len(recent) // 2]
         if h.timestamp <= median:
-            return False, "Timestamp no es posterior a la mediana de los bloques previos"
+            return False, "Timestamp no es posterior a la mediana de los bloques previos", None
         if h.timestamp > now + self.MAX_FUTURE_SECONDS:
-            return False, "Timestamp demasiado en el futuro"
+            return False, "Timestamp demasiado en el futuro", None
         # Transacciones: autenticación (sin expiración) y sin duplicados.
         new_ids = set()
         for raw in block.transactions:
             try:
                 tx = Transaction.from_dict(raw)
             except (KeyError, ValueError, TypeError, AttributeError):
-                return False, "Transacción malformada en el bloque"
+                return False, "Transacción malformada en el bloque", None
             ok, reason = tx.is_consensus_valid()
             if not ok:
-                return False, f"Transacción {str(raw.get('tx_id'))[:8]}… inválida: {reason}"
+                return False, f"Transacción {str(raw.get('tx_id'))[:8]}… inválida: {reason}", None
             if tx.tx_id in seen_ids or tx.tx_id in new_ids:
-                return False, f"Transacción duplicada {tx.tx_id[:8]}…"
+                return False, f"Transacción duplicada {tx.tx_id[:8]}…", None
             new_ids.add(tx.tx_id)
-        # Cuentas (P0-9): nonce y saldo, en el orden del bloque.
-        ok, reason = accounts.check_block(block, commit=commit)
+        # Contratos (P1-13): cuentas, credenciales, votación… en el orden del
+        # bloque. Una TX inválida para cualquiera invalida el bloque entero.
+        ok, reason, states = run_contracts(block)
         if not ok:
-            return False, reason
+            return False, reason, None
         seen_ids.update(new_ids)
-        return True, "OK"
+        return True, "OK", states
+
+    def _replay_blocks(self, chain: List[Block],
+                       now: Optional[float] = None) -> Tuple[bool, str, Optional[dict]]:
+        """Valida una cadena completa y devuelve el estado de los contratos al final.
+
+        Génesis fijo + cada bloque 1..n (P0-3), reproduciendo los contratos
+        desde su estado inicial (P1-13). No toca el estado de esta cadena.
+        """
+        ok, reason = self._check_genesis(chain)
+        if not ok:
+            return False, reason, None
+        now = now if now is not None else time.time()
+        seen = self._collect_ids(chain[:1])
+        states = self.contracts.initial_states()
+        for i in range(1, len(chain)):
+            ok, reason, states = self._validate_block_at(
+                chain[i], chain[:i], seen, now,
+                lambda block, st=states: self.contracts.run_block(st, block))
+            if not ok:
+                return False, f"Bloque {i}: {reason}", None
+        return True, "Cadena válida", states
 
     def _validate_blocks(self, chain: List[Block], now: Optional[float] = None) -> Tuple[bool, str]:
         """Valida una cadena completa: génesis fijo + cada bloque 1..n (P0-3)."""
-        ok, reason = self._check_genesis(chain)
-        if not ok:
-            return False, reason
-        now = now if now is not None else time.time()
-        seen = self._collect_ids(chain[:1])
-        accounts = AccountState(self.accounts.authority_address)  # se reproduce aquí mismo
-        accounts.rebuild(chain[:1])
-        for i in range(1, len(chain)):
-            ok, reason = self._validate_block_at(chain[i], chain[:i], seen, now,
-                                                 accounts, commit=True)
-            if not ok:
-                return False, f"Bloque {i}: {reason}"
-        return True, "Cadena válida"
+        ok, reason, _ = self._replay_blocks(chain, now)
+        return ok, reason
 
     def validate_chain(self, now: Optional[float] = None) -> Tuple[bool, str]:
         return self._validate_blocks(self.chain, now)
@@ -498,7 +524,7 @@ class Blockchain:
             si la cadena nueva sólo extendía la nuestra).
           - added: bloques nuevos que entraron (de fork_height+1 a la punta).
         Al invocarse, `self.chain` ya es la cadena nueva y los estados derivados
-        (``register_state_listener``, P0-6) ya se reconstruyeron: este aviso es
+        (contratos, P1-13) ya se reconstruyeron: este aviso es
         para la red, métricas o logs, no para mantener estado de contratos.
         Las excepciones del callback se registran en el log y no deshacen el reemplazo.
         """
@@ -514,15 +540,15 @@ class Blockchain:
           3. TXs de nuestros bloques descartados que no están en la cadena nueva
              vuelven al mempool si siguen siendo admisibles (``add_transaction``);
              las TXs del mempool ya confirmadas en la cadena nueva se retiran.
-          4. Se persiste, se reconstruyen los estados derivados (``rebuild``,
-             P0-6) y luego se notifica a ``on_chain_reorg``.
+          4. Se adopta el estado de los contratos de la cadena nueva (P1-13),
+             se persiste y luego se notifica a ``on_chain_reorg``.
         """
         try:
             candidate = [Block.from_dict(b) for b in new_chain]
         except (KeyError, TypeError, ValueError, AttributeError) as e:
             return False, f"Cadena recibida malformada: {e}"
         # Validación costosa fuera del lock: una cadena válida lo sigue siendo.
-        valid, reason = self._validate_blocks(candidate)
+        valid, reason, states = self._replay_blocks(candidate)
         if not valid:
             return False, f"Cadena recibida inválida: {reason}"
         new_work = self.cumulative_work(candidate)
@@ -558,11 +584,10 @@ class Blockchain:
             self.chain = candidate
             self._confirmed_ids = new_ids
             self.mempool = []
-            for listener in self._state_listeners:
-                listener.rebuild(self.chain)
+            self.contracts.commit(states, len(candidate) - 1)
             self._save_to_disk()
         # Re-admisión por la puerta normal (fuera del lock): expiración, duplicados
-        # y check_transaction de los estados derivados ya reconstruidos (P0-6).
+        # y check_transaction de los contratos ya reconstruidos (P1-13).
         for tx in readmit:
             self.add_transaction(tx)
         logger.info(

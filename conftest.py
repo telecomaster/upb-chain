@@ -92,12 +92,20 @@ def student_wallet():
 
 
 @pytest.fixture
-def credential_contract(issuer_wallet):
-    """CredentialContract fresco con emisor UPB ya registrado."""
-    contract = CredentialContract()
-    ok, reason = contract.register_issuer(issuer_wallet.address, "UPB")
+def credential_contract():
+    """Reglas del contrato de credenciales (P1-13); el estado va aparte."""
+    return CredentialContract()
+
+
+@pytest.fixture
+def credential_state(credential_contract, issuer_wallet):
+    """Estado de credenciales fresco con el emisor UPB ya registrado (TX de la autoridad)."""
+    tx = {"type": "ISSUER_REGISTER", "sender": credential_contract.authority_address,
+          "recipient": issuer_wallet.address, "tx_id": "registro",
+          "payload": {"issuer_address": issuer_wallet.address, "institution_code": "UPB"}}
+    ok, reason, state = credential_contract.execute(credential_contract.initial_state(), tx)
     assert ok, f"Registro de emisor falló inesperadamente: {reason}"
-    return contract
+    return state
 
 
 @pytest.fixture

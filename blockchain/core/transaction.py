@@ -284,16 +284,17 @@ def create_data_record_transaction(
 
 def create_vote_transaction(
     voter_address: str,
-    proposal_id: str,
-    vote: bool,
+    election_id: str,
+    choice: str,
     private_key_hex: str,
     nonce: int = 0,
 ) -> Transaction:
+    """TX VOTE (P1-13): un voto por dirección y elección (ver ``VotingContract``)."""
     tx = Transaction(
         type=TransactionType.VOTE,
         sender=voter_address,
         recipient="VOTING_CONTRACT",
-        payload={"proposal_id": proposal_id, "vote": vote},
+        payload={"election_id": election_id, "choice": choice},
         nonce=nonce,
     )
     tx.sign(private_key_hex)
@@ -309,7 +310,7 @@ def create_mint_transaction(
 ) -> Transaction:
     """TX TOKEN_MINT (P0-9): crea ``amount`` unidades para ``recipient``.
 
-    Solo es válida si la firma la autoridad del génesis (ver ``AccountState``).
+    Solo es válida si la firma la autoridad del génesis (ver ``AccountContract``).
     """
     tx = Transaction(
         type=TransactionType.TOKEN_MINT,
