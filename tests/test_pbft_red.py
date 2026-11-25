@@ -217,3 +217,32 @@ def test_llave_de_replica_que_no_coincide_da_error_de_configuracion(tmp_path):
     with pytest.raises(ConfigError, match="PBFT_REPLICAS_FILE"):
         make_app(tmp_path, "r1b", consensus="pbft",
                  pbft_replicas_file=str(tmp_path / "no_existe.json"))
+
+
+def test_primario_que_pierde_los_commit_se_pone_al_dia_por_la_red(red):
+    """Regresión: el primario r0 pierde todos los COMMIT de la altura 1. Antes esperaba la
+    sincronización periódica (~15 s) y lanzaba cambios de vista solitarios; ahora pide el
+    certificado de commit (CERT-REQUEST) y se pone al día sin cambiar de vista."""
+    p2p0 = red.nodo("r0").p2p
+    entrega = p2p0.on_pbft_message
+
+    def sin_commits(m):
+        if isinstance(m, dict) and m.get("type") == "COMMIT" and m.get("seq") == 1:
+            return                                   # mensaje perdido en la red
+        entrega(m)
+    p2p0.on_pbft_message = sin_commits
+    red.iniciar(*red.ids)
+    red.enviar_tx("r1")
+    assert esperar(lambda: all(red.altura(r) == 1 for r in ("r1", "r2", "r3")), 10)
+    inicio = time.time()
+    assert esperar(lambda: red.altura("r0") == 1, 5), "r0 no se puso al día"
+    assert time.time() - inicio < 3.0
+    bc0 = red.nodo("r0").blockchain
+    assert bc0.last_block.hash == red.nodo("r1").blockchain.last_block.hash
+    assert bc0.check_certificate(bc0.last_block, bc0.certificates[1]) == (True, "OK")
+    est = red.clientes["r0"].get("/consensus").json()
+    assert est["view"] == 0 and not est["in_view_change"] and est["view_changes"] == 0
+    assert est["caught_up_blocks"] == 1
+    # Sigue siendo el primario: el siguiente bloque se confirma en las 4.
+    red.enviar_tx("r2", 1)
+    assert esperar(lambda: all(red.altura(r) == 2 for r in red.ids), 10)

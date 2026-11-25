@@ -43,6 +43,23 @@ réplica recalcula O a partir de V y lo rechaza si no coincide. Si la vista
 v+1 tampoco avanza, se intenta v+2 con el doble de espera. Regla de vivacidad:
 con f + 1 VIEW-CHANGE para vistas mayores, la réplica se une a la menor.
 
+Réplica rezagada: ponerse al día con el certificado
+---------------------------------------------------
+Si una réplica pierde los COMMIT de la altura h + 1, las demás ya confirmaron
+y no tienen trabajo pendiente: un cambio de vista suyo no prospera (nadie se
+une) y esperar la sincronización periódica cuesta ~15 s. Antes de sospechar
+del primario, una réplica con trabajo pendiente durante ``catch_up_delay``
+(por defecto ``view_timeout / 5``) envía CERT-REQUEST ⟨h⟩ ("estoy en h").
+Quien ya confirmó más alturas responde SOLO al que pregunta con CERT-REPLY:
+el bloque h + 1 (y siguientes, hasta ``MAX_CATCH_UP``) con su certificado de
+commit. También se responde así a un VIEW-CHANGE que trae una altura menor a
+la propia, y se pide el certificado en cuanto llega un mensaje para una altura
+mayor que h + 1. La réplica que recibe un CERT-REPLY NO confía en quien lo
+envía: acepta el bloque solo si el certificado tiene 2f + 1 COMMIT válidos de
+réplicas distintas para ese hash, vista y altura (el mismo chequeo que al
+sincronizar la cadena). Un VIEW-CHANGE ya enviado no se retira: volver a la
+vista anterior rompería la seguridad del cambio de vista (§4.4).
+
 Qué se omite (documentado en docs/arquitectura.md §4)
 -----------------------------------------------------
 - Checkpoints y recolección de basura: la "ventana" es de UN bloque (el
@@ -52,8 +69,9 @@ Qué se omite (documentado en docs/arquitectura.md §4)
   cada bloque es la prueba).
 - Peticiones nulas en NEW-VIEW: con ventana 1 no hay huecos que rellenar.
 - Respuestas a clientes (REPLY): el "cliente" mira la cadena (API).
-- Transferencia de estado: una réplica atrasada se sincroniza por P2P
-  (GET_CHAIN) y verifica los certificados de cada bloque.
+- Transferencia de estado completa: una réplica muy atrasada se sincroniza
+  por P2P (GET_CHAIN) y verifica los certificados de cada bloque; los pocos
+  bloques que faltan tras perder mensajes llegan por CERT-REQUEST/CERT-REPLY.
 - La vista no se guarda en disco: al arrancar se toma la vista del último
   certificado de la cadena.
 
@@ -85,7 +103,10 @@ PREPARE = "PREPARE"
 COMMIT = "COMMIT"
 VIEW_CHANGE = "VIEW_CHANGE"
 NEW_VIEW = "NEW_VIEW"
-MESSAGE_TYPES = (PRE_PREPARE, PREPARE, COMMIT, VIEW_CHANGE, NEW_VIEW)
+# Ponerse al día: pedir / entregar bloques confirmados con su certificado de commit.
+CERT_REQUEST = "CERT_REQUEST"
+CERT_REPLY = "CERT_REPLY"
+MESSAGE_TYPES = (PRE_PREPARE, PREPARE, COMMIT, VIEW_CHANGE, NEW_VIEW, CERT_REQUEST, CERT_REPLY)
 
 
 class PBFTConfigError(ValueError):
@@ -276,8 +297,10 @@ def _well_formed(msg) -> bool:
         return False
     if not isinstance(msg.get("replica"), str) or not _is_int(msg.get("view")):
         return False
-    if msg["type"] in (PRE_PREPARE, PREPARE, COMMIT):
+    if msg["type"] in (PRE_PREPARE, PREPARE, COMMIT, CERT_REPLY):
         return _is_int(msg.get("seq")) and isinstance(msg.get("digest"), str)
+    if msg["type"] == CERT_REQUEST:
+        return _is_int(msg.get("height"))
     return True
 
 
@@ -347,12 +370,15 @@ class PBFTReplica:
         contradictorios firmados por la misma réplica (alerta del monitor).
       - ``on_invalid_block(motivo, réplica)``: el primario propuso un bloque inválido.
       - ``request_sync()``: pedir la cadena a los pares (réplica atrasada).
+      - ``send_to(réplica, msg)``: envía un mensaje a UNA réplica (respuestas
+        CERT-REPLY, no bloquea). Si falta, se difunde con ``send``.
     Todo el estado se protege con un ``RLock``; un hilo propio hace los
     temporizadores y las propuestas del primario.
     """
 
     TICK = 0.05
     MAX_FUTURE = 500      # mensajes de vistas futuras guardados como máximo
+    MAX_CATCH_UP = 10     # bloques certificados por respuesta CERT-REPLY; más: GET_CHAIN
 
     def __init__(self, replica_id: str, private_key_hex: str, replicas: ReplicaSet,
                  blockchain, send: Callable[[dict], None], *,
@@ -362,6 +388,8 @@ class PBFTReplica:
                  on_equivocation: Optional[Callable[..., None]] = None,
                  on_invalid_block: Optional[Callable[[str, str], None]] = None,
                  request_sync: Optional[Callable[[], None]] = None,
+                 send_to: Optional[Callable[[str, dict], None]] = None,
+                 catch_up_delay: Optional[float] = None,
                  clock: Callable[[], float] = time.monotonic):
         if replicas.get(replica_id) is None:
             raise PBFTConfigError(f"{replica_id} no figura en la lista de réplicas")
@@ -377,6 +405,9 @@ class PBFTReplica:
         self._on_equivocation = on_equivocation
         self._on_invalid_block = on_invalid_block
         self._request_sync = request_sync
+        self._send_to = send_to
+        # Menor que view_timeout: pedir el certificado ANTES de sospechar del primario.
+        self.catch_up_delay = view_timeout / 5 if catch_up_delay is None else catch_up_delay
         self._clock = clock
 
         self._lock = threading.RLock()
@@ -394,11 +425,14 @@ class PBFTReplica:
         self._vc_attempts = 0
         self._last_proposal = 0.0
         self._last_sync = -1e9
+        self._last_catch_up = -1e9                 # último CERT-REQUEST enviado
+        self._last_reply: Dict[str, float] = {}    # réplica -> último CERT-REPLY enviado
         self.last_seen: Dict[str, float] = {}
         # Contadores (GET /consensus y /metrics).
         self.view_changes_total = 0
         self.rejected_messages = 0
         self.committed_blocks = 0
+        self.caught_up_blocks = 0                  # bloques agregados por CERT-REPLY
         self._adopt_view_from_chain()
 
         self._stop = threading.Event()
@@ -455,6 +489,7 @@ class PBFTReplica:
                 "n": self.rs.n, "f": self.rs.f, "quorum": self.rs.quorum,
                 "last_committed_seq": self.bc.height,
                 "committed_blocks": self.committed_blocks,
+                "caught_up_blocks": self.caught_up_blocks,
                 "view_changes": self.view_changes_total,
                 "rejected_messages": self.rejected_messages,
                 "view_timeout_s": self.view_timeout,
@@ -477,6 +512,16 @@ class PBFTReplica:
             self._send(msg)
         except Exception:
             logger.exception(f"[{self.id}] error al enviar {msg.get('type')}")
+
+    def _unicast(self, replica_id: str, msg: dict) -> None:
+        """Envía ``msg`` solo a ``replica_id`` (encola, no bloquea)."""
+        try:
+            if self._send_to is not None:
+                self._send_to(replica_id, msg)
+            else:
+                self._send(msg)          # sin envío directo: las demás lo ignoran
+        except Exception:
+            logger.exception(f"[{self.id}] error al enviar {msg.get('type')} a {replica_id}")
 
     def _event(self, phase: str, **data) -> None:
         if self._on_event:
@@ -514,6 +559,7 @@ class PBFTReplica:
                 PRE_PREPARE: self._on_pre_prepare, PREPARE: self._on_prepare,
                 COMMIT: self._on_commit, VIEW_CHANGE: self._on_view_change,
                 NEW_VIEW: self._on_new_view,
+                CERT_REQUEST: self._on_cert_request, CERT_REPLY: self._on_cert_reply,
             }[msg["type"]]
             handler(msg)
 
@@ -557,7 +603,9 @@ class PBFTReplica:
         if self.in_view_change or msg["view"] != self.view or seq <= self._height:
             return False
         if seq > self._height + 1:
-            self._maybe_sync()           # otros van adelante: pedir la cadena
+            # Otros van adelante: pedir ya los certificados que faltan (y la cadena).
+            self._request_catch_up(self._clock())
+            self._maybe_sync()
         return seq <= self._height + 2   # ventana pequeña: el resto se descarta
 
     # Caso normal ─────────────────────────────────────────────────────────────
@@ -729,6 +777,11 @@ class PBFTReplica:
         if self._waiting_since is None:
             self._waiting_since = now
             return
+        # Antes de sospechar del primario: ¿las demás ya confirmaron h + 1?
+        if now - self._waiting_since >= self.catch_up_delay:
+            self._request_catch_up(now)
+            if self._waiting_since is None:      # la respuesta ya llegó (red en memoria)
+                return
         # Espera exponencial: si la vista v+1 tampoco avanza, v+2 espera el doble (§4.5.2).
         limit = self.view_timeout * (2 ** min(self._vc_attempts, 5))
         if now - self._waiting_since >= limit:
@@ -778,6 +831,9 @@ class PBFTReplica:
         return True
 
     def _on_view_change(self, msg: dict) -> None:
+        # Quien pide el cambio de vista va atrasado: quizá solo perdió los COMMIT.
+        if isinstance(msg.get("height"), int) and msg["height"] < self._height:
+            self._send_certified(msg["replica"], msg["height"])
         v = msg.get("view")
         if not isinstance(v, int) or v <= self.view:
             return
@@ -812,7 +868,9 @@ class PBFTReplica:
         proofs = [own] + [others[r] for r in sorted(others)][: 2 * self.rs.f]
         h_max, pc = choose_reproposal(proofs, self.rs)
         if self._height < h_max:
-            self._maybe_sync()          # primero ponerse al día; se reintenta en tick()
+            # Primero ponerse al día; se reintenta en tick().
+            self._request_catch_up(self._clock())
+            self._maybe_sync()
             return
         pre_prepares = []
         if pc is not None:
@@ -874,6 +932,82 @@ class PBFTReplica:
         logger.warning(f"[{self.id}] vista {v} instalada; primario {self.rs.primary(v)}")
         self._event(NEW_VIEW, view=v, primary=self.rs.primary(v))
 
+    # Ponerse al día con certificados ─────────────────────────────────────────
+
+    def _request_catch_up(self, now: float) -> None:
+        """CERT-REQUEST ⟨h⟩ a las demás: "estoy en h, mándenme h + 1 certificado"."""
+        if now - self._last_catch_up < self.catch_up_delay:
+            return
+        self._last_catch_up = now
+        msg = self._make(CERT_REQUEST, view=self.view, height=self._height)
+        try:
+            self._send(msg)
+        except Exception:
+            logger.exception(f"[{self.id}] error al enviar CERT_REQUEST")
+
+    def _on_cert_request(self, msg: dict) -> None:
+        self._send_certified(msg["replica"], msg["height"])
+
+    def _send_certified(self, replica_id: str, height: int) -> None:
+        """Envía a ``replica_id`` los bloques confirmados height+1.. con su certificado.
+
+        Solo encola (no hay E/S de red con el lock tomado). Una respuesta por
+        réplica cada ``catch_up_delay / 2``: una réplica bizantina no puede
+        hacernos reenviar la cadena sin límite.
+        """
+        chain, top = self.bc.chain, self.bc.height
+        if height >= top:
+            return
+        now = self._clock()
+        if now - self._last_reply.get(replica_id, -1e9) < self.catch_up_delay / 2:
+            return
+        self._last_reply[replica_id] = now
+        for seq in range(height + 1, min(top, height + self.MAX_CATCH_UP) + 1):
+            cert = self.bc.certificates.get(seq)
+            if cert is None:
+                return
+            reply = self._make(CERT_REPLY, view=self.view, seq=seq, digest=chain[seq].hash,
+                               tip=top, certificate=cert)
+            reply["block"] = chain[seq].to_dict()
+            self._unicast(replica_id, reply)
+
+    def _on_cert_reply(self, msg: dict) -> None:
+        """Bloque confirmado + certificado. NO se confía en quien lo envía: vale el certificado."""
+        seq = msg["seq"]
+        if seq <= self._height:
+            return                               # ya lo tenemos (otra réplica respondió antes)
+        if seq > self._height + 1:
+            self._maybe_sync()                   # llegó fuera de orden: falta el anterior
+            return
+        block = block_of(msg)
+        if block is None or block.header.index != seq:
+            self._reject(f"CERT_REPLY de {msg['replica']} con un bloque que no corresponde "
+                         f"a su digest")
+            return
+        cert = msg.get("certificate")
+        ok, reason = self.rs.check_commit_certificate(cert, block.hash, seq)
+        if not ok:
+            self._reject(f"CERT_REPLY de {msg['replica']}: {reason}")
+            return
+        ok, reason = self.bc.add_block(block, certificate=cert)
+        if not ok:
+            if self.bc.height >= seq:            # llegó antes por P2P
+                self._sync_height()
+            else:
+                self._reject(f"CERT_REPLY de {msg['replica']}: bloque {seq} inválido: {reason}")
+            return
+        self.caught_up_blocks += 1
+        logger.info(f"[{self.id}] bloque {seq} agregado con el certificado de commit "
+                    f"(vista {cert['view']}) enviado por {msg['replica']}")
+        self._event("CATCH_UP", view=cert["view"], seq=seq, digest=block.hash[:16],
+                    source=msg["replica"])
+        self._sync_height()                      # limpia el log y reinicia el temporizador
+        if self._on_committed:
+            try:
+                self._on_committed(block, cert)
+            except Exception:
+                logger.exception("Error en on_committed")
+
     def _replay_future(self) -> None:
         """Reprocesa los mensajes guardados de la vista recién instalada."""
         pending, self._future = self._future, [m for m in self._future if m["view"] > self.view]
@@ -926,15 +1060,25 @@ class PBFTTransport:
 
     def multicast(self, msg: dict) -> None:
         for q in self._queues.values():
-            while True:
+            self._put(q, msg)
+
+    def send_to(self, replica_id: str, msg: dict) -> None:
+        """Encola ``msg`` solo para ``replica_id`` (p. ej. un CERT-REPLY)."""
+        q = self._queues.get(replica_id)
+        if q is not None:
+            self._put(q, msg)
+
+    @staticmethod
+    def _put(q: "queue.Queue", msg: dict) -> None:
+        while True:
+            try:
+                q.put_nowait(msg)
+                return
+            except queue.Full:
                 try:
-                    q.put_nowait(msg)
-                    break
-                except queue.Full:
-                    try:
-                        q.get_nowait()          # descarta el más viejo
-                    except queue.Empty:
-                        pass
+                    q.get_nowait()              # descarta el más viejo
+                except queue.Empty:
+                    pass
 
     def _worker(self, replica: Replica) -> None:
         q = self._queues[replica.id]
@@ -953,22 +1097,38 @@ class InMemoryNetwork:
 
     ``sender(id)`` da la función ``send`` de una réplica: entrega cada mensaje,
     en el mismo hilo, a las demás réplicas que no estén en ``down``.
+    ``unicaster(id)`` da su ``send_to(destino, msg)``. ``drop(origen, destino,
+    msg)``, si se define, decide qué mensajes se pierden (pruebas).
     """
 
     def __init__(self) -> None:
         self.replicas: Dict[str, "PBFTReplica"] = {}
         self.down: set = set()
+        self.drop: Optional[Callable[[str, str, dict], bool]] = None
         self.delivered = 0
+
+    def _deliver(self, src_id: str, dst_id: str, msg: dict) -> None:
+        if dst_id in self.down or dst_id not in self.replicas:
+            return
+        if self.drop is not None and self.drop(src_id, dst_id, msg):
+            return
+        self.delivered += 1
+        self.replicas[dst_id].receive(msg)
 
     def sender(self, src_id: str) -> Callable[[dict], None]:
         def send(msg: dict) -> None:
             if src_id in self.down:
                 return
-            for rid, replica in list(self.replicas.items()):
-                if rid != src_id and rid not in self.down:
-                    self.delivered += 1
-                    replica.receive(msg)
+            for rid in list(self.replicas):
+                if rid != src_id:
+                    self._deliver(src_id, rid, msg)
         return send
+
+    def unicaster(self, src_id: str) -> Callable[[str, dict], None]:
+        def send_to(dst_id: str, msg: dict) -> None:
+            if src_id not in self.down and dst_id != src_id:
+                self._deliver(src_id, dst_id, msg)
+        return send_to
 
     def add(self, replica: "PBFTReplica") -> None:
         self.replicas[replica.id] = replica

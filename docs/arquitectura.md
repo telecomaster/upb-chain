@@ -252,7 +252,8 @@ no propone *h* + 2 hasta confirmar *h* + 1. `POST /blocks/mine` responde 409 en 
      │◄─────────────────►│◄─────────────────►│◄─────────────────►│
      │  committed = prepared + 2f+1 COMMIT (incluido el propio)  │
      ▼  add_block(bloque, certificado = 2f+1 COMMIT)  — en cada réplica
-     └─► el primario difunde NEW_BLOCK + certificado (observadores y réplicas atrasadas)
+     └─► el primario difunde NEW_BLOCK + certificado (observadores y réplicas atrasadas);
+         una réplica que perdió los COMMIT pide CERT_REQUEST y recibe bloque + certificado
 ```
 
 **Variante implementada:** la del artículo. El primario **no** envía PREPARE; su PRE-PREPARE
@@ -290,6 +291,26 @@ una **equivocación**: se ignora el segundo y el monitor emite **CRITICAL `PBFT_
 - Los mensajes de una vista que aún no se instaló (la red reordena) se guardan y se reprocesan al
   instalarla.
 
+**Réplica rezagada: ponerse al día con el certificado de commit.** Si una réplica pierde los
+COMMIT de la altura *h* + 1, las demás ya confirmaron y no tienen trabajo pendiente: su cambio de
+vista no prospera (nadie se une sin *f* + 1 pedidos) y antes solo la sacaba la consulta periódica
+del P2P (`sync_interval` = 15 s); si la rezagada era el primario, además nadie difundía el bloque
+a los observadores. Ahora, con trabajo pendiente durante `catch_up_delay` (= `PBFT_VIEW_TIMEOUT`/5,
+1 s por defecto, **antes** de que venza el temporizador de vista), la réplica difunde
+`CERT_REQUEST⟨h⟩` ("estoy en *h*"); también lo hace en cuanto ve un mensaje para una altura mayor
+que *h* + 1. Toda réplica con más altura contesta **solo a quien pregunta** con `CERT_REPLY`: el
+bloque *h* + 1 (y siguientes, hasta 10; más allá se usa `GET_CHAIN`) con su certificado de commit.
+La misma respuesta recibe un VIEW-CHANGE que trae una altura menor a la propia. Quien recibe un
+`CERT_REPLY` **no confía en el emisor**: acepta el bloque solo si el certificado tiene 2*f* + 1
+COMMIT con firma válida de réplicas distintas para ese hash, vista y altura
+(`check_commit_certificate`, el mismo chequeo que al sincronizar), y luego valida el bloque como
+siempre (`add_block`). Al agregarlo se reinicia el temporizador, así que una réplica que puede
+ponerse al día no inicia un cambio de vista; si el primario rezagado se pone al día, difunde el
+bloque a los observadores. Un VIEW-CHANGE **ya enviado no se retira**: volver a la vista *v*
+después de prometer *v* + 1 rompería la intersección de quórums que protege al NEW-VIEW; esa
+réplica se une a *v* + 1 cuando las demás también lo pidan. Las respuestas solo se encolan (sin E/S
+de red con el lock tomado) y hay como máximo una por réplica cada `catch_up_delay`/2.
+
 ### 4.5 Qué se omite (y por qué)
 
 - **Checkpoints y recolección de basura (§4.3 del artículo):** con ventana 1 el log solo guarda
@@ -297,9 +318,11 @@ una **equivocación**: se ignora el segundo y el monitor emite **CRITICAL `PBFT_
 - **Peticiones nulas en NEW-VIEW:** con ventana 1 no hay huecos que rellenar.
 - **Clientes y REPLY:** el "cliente" consulta la cadena por la API. Las TXs llegan a las
   réplicas por el gossip P2P existente (`NEW_TX`); el primario no reenvía peticiones.
-- **Transferencia de estado:** una réplica atrasada pide la cadena a sus pares (`GET_CHAIN`) y
-  verifica certificado por certificado.
-- **Retransmisión:** un mensaje perdido no se reenvía; el temporizador provoca un cambio de vista.
+- **Transferencia de estado completa:** una réplica muy atrasada pide la cadena a sus pares
+  (`GET_CHAIN`) y verifica certificado por certificado; para pocos bloques basta `CERT_REQUEST`.
+- **Retransmisión de mensajes de fase:** un PREPARE o COMMIT perdido no se reenvía; si las demás
+  confirmaron, la réplica se pone al día con el certificado (§4.4); si no, el temporizador provoca
+  un cambio de vista.
 - **Vista en disco:** al reiniciar, la réplica toma la vista del certificado del último bloque.
 - **Firmas por mensaje en vez de MACs (§4.1 usa autenticadores):** más simple y más caro en CPU.
 - **Cambio de membresía:** la lista de réplicas es fija; cambiarla es una red nueva.
@@ -307,10 +330,10 @@ una **equivocación**: se ignora el segundo y el monitor emite **CRITICAL `PBFT_
 ### 4.6 Observabilidad
 
 - `GET /consensus`: modo, vista, primario, ¿cambio de vista en curso?, *n*, *f*, quórum, última
-  altura confirmada, cambios de vista, mensajes descartados y estado de cada réplica (último
-  mensaje recibido).
+  altura confirmada, cambios de vista, mensajes descartados, bloques agregados por certificado
+  (`caught_up_blocks`) y estado de cada réplica (último mensaje recibido).
 - `GET /events`: eventos `pbft_phase` (`PRE_PREPARE`, `PREPARED`, `COMMITTED`, `VIEW_CHANGE`,
-  `NEW_VIEW`, `EQUIVOCATION`).
+  `NEW_VIEW`, `EQUIVOCATION`, `CATCH_UP`).
 - `/metrics`: `upb_consensus_info{mode}`, `upb_pbft_view`, `upb_pbft_committed_seq`,
   `upb_pbft_in_view_change`, `upb_pbft_view_changes_total`, `upb_pbft_rejected_messages_total`.
 

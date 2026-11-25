@@ -313,6 +313,7 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
             on_equivocation=security_monitor.on_pbft_equivocation,
             on_invalid_block=security_monitor.on_invalid_block,
             request_sync=p2p.sync_with_peers,
+            send_to=transport.send_to,
         )
     return node
 

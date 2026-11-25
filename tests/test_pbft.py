@@ -6,8 +6,8 @@ están en ``test_pbft_red.py``.
 """
 import pytest
 
-from blockchain.consensus.pbft import (COMMIT, PRE_PREPARE, InMemoryNetwork, PBFTReplica,
-                                       ReplicaSet, sign_message)
+from blockchain.consensus.pbft import (CERT_REPLY, CERT_REQUEST, COMMIT, PRE_PREPARE, VIEW_CHANGE,
+                                       InMemoryNetwork, PBFTReplica, ReplicaSet, sign_message)
 from blockchain.core.block import Block, BlockHeader
 from blockchain.core.chain import Blockchain
 from blockchain.core.transaction import Transaction, TransactionType
@@ -50,7 +50,8 @@ class Red:
                             replica_set=self.rs)
             mon = SecurityMonitor()
             r = PBFTReplica(rid, self.wallets[i].private_key_hex, self.rs, bc,
-                            self.net.sender(rid), view_timeout=timeout, batch_interval=0.0,
+                            self.net.sender(rid), send_to=self.net.unicaster(rid),
+                            view_timeout=timeout, batch_interval=0.0,
                             on_equivocation=mon.on_pbft_equivocation,
                             on_invalid_block=mon.on_invalid_block,
                             clock=self.reloj)
@@ -349,3 +350,119 @@ def test_dos_bloques_certificados_en_la_misma_altura_alerta_critica(tmp_path):
     assert alertas and str(alertas[0]["level"].value if hasattr(alertas[0]["level"], "value")
                            else alertas[0]["level"]) == "CRITICAL"
     assert bc.height == 1 and bc.last_block.hash != y.hash
+
+
+# ── Réplica rezagada: ponerse al día con el certificado de commit ─────────────
+
+def _sin_commits_para_r0(enviados):
+    """Pierde todo COMMIT de la altura 1 dirigido a r0 y anota los tipos enviados."""
+    def drop(src, dst, m):
+        enviados.append((src, m["type"]))
+        return dst == "r0" and m["type"] == COMMIT and m.get("seq") == 1
+    return drop
+
+
+def test_primario_que_pierde_los_commit_se_pone_al_dia_sin_cambio_de_vista(tmp_path):
+    """Regresión: antes r0 se quedaba en la altura 0 (solo la sincronización periódica,
+    ~15 s, lo sacaba) y a los 5 s lanzaba un VIEW-CHANGE solitario que nadie seguía."""
+    red = Red(tmp_path, timeout=5.0)
+    enviados = []
+    red.net.drop = _sin_commits_para_r0(enviados)
+    red.enviar_tx(_tx())
+    red.tick()
+    assert red.alturas() == {"r0": 0, "r1": 1, "r2": 1, "r3": 1}
+    inicio = red.reloj.t
+    while red.cadenas["r0"].height < 1 and red.reloj.t - inicio < 15.0:
+        red.tick(avanzar=0.1)
+    assert red.cadenas["r0"].height == 1
+    assert red.reloj.t - inicio < 2.0
+    bc0 = red.cadenas["r0"]
+    assert bc0.last_block.hash == red.cadenas["r1"].last_block.hash
+    assert red.rs.check_commit_certificate(bc0.certificates[1], bc0.last_block.hash, 1)[0]
+    assert ("r0", CERT_REQUEST) in enviados
+    assert not [m for m in enviados if m[1] == VIEW_CHANGE]
+    for r in red.replicas.values():
+        assert r.view == 0 and not r.in_view_change and r.view_changes_total == 0
+    assert red.replicas["r0"].caught_up_blocks == 1
+    # Sigue siendo el primario y el siguiente bloque se confirma en las 4.
+    red.net.drop = None
+    red.enviar_tx(_tx(1))
+    red.tick()
+    assert red.alturas() == {"r0": 2, "r1": 2, "r2": 2, "r3": 2}
+
+
+def test_view_change_de_una_replica_atrasada_recibe_el_certificado(tmp_path):
+    """Si los CERT-REQUEST también se pierden, el VIEW-CHANGE de la rezagada (altura
+    menor) lo contestan las demás con el bloque y su certificado. El VIEW-CHANGE ya
+    enviado no se retira (seguridad, §4.4): r0 se une a la vista 1 con la siguiente TX."""
+    red = Red(tmp_path, timeout=5.0)
+    commits = _sin_commits_para_r0([])
+    red.net.drop = lambda s, d, m: commits(s, d, m) or m["type"] == CERT_REQUEST
+    red.enviar_tx(_tx())
+    red.tick()
+    for _ in range(52):
+        red.tick(avanzar=0.1)                    # vence el temporizador de r0 (5 s)
+    r0 = red.replicas["r0"]
+    assert red.cadenas["r0"].height == 1 and r0.in_view_change
+    assert all(red.replicas[r].view == 0 and not red.replicas[r].in_view_change
+               for r in ("r1", "r2", "r3"))
+    red.net.drop = None
+    red.enviar_tx(_tx(1))
+    for _ in range(200):
+        red.tick(avanzar=0.1)
+        if set(red.alturas().values()) == {2}:
+            break
+    assert red.alturas() == {"r0": 2, "r1": 2, "r2": 2, "r3": 2}
+    assert len({bc.last_block.hash for bc in red.cadenas.values()}) == 1
+
+
+def test_certificado_falso_o_insuficiente_en_la_puesta_al_dia_se_rechaza(tmp_path):
+    red = Red(tmp_path)
+    red.net.drop = _sin_commits_para_r0([])
+    red.enviar_tx(_tx())
+    red.tick()                                   # sin avanzar el reloj: r0 sigue atrasado
+    r0, bc1 = red.replicas["r0"], red.cadenas["r1"]
+    assert red.cadenas["r0"].height == 0
+    bloque, bueno = bc1.chain[1], bc1.certificates[1]
+
+    def commit(i, digest=bloque.hash, llave=None):
+        return sign_message({"type": COMMIT, "replica": red.ids[i], "view": 0, "seq": 1,
+                             "digest": digest}, llave or red.wallets[i].private_key_hex)
+
+    def respuesta(cert, de=1, blk=bloque):
+        m = red.firmar(de, type=CERT_REPLY, view=0, seq=1, digest=blk.hash, tip=1,
+                       certificate=cert)
+        m["block"] = blk.to_dict()
+        return m
+
+    def cert(commits, digest=bloque.hash):
+        return {"view": 0, "seq": 1, "digest": digest, "commits": commits}
+    falsos = {
+        "solo f firmas": cert([commit(1)]),
+        "2f firmas": cert([commit(1), commit(2)]),
+        "firmante repetido": cert([commit(1), commit(2), commit(2)]),
+        "llave desconocida": cert([commit(1), commit(2),
+                                   commit(3, llave=Wallet.generate().private_key_hex)]),
+        "otro hash": cert([commit(i, digest="00" * 32) for i in (1, 2, 3)], digest="00" * 32),
+        "otra vista": {**bueno, "view": 1},
+        "sin certificado": None,
+    }
+    for nombre, c in falsos.items():
+        antes = r0.rejected_messages
+        r0.receive(respuesta(c))
+        assert red.cadenas["r0"].height == 0, nombre
+        assert r0.rejected_messages == antes + 1, nombre
+    # Bloque que no corresponde a su digest (con un certificado válido de otro bloque).
+    m = respuesta(bueno)
+    m["block"] = {**bloque.to_dict(), "transactions": []}
+    r0.receive(m)
+    # Firmado por quien no es réplica: se descarta antes de mirar el certificado.
+    intruso = sign_message({"type": CERT_REPLY, "replica": "intruso", "view": 0, "seq": 1,
+                            "digest": bloque.hash, "certificate": bueno},
+                           Wallet.generate().private_key_hex)
+    intruso["block"] = bloque.to_dict()
+    assert r0.receive(intruso) is False
+    assert red.cadenas["r0"].height == 0
+    # El certificado verdadero (2f + 1 firmas válidas) sí se acepta, venga de quien venga.
+    r0.receive(respuesta(bueno, de=3))
+    assert red.cadenas["r0"].height == 1 and red.cadenas["r0"].last_block.hash == bloque.hash
