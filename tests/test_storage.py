@@ -294,6 +294,11 @@ def test_arranque_rapido_mucho_menor_que_revalidacion_completa(tmp_path):
     t_fast, rapida = medir("fast")
     assert rapida.replayed_on_start == 0
     assert _estado(rapida) == _estado(completa)
+    # Mejor de 3 por modo, alternados: una sola medición es sensible a la carga
+    # de la máquina (otros procesos, antivirus) y volvía intermitente el test.
+    for _ in range(2):
+        t_full = min(t_full, medir("full")[0])
+        t_fast = min(t_fast, medir("fast")[0])
     assert t_fast < t_full / 2, (t_fast, t_full)
 
 
