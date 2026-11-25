@@ -10,6 +10,7 @@ mismo proceso son independientes. ``app = create_app()`` al final mantiene
 """
 import asyncio
 import csv
+import hashlib
 import hmac
 import html
 import io
@@ -491,6 +492,9 @@ class ElectionRequest(BaseModel):
     end_height: int
     badge_weights: Optional[dict] = None
     cap: Optional[int] = None
+    title: Optional[str] = None
+    eligible_credential_type: Optional[str] = None
+    eligible_program: Optional[str] = None
 
 
 class BadgeRequest(BaseModel):
@@ -1064,16 +1068,59 @@ async def create_award_rule(request: AwardRuleRequest, node: NodeState = Depends
     return {"status": "PENDING", "tx_id": tx.tx_id}
 
 
+def _estado_eleccion(config: dict, height: int) -> str:
+    """pending / open / closed según la altura CONFIRMADA (el próximo bloque es height + 1)."""
+    if height >= config["end_height"]:
+        return "closed"
+    return "open" if height + 1 >= config["start_height"] else "pending"
+
+
+def _resumen_eleccion(node: NodeState, eid: str, config: dict, state, height: int) -> dict:
+    estado = _estado_eleccion(config, height)
+    votos = state.elections.get(eid, {})
+    out = {**{k: v for k, v in config.items() if k != "snapshot"},
+           "status": estado, "open": estado == "open", "height": height,
+           "tally": state.tally(eid), "total_votes": len(votos),
+           "turnout": {"voters": len(votos), "total_weight": sum(state.weights.get(eid, {}).values())},
+           "final": estado == "closed"}
+    return out
+
+
 @router.get("/elections")
 async def list_elections(node: NodeState = Depends(get_node)):
-    """Elecciones configuradas con su recuento ponderado y si están abiertas a la altura actual."""
+    """Elecciones configuradas con estado (pending/open/closed), recuento y participación."""
     state = node.blockchain.contract_state("voting")
     height = node.blockchain.contracts.height
     return {"height": height, "elections": [
-        {**{k: v for k, v in c.items() if k != "snapshot"},
-         "open": c["start_height"] <= height + 1 <= c["end_height"],
-         "tally": state.tally(eid), "total_votes": len(state.elections.get(eid, {}))}
-        for eid, c in state.configs.items()]}
+        _resumen_eleccion(node, eid, c, state, height) for eid, c in state.configs.items()]}
+
+
+@router.get("/elections/{election_id}")
+async def get_election_results(election_id: str, node: NodeState = Depends(get_node)):
+    """Una elección; si está cerrada, resultado final con certificación verificable.
+
+    El recuento solo es definitivo cuando ya existe el bloque ``end_height``. La
+    certificación liga el recuento al hash de ese bloque de cierre: cualquiera puede
+    recalcular el digest con los votos de la cadena. Los votos son PÚBLICOS en la cadena.
+    """
+    state = node.blockchain.contract_state("voting")
+    config = state.configs.get(election_id)
+    if config is None:
+        raise HTTPException(404, "Elección no encontrada")
+    height = node.blockchain.contracts.height
+    out = _resumen_eleccion(node, election_id, config, state, height)
+    if not out["final"]:
+        out["tally"] = None        # parcial: no se publica como resultado hasta el cierre
+        out["certification"] = None
+        return out
+    cierre = node.blockchain.chain[config["end_height"]]
+    resultado = {"election_id": election_id, "tally": state.tally(election_id),
+                 "voters": len(state.elections.get(election_id, {})),
+                 "close_height": config["end_height"], "close_block_hash": cierre.hash}
+    digest = hashlib.sha256(json.dumps(resultado, sort_keys=True,
+                                       separators=(",", ":")).encode("utf-8")).hexdigest()
+    out["certification"] = {**resultado, "digest": digest}
+    return out
 
 
 @router.post("/elections")
@@ -1083,7 +1130,9 @@ async def create_election(request: ElectionRequest, node: NodeState = Depends(ge
         request.creator_address, request.election_id, request.options, request.weight_rule,
         request.start_height, request.end_height, request.private_key_hex,
         nonce=node.blockchain.next_nonce(request.creator_address),
-        badge_weights=request.badge_weights, cap=request.cap))
+        badge_weights=request.badge_weights, cap=request.cap, title=request.title,
+        eligible_credential_type=request.eligible_credential_type,
+        eligible_program=request.eligible_program))
     _submit_contract_tx(node, tx)
     return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce}
 

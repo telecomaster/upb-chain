@@ -22,6 +22,9 @@ Elecciones CONFIGURADAS (P2-12), con la TX ``ELECTION_CREATE``:
                                                 el saldo PUPB justo antes de crear la
                                                 elección (foto guardada en el estado)
 
+Idea 8 (opcionales): ``title`` y elegibilidad por credencial ACTIVA
+(``eligible_credential_type`` y/o ``eligible_program``); quien no la tiene no vota.
+
 La ventana es por ALTURA de bloque (no por hora): un voto vale si
 ``start_height <= altura del bloque <= end_height``. El peso sale solo del estado
 (insignias en el bloque del voto, o la foto de saldos): sin reloj ni azar. Un voto
@@ -39,6 +42,7 @@ MAX_LEN = 64
 MAX_OPTIONS = 20
 MAX_WEIGHT = 1_000_000
 
+OPTIONAL_TEXT = ("title", "eligible_credential_type", "eligible_program")
 WEIGHT_RULES = ("one_per_address", "by_badge", "by_pupb_balance_snapshot")
 
 
@@ -84,6 +88,23 @@ def vote_weight(config: dict, voter: str, ctx: TxContext) -> int:
     return config["snapshot"].get(voter, 0)   # by_pupb_balance_snapshot (ya con tope)
 
 
+def _elegible(config: dict, voter: str, ctx: TxContext) -> bool:
+    """Idea 8: restricción opcional a quien tenga una credencial ACTIVA del tipo/programa."""
+    tipo, programa = config.get("eligible_credential_type"), config.get("eligible_program")
+    if tipo is None and programa is None:
+        return True
+    credentials = ctx.view("credentials")
+    if credentials is None:
+        return False
+    for c in credentials.get_student_credentials(voter):
+        if str(getattr(c.get("status"), "value", c.get("status"))).upper() != "ACTIVE":
+            continue
+        ctype = str(getattr(c.get("credential_type"), "value", c.get("credential_type")))
+        if (tipo is None or ctype == tipo) and (programa is None or c.get("program") == programa):
+            return True
+    return False
+
+
 class VotingContract(Contract):
     NAME = "voting"
     HANDLED_TYPES = frozenset({"VOTE", "ELECTION_CREATE"})
@@ -120,6 +141,8 @@ class VotingContract(Contract):
                            f"(ventana {config['start_height']}-{config['end_height']})")
         if choice not in config["options"]:
             return False, f"Opción inválida: {choice}"
+        if not _elegible(config, voter, ctx):
+            return False, "Esta dirección no cumple la elegibilidad de la elección (credencial)"
         if vote_weight(config, voter, ctx) <= 0:
             return False, "Esta dirección no tiene peso de voto en la elección"
         return True, "OK"
@@ -150,6 +173,9 @@ class VotingContract(Contract):
             cap = payload.get("cap")
             if not is_int(cap) or not 0 < cap <= MAX_WEIGHT:
                 return False, "cap debe ser un entero 1..1000000"
+        for extra in OPTIONAL_TEXT:
+            if extra in payload and _text(payload[extra]) is None:
+                return False, f"{extra} debe ser texto de 1 a {MAX_LEN} caracteres"
         return True, "OK"
 
     def apply(self, state: VotingState, tx: dict, ctx: TxContext) -> VotingState:
@@ -160,6 +186,9 @@ class VotingContract(Contract):
                       "options": list(payload["options"]), "weight_rule": payload["weight_rule"],
                       "start_height": payload["start_height"], "end_height": payload["end_height"],
                       "created_at_block": ctx.block_index}
+            for extra in OPTIONAL_TEXT:
+                if extra in payload:
+                    config[extra] = payload[extra]
             if payload["weight_rule"] == "by_badge":
                 config["badge_weights"] = dict(payload["badge_weights"])
             elif payload["weight_rule"] == "by_pupb_balance_snapshot":

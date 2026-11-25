@@ -98,7 +98,8 @@ async function cargarCatalogo() {
     const v = await obtener('/elections');
     $('elecciones').replaceChildren(...v.elections.map((x) => {
       const totales = Object.entries(x.tally).map(([o, n]) => `${o}: ${n}`).join(', ');
-      const e = li(`${x.election_id} (${x.open ? 'abierta' : 'cerrada'}, bloques ${x.start_height}-${x.end_height}, ` +
+      const estado = { pending: 'pendiente', open: 'abierta', closed: 'cerrada' }[x.status] || x.status;
+      const e = li(`${x.title || x.election_id} [${x.election_id}] (${estado}, ${x.total_votes} votos, bloques ${x.start_height}-${x.end_height}, ` +
         `peso: ${x.weight_rule}) ${totales} `);
       const b = document.createElement('button');
       b.textContent = 'Votar'; b.disabled = !x.open;

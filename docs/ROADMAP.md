@@ -179,6 +179,7 @@ Flujos de trabajo y orden de dependencias:
 6. **Detección federada de anomalías** entre nodos.
 7. **Alertas explicables** con contribución por característica.
 8. **Elecciones estudiantiles** sobre el tipo `VOTE` existente.
+   *Hecho: título, elegibilidad por credencial, estado pending/open/closed, participación y certificación del resultado al cierre (`docs/contratos.md`); la ventana por altura y el voto ponderado ya venían de P2-12.*
 9. **Arnés reproducible del paper:** `scripts/experiments/` regenera todas las tablas y figuras.
 
 ## Qué ve cada usuario

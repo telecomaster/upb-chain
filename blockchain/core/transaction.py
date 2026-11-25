@@ -505,14 +505,21 @@ def create_election_transaction(
     nonce: int = 0,
     badge_weights: Optional[dict] = None,
     cap: Optional[int] = None,
+    title: Optional[str] = None,
+    eligible_credential_type: Optional[str] = None,
+    eligible_program: Optional[str] = None,
 ) -> Transaction:
-    """TX ELECTION_CREATE (P2-12): elección con ventana por altura de bloque y regla de peso."""
+    """TX ELECTION_CREATE (P2-12; título y elegibilidad por credencial: Idea 8): elección con ventana por altura de bloque y regla de peso."""
     payload: dict = {"election_id": election_id, "options": options, "weight_rule": weight_rule,
                      "start_height": start_height, "end_height": end_height}
     if badge_weights is not None:
         payload["badge_weights"] = badge_weights
     if cap is not None:
         payload["cap"] = cap
+    for clave, valor in (("title", title), ("eligible_credential_type", eligible_credential_type),
+                         ("eligible_program", eligible_program)):
+        if valor is not None:
+            payload[clave] = valor
     tx = Transaction(
         type=TransactionType.ELECTION_CREATE,
         sender=creator_address,

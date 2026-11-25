@@ -129,6 +129,22 @@ cierre, peso 1). API: `GET|POST /catalog`, `GET /catalog/receipts/{address}`,
 `weighted`, `config` y `weights`). La billetera web (`/billetera`) lista el catálogo, las reglas
 y las elecciones y firma el canje con `item_id` en el navegador.
 
+## Elecciones estudiantiles (Idea 8)
+
+Se apoya en `ELECTION_CREATE`/`VOTE` de P2-12 y añade, sin cambiar las reglas existentes:
+
+- Campos opcionales del `ELECTION_CREATE`: `title`, `eligible_credential_type` y `eligible_program`
+  (texto 1-64). Si hay elegibilidad, solo vota quien tiene una credencial ACTIVA de ese tipo y/o
+  programa (se lee con `ctx.view("credentials")`; un voto de otro es inválido y rechaza el bloque).
+- `GET /elections` y `GET /elections/{id}` devuelven `status`: `pending` (aún no abre), `open` o
+  `closed`, calculado con la altura confirmada (`closed` cuando ya existe el bloque `end_height`),
+  más `turnout` (votantes y peso total).
+- El resultado es **definitivo solo al cierre**: abierta, `tally` es `null` en `/elections/{id}`
+  (el parcial sigue en `/contracts/voting/{id}`). Cerrada, trae `certification` con el recuento, el
+  hash del bloque de cierre y un `digest` SHA-256 del JSON canónico, recalculable por cualquiera.
+- Los votos son **públicos** en la cadena (dirección y opción): no hay voto secreto. Trabajo futuro:
+  compromiso y revelación (commit-reveal) o pruebas de conocimiento cero.
+
 ## Una sola regla para TXs inválidas
 
 > Si `validate` rechaza una TX de un bloque, **el bloque entero es inválido**, sea cual sea el
