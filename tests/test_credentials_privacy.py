@@ -32,7 +32,7 @@ async def _emitida_confirmada(client, **extra):
 @pytest.mark.asyncio
 async def test_cadena_y_chain_json_no_contienen_datos_personales(client, nodo):
     emitida = await _emitida_confirmada(client)
-    bc = nodo.app.blockchain
+    bc = nodo.node.blockchain
     texto = (bc.data_dir / "chain.json").read_text(encoding="utf-8")
     import json
     texto += json.dumps([b.to_dict() for b in bc.chain])

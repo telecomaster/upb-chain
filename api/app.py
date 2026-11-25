@@ -1,6 +1,12 @@
 """
 API REST de UPB-Chain — FastAPI.
 Expone endpoints para bloques, transacciones, credenciales, análisis y seguridad.
+
+P2-9: no hay estado global. ``create_app(settings)`` construye un ``NodeState`` (cadena,
+P2P, detectores, monitor, límite de TX, minado y llave de autoridad), lo guarda en
+``app.state.node`` y los endpoints lo reciben con ``Depends(get_node)``. Dos apps en el
+mismo proceso son independientes. ``app = create_app()`` al final mantiene
+``uvicorn api.app:app``.
 """
 import asyncio
 import csv
@@ -13,16 +19,17 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, BackgroundTasks, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
-from config import load_settings, configure_logging
+from config import Settings, load_settings, configure_logging
 from blockchain.core.chain import Blockchain
 from blockchain.core.merkle import build_proof, leaf_hash
 from blockchain.core import commitment
@@ -56,17 +63,8 @@ from security.attacks.eclipse import EclipseAttack
 from security.hardening import HardeningAuditor
 from security.crypto_utils import generate_keypair, benchmark_crypto
 
-settings = load_settings()
-configure_logging(settings.log_level)
 logger = logging.getLogger("upb_chain.api")
 
-# ── Estado global de la aplicación ───────────────────────────────────────────
-
-NODE_ID    = settings.node_id
-NODE_HOST  = settings.node_host
-NODE_PORT  = settings.node_port
-API_PORT   = settings.api_port
-PEERS      = settings.peers
 
 def build_node_state(data_dir: str, node_id: str, authority_address: Optional[str] = None,
                      initial_difficulty: int = 4) -> Blockchain:
@@ -104,108 +102,109 @@ def load_authority_wallet(path: str, expected_address: str) -> Optional[Wallet]:
                   address=address)
 
 
-blockchain = build_node_state(
-    settings.data_dir, NODE_ID, initial_difficulty=settings.mining_difficulty)
-authority_wallet = load_authority_wallet(
-    settings.authority_key_file, blockchain.contracts.contract("accounts").authority_address)
-# La dificultad NO vive aquí: la dicta Blockchain._calculate_difficulty() (P0-4).
-pow_engine      = ProofOfWork()
-mining_lock     = asyncio.Lock()        # un solo minado a la vez (409 si ya hay uno)
-mining_stop     = threading.Event()     # se activa al apagar el nodo para abortar el PoW
-tx_anomaly_detector = TransactionAnomalyDetector()
-anomaly_model_path = Path(settings.data_dir) / "models" / "tx_iforest.joblib"
-if tx_anomaly_detector.load(anomaly_model_path):
-    logger.info("Modelo de anomalías cargado de %s", anomaly_model_path)
-block_anomaly_detector = BlockAnomalyDetector()
-chain_analytics = ChainAnalytics()
-security_monitor = SecurityMonitor()
-security_monitor.TX_RATE_LIMIT = settings.tx_rate_limit
-# P1-5: límite de admisión al mempool (política local, nunca regla de consenso).
-tx_rate_limiter = TxRateLimiter(limit=settings.tx_rate_limit, window=security_monitor.TX_RATE_WINDOW)
+# ── Estado de un nodo ────────────────────────────────────────────────────────
+
+@dataclass
+class NodeState:
+    """Todo lo que vive dentro de un nodo; una app = un ``NodeState`` (``app.state.node``)."""
+    settings: Settings
+    blockchain: Blockchain
+    authority_wallet: Optional[Wallet]
+    pow_engine: ProofOfWork
+    mining_lock: asyncio.Lock          # un solo minado a la vez (409 si ya hay uno)
+    mining_stop: threading.Event       # se activa al apagar el nodo para abortar el PoW
+    tx_anomaly_detector: TransactionAnomalyDetector
+    anomaly_model_path: Path
+    block_anomaly_detector: BlockAnomalyDetector
+    chain_analytics: ChainAnalytics
+    security_monitor: SecurityMonitor
+    tx_rate_limiter: TxRateLimiter
+    pbft_node: PBFTNode
+    p2p: P2PNode
+
+    def on_chain_reorg(self, fork_height: int, dropped: list, added: list) -> None:
+        """Reorganización -> alerta (profundidad = bloques propios descartados) y bloques nuevos."""
+        self.security_monitor.on_chain_reorg(len(dropped))
+        for block in added:
+            self.security_monitor.on_block(block.to_dict())
 
 
-def _screen_admitted_tx(tx: Transaction, report=None) -> None:
+def build_node(settings: Settings, authority_address: Optional[str] = None) -> NodeState:
+    """Construye el estado completo de un nodo a partir de ``settings`` (sin arrancar la red)."""
+    node_id = settings.node_id
+    blockchain = build_node_state(
+        settings.data_dir, node_id, authority_address=authority_address,
+        initial_difficulty=settings.mining_difficulty)
+    authority_wallet = load_authority_wallet(
+        settings.authority_key_file, blockchain.contracts.contract("accounts").authority_address)
+    tx_anomaly_detector = TransactionAnomalyDetector()
+    anomaly_model_path = Path(settings.data_dir) / "models" / "tx_iforest.joblib"
+    if tx_anomaly_detector.load(anomaly_model_path):
+        logger.info("Modelo de anomalías cargado de %s", anomaly_model_path)
+    security_monitor = SecurityMonitor()
+    security_monitor.TX_RATE_LIMIT = settings.tx_rate_limit   # atributo de instancia
+    # P1-5: límite de admisión al mempool (política local, nunca regla de consenso).
+    tx_rate_limiter = TxRateLimiter(limit=settings.tx_rate_limit,
+                                    window=security_monitor.TX_RATE_WINDOW)
+    pbft_peers = [node_id] + [f"node_{i}" for i in range(2, 5)]
+    pbft_node = PBFTNode(node_id=node_id, peers=pbft_peers, is_primary=(node_id == "node_1"))
+    p2p = P2PNode(
+        node_id=node_id,
+        host=settings.node_host,
+        port=settings.node_port,
+        advertise_host=settings.node_advertise_host or None,
+        # P0-5: el nodo valida/añade bloques y TXs recibidos y, si un bloque no
+        # extiende la punta, sincroniza con el emisor (replace_chain por trabajo).
+        blockchain=blockchain,
+        on_pbft_message=lambda m: logger.info(f"PBFT msg recibido: {m}"),
+        # P1-5: bloques recibidos y aceptados, bloques inválidos y pares fuera de PEERS.
+        on_new_block=security_monitor.on_block,
+        on_invalid_block=security_monitor.on_invalid_block,
+        on_unknown_peer=security_monitor.on_unknown_peer,
+        known_peers=settings.peers,
+    )
+    node = NodeState(
+        settings=settings,
+        blockchain=blockchain,
+        authority_wallet=authority_wallet,
+        # La dificultad NO vive aquí: la dicta Blockchain._calculate_difficulty() (P0-4).
+        pow_engine=ProofOfWork(),
+        mining_lock=asyncio.Lock(),
+        mining_stop=threading.Event(),
+        tx_anomaly_detector=tx_anomaly_detector,
+        anomaly_model_path=anomaly_model_path,
+        block_anomaly_detector=BlockAnomalyDetector(),
+        chain_analytics=ChainAnalytics(),
+        security_monitor=security_monitor,
+        tx_rate_limiter=tx_rate_limiter,
+        pbft_node=pbft_node,
+        p2p=p2p,
+    )
+    blockchain.add_reorg_listener(node.on_chain_reorg)
+    return node
+
+
+def get_node(request: Request) -> NodeState:
+    """Dependencia: el ``NodeState`` de la app que atiende la petición."""
+    return request.app.state.node
+
+
+def _screen_admitted_tx(node: NodeState, tx: Transaction, report=None) -> None:
     """Tras admitir una TX: la registra en el contexto del detector y alerta si fue marcada (P1-6)."""
     if report is None:
-        report = tx_anomaly_detector.predict(tx.to_dict())
-    tx_anomaly_detector.observe(tx.to_dict())
+        report = node.tx_anomaly_detector.predict(tx.to_dict())
+    node.tx_anomaly_detector.observe(tx.to_dict())
     if report.is_anomaly:
-        security_monitor.on_anomalous_transaction(tx.to_dict(), report.to_dict())
+        node.security_monitor.on_anomalous_transaction(tx.to_dict(), report.to_dict())
 
 
-def _enforce_tx_rate_limit(sender: str) -> None:
+def _enforce_tx_rate_limit(node: NodeState, sender: str) -> None:
     """429 (y alerta) si el emisor superó el límite de TX por minuto."""
-    allowed, count = tx_rate_limiter.check(sender)
+    allowed, count = node.tx_rate_limiter.check(sender)
     if not allowed:
-        security_monitor.on_tx_rate_limited(sender, count, tx_rate_limiter.limit)
-        raise HTTPException(429, f"Límite de {tx_rate_limiter.limit} TX por minuto excedido")
+        node.security_monitor.on_tx_rate_limited(sender, count, node.tx_rate_limiter.limit)
+        raise HTTPException(429, f"Límite de {node.tx_rate_limiter.limit} TX por minuto excedido")
 
-
-def _on_chain_reorg(fork_height: int, dropped: list, added: list) -> None:
-    """Reorganización → alerta (profundidad = bloques propios descartados) y bloques nuevos."""
-    security_monitor.on_chain_reorg(len(dropped))
-    for block in added:
-        security_monitor.on_block(block.to_dict())
-
-
-blockchain.add_reorg_listener(_on_chain_reorg)
-
-pbft_peers = [NODE_ID] + [f"node_{i}" for i in range(2, 5)]
-pbft_node = PBFTNode(
-    node_id=NODE_ID,
-    peers=pbft_peers,
-    is_primary=(NODE_ID == "node_1"),
-)
-
-p2p = P2PNode(
-    node_id=NODE_ID,
-    host=NODE_HOST,
-    port=NODE_PORT,
-    advertise_host=settings.node_advertise_host or None,
-    # P0-5: el nodo valida/añade bloques y TXs recibidos y, si un bloque no
-    # extiende la punta, sincroniza con el emisor (replace_chain por trabajo).
-    blockchain=blockchain,
-    on_pbft_message=lambda m: logger.info(f"PBFT msg recibido: {m}"),
-    # P1-5: bloques recibidos y aceptados, bloques inválidos y pares fuera de PEERS.
-    on_new_block=security_monitor.on_block,
-    on_invalid_block=security_monitor.on_invalid_block,
-    on_unknown_peer=security_monitor.on_unknown_peer,
-    known_peers=PEERS,
-)
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    p2p.start()
-    # Los pares de PEERS se conectan (y reconectan con backoff) en segundo plano.
-    for peer in PEERS:
-        if ":" in peer:
-            host, port = peer.rsplit(":", 1)
-            p2p.add_peer(host, int(port))
-    logger.info(f"UPB-Chain nodo {NODE_ID} iniciado")
-    yield
-    mining_stop.set()
-    p2p.stop()
-    logger.info("Nodo detenido")
-
-
-app = FastAPI(
-    title="UPB-Chain API",
-    description="Blockchain académica con IA para la Universidad Privada Boliviana",
-    version="1.0.0",
-    lifespan=lifespan,
-)
-
-# CORS restringido (P1-9): por defecto solo el propio origen del nodo en localhost.
-CORS_ORIGINS = settings.cors_origins or [
-    f"http://localhost:{API_PORT}", f"http://127.0.0.1:{API_PORT}"]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[o for o in CORS_ORIGINS if o != "*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 _HOSTS_LOCALES = {"127.0.0.1", "::1", "localhost", "testclient"}
 
@@ -215,9 +214,9 @@ async def require_admin(request: Request) -> None:
 
     Con ``ADMIN_API_KEY`` definida exige la cabecera ``X-API-Key`` (401 si falta
     o es incorrecta). Sin llave solo admite peticiones desde loopback (403 si no).
-    Uso: ``@app.post("/ruta", dependencies=[Depends(require_admin)])``.
+    Uso: ``@router.post("/ruta", dependencies=[Depends(require_admin)])``.
     """
-    clave = settings.admin_api_key
+    clave = request.app.state.node.settings.admin_api_key
     if clave:
         recibida = request.headers.get("x-api-key", "")
         if not hmac.compare_digest(recibida.encode("utf-8"), clave.encode("utf-8")):
@@ -227,10 +226,8 @@ async def require_admin(request: Request) -> None:
     if host not in _HOSTS_LOCALES:
         raise HTTPException(403, "endpoint de administración: solo local o con ADMIN_API_KEY")
 
-try:
-    app.mount("/static", StaticFiles(directory="dashboard/static"), name="static")
-except Exception:
-    pass
+
+router = APIRouter()
 
 
 # ── Modelos Pydantic ──────────────────────────────────────────────────────────
@@ -336,7 +333,7 @@ class PruneMempoolRequest(BaseModel):
 
 # ── Endpoints: información general ───────────────────────────────────────────
 
-@app.get("/", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse)
 async def root():
     try:
         with open("dashboard/templates/index.html", encoding="utf-8") as f:
@@ -345,89 +342,89 @@ async def root():
         return "<h1>UPB-Chain API — <a href='/docs'>Documentación</a></h1>"
 
 
-@app.get("/health")
-async def health():
+@router.get("/health")
+async def health(node: NodeState = Depends(get_node)):
     return {
         "status": "ok",
-        "node_id": NODE_ID,
-        "height": blockchain.height,
+        "node_id": node.settings.node_id,
+        "height": node.blockchain.height,
         "timestamp": time.time(),
     }
 
 
-@app.get("/stats")
-async def stats():
-    chain_stats = blockchain.get_stats()
-    network_stats = p2p.get_network_stats()
+@router.get("/stats")
+async def stats(node: NodeState = Depends(get_node)):
+    chain_stats = node.blockchain.get_stats()
+    network_stats = node.p2p.get_network_stats()
     # Dificultad del próximo bloque, en bits (P2-5).
-    pow_stats = {**pow_engine.get_mining_stats(),
-                 "difficulty_bits": blockchain._calculate_difficulty()}
-    threat = security_monitor.get_threat_summary()
+    pow_stats = {**node.pow_engine.get_mining_stats(),
+                 "difficulty_bits": node.blockchain._calculate_difficulty()}
+    threat = node.security_monitor.get_threat_summary()
     return {
         "chain": chain_stats,
         "network": network_stats,
         "mining": pow_stats,
         "security": threat,
-        "pbft": pbft_node.get_consensus_stats(),
+        "pbft": node.pbft_node.get_consensus_stats(),
     }
 
 
 # ── Endpoints: bloques ────────────────────────────────────────────────────────
 
-@app.get("/blocks")
-async def get_blocks(page: int = 0, size: int = 10):
+@router.get("/blocks")
+async def get_blocks(page: int = 0, size: int = 10, node: NodeState = Depends(get_node)):
     start = page * size
     end = start + size
-    blocks = blockchain.chain[start:end]
+    blocks = node.blockchain.chain[start:end]
     return {
         "blocks": [b.to_dict() for b in blocks],
-        "total": len(blockchain.chain),
+        "total": len(node.blockchain.chain),
         "page": page,
         "size": size,
     }
 
 
-@app.get("/blocks/hash/{block_hash}")
-async def get_block_by_hash(block_hash: str):
+@router.get("/blocks/hash/{block_hash}")
+async def get_block_by_hash(block_hash: str, node: NodeState = Depends(get_node)):
     """Retorna un bloque buscado por su hash SHA-256."""
-    block = blockchain.get_block_by_hash(block_hash)
+    block = node.blockchain.get_block_by_hash(block_hash)
     if not block:
         raise HTTPException(404, f"Bloque con hash '{block_hash}' no encontrado")
     return block.to_dict()
 
 
-@app.get("/blocks/{index}")
-async def get_block(index: int):
-    if index < 0 or index >= len(blockchain.chain):
+@router.get("/blocks/{index}")
+async def get_block(index: int, node: NodeState = Depends(get_node)):
+    if index < 0 or index >= len(node.blockchain.chain):
         raise HTTPException(404, "Bloque no encontrado")
-    block = blockchain.chain[index]
-    report = block_anomaly_detector.peek_block(block.to_dict())   # lectura pura: no muta el detector
+    block = node.blockchain.chain[index]
+    report = node.block_anomaly_detector.peek_block(block.to_dict())   # lectura pura: no muta el detector
     return {**block.to_dict(), "anomaly": report.to_dict()}
 
 
-@app.post("/blocks/mine", dependencies=[Depends(require_admin)])
-async def mine_block(request: MineRequest, background_tasks: BackgroundTasks):
-    if mining_lock.locked():
+@router.post("/blocks/mine", dependencies=[Depends(require_admin)])
+async def mine_block(request: MineRequest, background_tasks: BackgroundTasks, node: NodeState = Depends(get_node)):
+    if node.mining_lock.locked():
         raise HTTPException(409, "minado en curso")
-    async with mining_lock:
-        mining_stop.clear()
-        candidate = blockchain.create_candidate_block()
+    async with node.mining_lock:
+        node.mining_stop.clear()
+        candidate = node.blockchain.create_candidate_block()
         # La dificultad sale de la regla de la cadena, nunca de un valor fijo.
         difficulty = candidate.header.difficulty
         # El PoW corre en un thread para no bloquear el event loop.
         result = await asyncio.to_thread(
-            pow_engine.mine, candidate, difficulty=difficulty, stop_event=mining_stop
+            node.pow_engine.mine, candidate, difficulty=difficulty, stop_event=node.mining_stop
         )
         if not result:
             raise HTTPException(500, "Mining falló, timeout o abortado")
-        ok, reason = blockchain.add_block(result.block)
+        ok, reason = node.blockchain.add_block(result.block)
         if not ok:
             # Típico: llegó un bloque de un peer y la punta cambió durante el minado.
-            security_monitor.on_invalid_block(reason, NODE_ID)
+            node.security_monitor.on_invalid_block(reason, node.settings.node_id)
             raise HTTPException(409, f"Bloque minado ya no es válido: {reason}")
-        security_monitor.on_block(result.block.to_dict())
+        node.security_monitor.on_block(result.block.to_dict())
     # Difusión a los pares (E/S de red bloqueante) fuera del event loop (P0-5).
-    await asyncio.to_thread(p2p.broadcast_block, result.block.to_dict())
+    await asyncio.to_thread(node.p2p.broadcast_block, result.block.to_dict())
     return {
         "block": result.block.to_dict(),
         "mining_stats": {
@@ -441,13 +438,13 @@ async def mine_block(request: MineRequest, background_tasks: BackgroundTasks):
 
 # ── Endpoints: transacciones ──────────────────────────────────────────────────
 
-@app.get("/transactions/pending")
-async def get_pending():
-    return {"transactions": [t.to_dict() for t in blockchain.get_pending_transactions()]}
+@router.get("/transactions/pending")
+async def get_pending(node: NodeState = Depends(get_node)):
+    return {"transactions": [t.to_dict() for t in node.blockchain.get_pending_transactions()]}
 
 
-@app.post("/transactions")
-async def create_transaction(request: TransactionRequest):
+@router.post("/transactions")
+async def create_transaction(request: TransactionRequest, node: NodeState = Depends(get_node)):
     try:
         tx_type = TransactionType(request.type)
     except ValueError:
@@ -457,7 +454,7 @@ async def create_transaction(request: TransactionRequest):
     if nonce is None:
         if request.signature:
             raise HTTPException(400, "Falta el nonce de la TX firmada por el cliente")
-        nonce = blockchain.next_nonce(request.sender)
+        nonce = node.blockchain.next_nonce(request.sender)
     tx = Transaction(
         type=tx_type,
         sender=request.sender,
@@ -479,16 +476,16 @@ async def create_transaction(request: TransactionRequest):
         except Exception:
             raise HTTPException(400, "Llave privada inválida")
 
-    _enforce_tx_rate_limit(tx.sender)
-    anomaly = tx_anomaly_detector.predict(tx.to_dict())
-    security_monitor.on_transaction(tx.to_dict())
+    _enforce_tx_rate_limit(node, tx.sender)
+    anomaly = node.tx_anomaly_detector.predict(tx.to_dict())
+    node.security_monitor.on_transaction(tx.to_dict())
 
-    ok, reason = blockchain.add_transaction(tx)
+    ok, reason = node.blockchain.add_transaction(tx)
     if not ok:
         raise HTTPException(400, reason)
 
-    _screen_admitted_tx(tx, anomaly)
-    p2p.broadcast_transaction(tx.to_dict())
+    _screen_admitted_tx(node, tx, anomaly)
+    node.p2p.broadcast_transaction(tx.to_dict())
 
     return {
         "tx_id": tx.tx_id,
@@ -497,10 +494,10 @@ async def create_transaction(request: TransactionRequest):
     }
 
 
-@app.get("/tx/{tx_id}/proof")
-async def get_tx_proof(tx_id: str):
+@router.get("/tx/{tx_id}/proof")
+async def get_tx_proof(tx_id: str, node: NodeState = Depends(get_node)):
     """Prueba de inclusión Merkle de una TX confirmada (P2-2)."""
-    for block in blockchain.chain:
+    for block in node.blockchain.chain:
         for i, tx in enumerate(block.transactions):
             if tx.get("tx_id") == tx_id:
                 hojas = [leaf_hash(t) for t in block.transactions]
@@ -512,31 +509,31 @@ async def get_tx_proof(tx_id: str):
                     "leaf": hojas[i],
                     "proof": build_proof(hojas, i),
                 }
-    if any(t.tx_id == tx_id for t in blockchain.mempool):
+    if any(t.tx_id == tx_id for t in node.blockchain.mempool):
         raise HTTPException(404, "Transacción pendiente: aún no está en un bloque, sin prueba")
     raise HTTPException(404, "Transacción no encontrada")
 
 
-@app.get("/transactions/{tx_id}")
-async def get_transaction(tx_id: str):
-    tx = blockchain.get_transaction(tx_id)
+@router.get("/transactions/{tx_id}")
+async def get_transaction(tx_id: str, node: NodeState = Depends(get_node)):
+    tx = node.blockchain.get_transaction(tx_id)
     if not tx:
         raise HTTPException(404, "Transacción no encontrada")
     return tx
 
 
-@app.get("/accounts/{address}")
-async def get_account(address: str):
+@router.get("/accounts/{address}")
+async def get_account(address: str, node: NodeState = Depends(get_node)):
     """Cuenta de ``address`` (P0-9): saldo y nonce confirmados y ``next_nonce``
     (el que debe firmar su próxima TX, contando las pendientes del mempool)."""
-    return blockchain.account_info(address)
+    return node.blockchain.account_info(address)
 
 
-@app.get("/chain/balance/{address}")
-async def get_address_balance(address: str):
+@router.get("/chain/balance/{address}")
+async def get_address_balance(address: str, node: NodeState = Depends(get_node)):
     """Saldo confirmado (entero, unidad mínima) y total de fees quemadas (P0-9)."""
-    balance = blockchain.get_balance(address)
-    total_fees = blockchain.total_fees
+    balance = node.blockchain.get_balance(address)
+    total_fees = node.blockchain.total_fees
     return {
         "address": address,
         "balance": balance,
@@ -544,40 +541,40 @@ async def get_address_balance(address: str):
     }
 
 
-@app.post("/mempool/prune", dependencies=[Depends(require_admin)])
-async def prune_mempool(request: PruneMempoolRequest):
+@router.post("/mempool/prune", dependencies=[Depends(require_admin)])
+async def prune_mempool(request: PruneMempoolRequest, node: NodeState = Depends(get_node)):
     """Elimina del mempool las transacciones más viejas que max_age_seconds."""
-    pruned = blockchain.prune_mempool(request.max_age_seconds)
+    pruned = node.blockchain.prune_mempool(request.max_age_seconds)
     return {
         "pruned": pruned,
-        "remaining": len(blockchain.mempool),
+        "remaining": len(node.blockchain.mempool),
         "max_age_seconds": request.max_age_seconds,
     }
 
 
 # ── Endpoints: tokens (P0-9) ──────────────────────────────────────────────────
 
-@app.post("/tokens/mint", dependencies=[Depends(require_admin)])
-async def mint_tokens(request: MintRequest):
+@router.post("/tokens/mint", dependencies=[Depends(require_admin)])
+async def mint_tokens(request: MintRequest, node: NodeState = Depends(get_node)):
     """Emite tokens con una TX TOKEN_MINT firmada por la autoridad del génesis.
 
     Solo funciona en el nodo con la llave de autoridad (como /credentials/issuers).
     """
-    if authority_wallet is None:
+    if node.authority_wallet is None:
         raise HTTPException(503, "Este nodo no tiene la llave de autoridad configurada")
     tx = create_mint_transaction(
-        authority_address=authority_wallet.address,
+        authority_address=node.authority_wallet.address,
         recipient=request.recipient,
         amount=request.amount,
-        private_key_hex=authority_wallet.private_key_hex,
-        nonce=blockchain.next_nonce(authority_wallet.address),
+        private_key_hex=node.authority_wallet.private_key_hex,
+        nonce=node.blockchain.next_nonce(node.authority_wallet.address),
     )
-    _submit_contract_tx(tx)
+    _submit_contract_tx(node, tx)
     return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce}
 
 
-@app.post("/tokens/transfer")
-async def transfer_tokens(request: TransferRequest):
+@router.post("/tokens/transfer")
+async def transfer_tokens(request: TransferRequest, node: NodeState = Depends(get_node)):
     """Transfiere tokens (TOKEN_TRANSFER). 400 si falta saldo para amount + fee."""
     try:
         tx = create_transfer_transaction(
@@ -585,12 +582,12 @@ async def transfer_tokens(request: TransferRequest):
             recipient=request.recipient,
             amount=request.amount,
             private_key_hex=request.private_key_hex,
-            nonce=blockchain.next_nonce(request.sender),
+            nonce=node.blockchain.next_nonce(request.sender),
             fee=request.fee,
         )
     except Exception:
         raise HTTPException(400, "Llave privada inválida")
-    _submit_contract_tx(tx)
+    _submit_contract_tx(node, tx)
     return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce}
 
 
@@ -602,10 +599,10 @@ async def transfer_tokens(request: TransferRequest):
 MAX_CSV_ROWS = 100
 
 
-def _require_authority() -> Wallet:
-    if authority_wallet is None:
+def _require_authority(node: NodeState) -> Wallet:
+    if node.authority_wallet is None:
         raise HTTPException(503, "Este nodo no tiene la llave de autoridad configurada")
-    return authority_wallet
+    return node.authority_wallet
 
 
 def _signed(build) -> Transaction:
@@ -616,47 +613,47 @@ def _signed(build) -> Transaction:
         raise HTTPException(400, "Llave privada inválida")
 
 
-@app.post("/tokens/budget", dependencies=[Depends(require_admin)])
-async def set_issuer_budget(request: BudgetRequest):
+@router.post("/tokens/budget", dependencies=[Depends(require_admin)])
+async def set_issuer_budget(request: BudgetRequest, node: NodeState = Depends(get_node)):
     """Fija el presupuesto semestral de un emisor (ISSUER_BUDGET, firma la autoridad)."""
-    authority = _require_authority()
+    authority = _require_authority(node)
     semester = request.semester or semester_of(time.time())
     if not is_semester(semester):
         raise HTTPException(400, "semester debe tener la forma AAAA-1 o AAAA-2")
     tx = create_issuer_budget_transaction(
         authority.address, request.issuer_address, semester, request.amount,
-        authority.private_key_hex, nonce=blockchain.next_nonce(authority.address))
-    _submit_contract_tx(tx)
+        authority.private_key_hex, nonce=node.blockchain.next_nonce(authority.address))
+    _submit_contract_tx(node, tx)
     return {"status": "PENDING", "tx_id": tx.tx_id, "semester": semester}
 
 
-@app.get("/tokens/redeem-addresses")
-async def list_redeem_addresses():
+@router.get("/tokens/redeem-addresses")
+async def list_redeem_addresses(node: NodeState = Depends(get_node)):
     """Direcciones de canje registradas y lo quemado en cada una."""
-    state = blockchain.contract_state("tokens")
+    state = node.blockchain.contract_state("tokens")
     return {"redeem_addresses": [
         {"address": a, "label": label, "redeemed": state.redeemed.get(a, 0)}
         for a, label in state.redeem_addresses.items()]}
 
 
-@app.post("/tokens/redeem-addresses", dependencies=[Depends(require_admin)])
-async def register_redeem_address(request: RedeemAddressRequest):
+@router.post("/tokens/redeem-addresses", dependencies=[Depends(require_admin)])
+async def register_redeem_address(request: RedeemAddressRequest, node: NodeState = Depends(get_node)):
     """Registra una dirección de canje (REDEEM_ADDRESS_REGISTER, firma la autoridad)."""
-    authority = _require_authority()
+    authority = _require_authority(node)
     tx = create_redeem_address_transaction(
         authority.address, request.redeem_address, request.label,
-        authority.private_key_hex, nonce=blockchain.next_nonce(authority.address))
-    _submit_contract_tx(tx)
+        authority.private_key_hex, nonce=node.blockchain.next_nonce(authority.address))
+    _submit_contract_tx(node, tx)
     return {"status": "PENDING", "tx_id": tx.tx_id}
 
 
-@app.post("/tokens/award")
-async def award_tokens(request: AwardRequest):
+@router.post("/tokens/award")
+async def award_tokens(request: AwardRequest, node: NodeState = Depends(get_node)):
     """Premio del docente: TOKEN_MINT firmada por el emisor, dentro de su presupuesto."""
     tx = _signed(lambda: create_mint_transaction(
         request.issuer_address, request.recipient, request.amount, request.private_key_hex,
-        nonce=blockchain.next_nonce(request.issuer_address), reason=request.reason))
-    _submit_contract_tx(tx)
+        nonce=node.blockchain.next_nonce(request.issuer_address), reason=request.reason))
+    _submit_contract_tx(node, tx)
     return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce}
 
 
@@ -685,8 +682,8 @@ def _parse_award_csv(text: str):
     return rows, errors
 
 
-@app.post("/tokens/award/csv")
-async def award_tokens_csv(request: AwardCsvRequest):
+@router.post("/tokens/award/csv")
+async def award_tokens_csv(request: AwardCsvRequest, node: NodeState = Depends(get_node)):
     """Premios en lote: una TOKEN_MINT por fila, firmadas por el emisor.
 
     TODO O NADA: primero se simula el lote completo (formato, firma, presupuesto,
@@ -699,20 +696,20 @@ async def award_tokens_csv(request: AwardCsvRequest):
     if errors:
         raise HTTPException(400, {"message": "CSV inválido; no se envió ninguna fila",
                                   "errors": errors})
-    base_nonce = blockchain.next_nonce(request.issuer_address)
+    base_nonce = node.blockchain.next_nonce(request.issuer_address)
     txs = [_signed(lambda i=i, a=a, m=m, r=r: create_mint_transaction(
                request.issuer_address, a, m, request.private_key_hex,
                nonce=base_nonce + i, reason=r))
            for i, (_, a, m, r) in enumerate(rows)]
     errors = [{"row": row[0], "error": reason}
-              for row, (ok, reason) in zip(rows, blockchain.check_batch(txs)) if not ok]
+              for row, (ok, reason) in zip(rows, node.blockchain.check_batch(txs)) if not ok]
     if errors:
         raise HTTPException(400, {"message": "Hay filas inválidas; no se envió ninguna",
                                   "errors": errors})
     submitted = []
     for (line, *_), tx in zip(rows, txs):
         try:
-            _submit_contract_tx(tx)
+            _submit_contract_tx(node, tx)
         except HTTPException as e:
             raise HTTPException(e.status_code, {
                 "message": f"Envío interrumpido en la fila {line}: {e.detail}",
@@ -721,40 +718,40 @@ async def award_tokens_csv(request: AwardCsvRequest):
     return {"status": "PENDING", "count": len(submitted), "submitted": submitted}
 
 
-@app.post("/tokens/redeem")
-async def redeem_tokens(request: RedeemRequest):
+@router.post("/tokens/redeem")
+async def redeem_tokens(request: RedeemRequest, node: NodeState = Depends(get_node)):
     """Canje: TOKEN_REDEEM firmada por el estudiante; quema el monto en una dirección de canje."""
     tx = _signed(lambda: create_redeem_transaction(
         request.sender, request.redeem_address, request.amount, request.private_key_hex,
-        nonce=blockchain.next_nonce(request.sender), item=request.item))
-    _submit_contract_tx(tx)
+        nonce=node.blockchain.next_nonce(request.sender), item=request.item))
+    _submit_contract_tx(node, tx)
     return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce}
 
 
-@app.get("/tokens/{address}")
-async def get_token_balance(address: str):
+@router.get("/tokens/{address}")
+async def get_token_balance(address: str, node: NodeState = Depends(get_node)):
     """Saldo de puntos de ``address`` y premios confirmados que recibió."""
-    state = blockchain.contract_state("tokens")
+    state = node.blockchain.contract_state("tokens")
     return {
         "address": address,
         "symbol": TOKEN_SYMBOL,
         "name": TOKEN_NAME,
-        "balance": blockchain.get_balance(address),
+        "balance": node.blockchain.get_balance(address),
         "awards": state.awards.get(address, []),
-        "height": blockchain.contracts.height,
+        "height": node.blockchain.contracts.height,
     }
 
 
-@app.get("/issuers/{address}/budget")
-async def get_issuer_budget(address: str, semester: Optional[str] = None):
+@router.get("/issuers/{address}/budget")
+async def get_issuer_budget(address: str, semester: Optional[str] = None, node: NodeState = Depends(get_node)):
     """Presupuesto de emisión de un emisor: el del semestre pedido (o el actual) y todos."""
     semester = semester or semester_of(time.time())
     if not is_semester(semester):
         raise HTTPException(400, "semester debe tener la forma AAAA-1 o AAAA-2")
-    state = blockchain.contract_state("tokens")
+    state = node.blockchain.contract_state("tokens")
     return {
         "address": address,
-        "is_issuer": _credentials().is_registered_issuer(address),
+        "is_issuer": _credentials(node).is_registered_issuer(address),
         "semester": semester,
         "budget": state.budget_of(address, semester),
         "minted": state.minted_by(address, semester),
@@ -765,65 +762,65 @@ async def get_issuer_budget(address: str, semester: Optional[str] = None):
     }
 
 
-@app.post("/badges/award")
-async def award_badge(request: BadgeRequest):
+@router.post("/badges/award")
+async def award_badge(request: BadgeRequest, node: NodeState = Depends(get_node)):
     """Otorga una insignia intransferible (BADGE_AWARD firmada por el emisor)."""
     tx = _signed(lambda: create_badge_award_transaction(
         request.issuer_address, request.recipient, request.badge_id, request.name,
         request.reason, request.private_key_hex,
-        nonce=blockchain.next_nonce(request.issuer_address)))
-    _submit_contract_tx(tx)
+        nonce=node.blockchain.next_nonce(request.issuer_address)))
+    _submit_contract_tx(node, tx)
     return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce}
 
 
-@app.get("/badges/{address}")
-async def get_badges(address: str):
+@router.get("/badges/{address}")
+async def get_badges(address: str, node: NodeState = Depends(get_node)):
     """Insignias confirmadas de ``address`` (intransferibles)."""
-    badges = blockchain.contract_state("badges").badges_of(address)
+    badges = node.blockchain.contract_state("badges").badges_of(address)
     return {"address": address, "badges": list(badges.values()),
-            "height": blockchain.contracts.height}
+            "height": node.blockchain.contracts.height}
 
 
 # ── Endpoints: credenciales ───────────────────────────────────────────────────
 
-def _credentials() -> CredentialState:
+def _credentials(node: NodeState) -> CredentialState:
     """Estado confirmado del contrato de credenciales (P0-6, P1-13)."""
-    return blockchain.contract_state("credentials")
+    return node.blockchain.contract_state("credentials")
 
 
-def _submit_contract_tx(tx: Transaction) -> None:
+def _submit_contract_tx(node: NodeState, tx: Transaction) -> None:
     """Admite una TX al mempool (límite por emisor, firma, cuentas y reglas del contrato) o lanza 400/429."""
-    _enforce_tx_rate_limit(tx.sender)
-    ok, reason = blockchain.add_transaction(tx)
+    _enforce_tx_rate_limit(node, tx.sender)
+    ok, reason = node.blockchain.add_transaction(tx)
     if not ok:
         raise HTTPException(400, reason)
-    security_monitor.on_transaction(tx.to_dict())
-    _screen_admitted_tx(tx)
-    p2p.broadcast_transaction(tx.to_dict())
+    node.security_monitor.on_transaction(tx.to_dict())
+    _screen_admitted_tx(node, tx)
+    node.p2p.broadcast_transaction(tx.to_dict())
 
 
-@app.post("/credentials/issuers", dependencies=[Depends(require_admin)])
-async def register_issuer(request: RegisterIssuerRequest):
+@router.post("/credentials/issuers", dependencies=[Depends(require_admin)])
+async def register_issuer(request: RegisterIssuerRequest, node: NodeState = Depends(get_node)):
     """Registra un emisor con una TX ISSUER_REGISTER firmada por la autoridad (P0-6).
 
     Solo funciona en el nodo que tiene la llave de autoridad (AUTHORITY_KEY_FILE).
     Una TX ISSUER_REGISTER firmada por otra llave se rechaza (también vía /transactions).
     """
-    if authority_wallet is None:
+    if node.authority_wallet is None:
         raise HTTPException(503, "Este nodo no tiene la llave de autoridad configurada")
     tx = create_issuer_register_transaction(
-        authority_address=authority_wallet.address,
+        authority_address=node.authority_wallet.address,
         issuer_address=request.issuer_address,
         institution_code=request.institution_code,
-        private_key_hex=authority_wallet.private_key_hex,
-        nonce=blockchain.next_nonce(authority_wallet.address),
+        private_key_hex=node.authority_wallet.private_key_hex,
+        nonce=node.blockchain.next_nonce(node.authority_wallet.address),
     )
-    _submit_contract_tx(tx)
+    _submit_contract_tx(node, tx)
     return {"status": "PENDING", "tx_id": tx.tx_id}
 
 
-@app.post("/credentials/issue")
-async def issue_credential(request: CredentialRequest):
+@router.post("/credentials/issue")
+async def issue_credential(request: CredentialRequest, node: NodeState = Depends(get_node)):
     """Emite una credencial: firma la TX y la pone en el mempool.
 
     No toca el estado confirmado: la credencial queda PENDING hasta que un
@@ -835,13 +832,13 @@ async def issue_credential(request: CredentialRequest):
             student_address=request.student_address,
             credential_data=request.credential_data,
             private_key_hex=request.private_key_hex,
-            nonce=blockchain.next_nonce(request.issuer_address),
+            nonce=node.blockchain.next_nonce(request.issuer_address),
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception:
         raise HTTPException(400, "Llave privada inválida")
-    _submit_contract_tx(tx)
+    _submit_contract_tx(node, tx)
 
     data = request.credential_data
     credential_id = credential_id_of_tx(tx.to_dict())
@@ -872,7 +869,7 @@ class DiscloseVerifyRequest(BaseModel):
     revealed: List[dict]
 
 
-@app.post("/credentials/disclosure")
+@router.post("/credentials/disclosure")
 async def build_disclosure(request: DisclosureRequest):
     """Arma un paquete de divulgación selectiva desde el registro privado (P1-2).
 
@@ -891,10 +888,10 @@ async def build_disclosure(request: DisclosureRequest):
     return paquete
 
 
-@app.post("/credentials/{credential_id}/disclose-verify")
-async def disclose_verify(credential_id: str, request: DiscloseVerifyRequest):
+@router.post("/credentials/{credential_id}/disclose-verify")
+async def disclose_verify(credential_id: str, request: DiscloseVerifyRequest, node: NodeState = Depends(get_node)):
     """Comprueba campos revelados (valor, sal, prueba Merkle) contra ``fields_root`` en cadena."""
-    cred = _credentials().get(credential_id)
+    cred = _credentials(node).get(credential_id)
     if cred is None:
         raise HTTPException(404, "Credencial no confirmada en la cadena")
     resultados = [{"name": it.get("name"),
@@ -903,14 +900,14 @@ async def disclose_verify(credential_id: str, request: DiscloseVerifyRequest):
     return {
         "credential_id": credential_id,
         "fields_root": cred.fields_root,
-        "credential_status": _estado_publico(credential_id)["status"],
+        "credential_status": _estado_publico(node, credential_id)["status"],
         "all_verified": bool(resultados) and all(r["verified"] for r in resultados),
         "fields": resultados,
     }
 
 
-@app.post("/credentials/revoke")
-async def revoke_credential(request: RevokeRequest):
+@router.post("/credentials/revoke")
+async def revoke_credential(request: RevokeRequest, node: NodeState = Depends(get_node)):
     """Revoca una credencial con una TX CREDENTIAL_REVOKE firmada.
 
     Solo la acepta si la firma el emisor original o la autoridad del génesis.
@@ -921,43 +918,43 @@ async def revoke_credential(request: RevokeRequest):
             credential_id=request.credential_id,
             reason=request.reason,
             private_key_hex=request.private_key_hex,
-            nonce=blockchain.next_nonce(request.revoker_address),
+            nonce=node.blockchain.next_nonce(request.revoker_address),
         )
     except Exception:
         raise HTTPException(400, "Llave privada inválida")
-    _submit_contract_tx(tx)
+    _submit_contract_tx(node, tx)
     return {"tx_id": tx.tx_id, "status": "PENDING"}
 
 
-@app.get("/credentials/verify/{credential_id}")
-async def verify_credential(credential_id: str):
+@router.get("/credentials/verify/{credential_id}")
+async def verify_credential(credential_id: str, node: NodeState = Depends(get_node)):
     """Estado de la credencial: PENDING, CONFIRMED (con bloque y confirmaciones),
     REVOKED, EXPIRED o NOT_FOUND. ``valid`` es true solo si está CONFIRMED."""
-    return _credentials().credential_status(credential_id, blockchain.height,
-                                            pending=blockchain.pending_dicts())
+    return _credentials(node).credential_status(credential_id, node.blockchain.height,
+                                            pending=node.blockchain.pending_dicts())
 
 
 # ── Verificación pública por QR (P1-3) ────────────────────────────────────────
 
-def _estado_publico(credential_id: str) -> dict:
+def _estado_publico(node: NodeState, credential_id: str) -> dict:
     """Misma lógica de estado que ``/credentials/verify/{id}`` (sin duplicarla)."""
-    return _credentials().credential_status(credential_id, blockchain.height,
-                                            pending=blockchain.pending_dicts())
+    return _credentials(node).credential_status(credential_id, node.blockchain.height,
+                                            pending=node.blockchain.pending_dicts())
 
 
-def _url_verificacion(request: Request, credential_id: str) -> str:
+def _url_verificacion(node: NodeState, request: Request, credential_id: str) -> str:
     """URL pública de la página de verificación (PUBLIC_BASE_URL o la del request)."""
-    base = settings.public_base_url or str(request.base_url)
+    base = node.settings.public_base_url or str(request.base_url)
     return f"{base.rstrip('/')}/verify/{credential_id}"
 
 
-@app.get("/credentials/{credential_id}/qr")
-async def credential_qr(credential_id: str, request: Request):
+@router.get("/credentials/{credential_id}/qr")
+async def credential_qr(credential_id: str, request: Request, node: NodeState = Depends(get_node)):
     """PNG con un QR que apunta a la página pública ``/verify/{id}``."""
-    if _estado_publico(credential_id)["status"] == "NOT_FOUND":
+    if _estado_publico(node, credential_id)["status"] == "NOT_FOUND":
         raise HTTPException(404, "Credencial no encontrada")
     import qrcode
-    img = qrcode.make(_url_verificacion(request, credential_id))
+    img = qrcode.make(_url_verificacion(node, request, credential_id))
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return Response(content=buf.getvalue(), media_type="image/png")
@@ -981,10 +978,10 @@ dd{{margin:0;word-break:break-all}}</style></head>
 <h1 class="v">{verdict}</h1><p>{reason}</p><dl>{rows}</dl></div></main></body></html>"""
 
 
-@app.get("/verify/{credential_id}", response_class=HTMLResponse)
-async def verify_page(credential_id: str):
+@router.get("/verify/{credential_id}", response_class=HTMLResponse)
+async def verify_page(credential_id: str, node: NodeState = Depends(get_node)):
     """Página pública y móvil de verificación. No expone notas ni datos personales."""
-    st = _estado_publico(credential_id)
+    st = _estado_publico(node, credential_id)
     cred = st.get("credential") or {}
     campos = [("ID", credential_id), ("Emisor", cred.get("issuer_address")),
               ("Tipo", cred.get("credential_type")), ("Título", cred.get("degree")),
@@ -1000,20 +997,20 @@ async def verify_page(credential_id: str):
     return HTMLResponse(body, status_code=404 if st["status"] == "NOT_FOUND" else 200)
 
 
-@app.get("/credentials/issuer/{address}")
-async def get_issuer_credentials(address: str):
+@router.get("/credentials/issuer/{address}")
+async def get_issuer_credentials(address: str, node: NodeState = Depends(get_node)):
     """Credenciales de un emisor (confirmadas y pendientes), solo resumen público."""
-    pending, state = blockchain.pending_dicts(), _credentials()
+    pending, state = node.blockchain.pending_dicts(), _credentials(node)
     ids = state.issuer_credential_ids(address, pending=pending)
-    items = [state.credential_summary(i, blockchain.height, pending=pending) for i in ids]
+    items = [state.credential_summary(i, node.blockchain.height, pending=pending) for i in ids]
     return {"issuer_address": address, "count": len(items), "credentials": items}
 
 
-@app.get("/credentials/{credential_id}/history")
-async def credential_history(credential_id: str):
+@router.get("/credentials/{credential_id}/history")
+async def credential_history(credential_id: str, node: NodeState = Depends(get_node)):
     """Historial: emitida en el bloque X, revocada en el bloque Y (derivado del contrato)."""
-    r = _credentials().credential_summary(credential_id, blockchain.height,
-                                          pending=blockchain.pending_dicts())
+    r = _credentials(node).credential_summary(credential_id, node.blockchain.height,
+                                          pending=node.blockchain.pending_dicts())
     if r["status"] == "NOT_FOUND":
         raise HTTPException(404, "Credencial no encontrada")
     if r["block_index"] is not None:
@@ -1028,13 +1025,13 @@ async def credential_history(credential_id: str):
     return {**r, "events": eventos}
 
 
-@app.get("/credentials/student/{address}")
-async def get_student_credentials(address: str):
-    return {"credentials": _credentials().get_student_credentials(address)}
+@router.get("/credentials/student/{address}")
+async def get_student_credentials(address: str, node: NodeState = Depends(get_node)):
+    return {"credentials": _credentials(node).get_student_credentials(address)}
 
 
-@app.get("/credentials/search")
-async def search_credentials(q: str):
+@router.get("/credentials/search")
+async def search_credentials(q: str, node: NodeState = Depends(get_node)):
     """Busca credenciales por título o programa (case-insensitive, substring).
     El nombre del estudiante ya no está en la cadena (P1-2).
 
@@ -1043,19 +1040,19 @@ async def search_credentials(q: str):
     """
     if not q or not q.strip():
         raise HTTPException(400, "El parámetro 'q' no puede estar vacío")
-    results = _credentials().search_credentials(q)
+    results = _credentials(node).search_credentials(q)
     return {"query": q, "count": len(results), "credentials": results}
 
 
-@app.get("/credentials/all")
-async def get_all_credentials(status: Optional[str] = None):
+@router.get("/credentials/all")
+async def get_all_credentials(status: Optional[str] = None, node: NodeState = Depends(get_node)):
     """Retorna todas las credenciales registradas en el contrato.
 
     Query param:
         status: Filtro opcional de estado — ACTIVE | REVOKED | EXPIRED.
                 Si se omite, retorna todas las credenciales.
     """
-    credentials = _credentials().get_all_credentials(status_filter=status)
+    credentials = _credentials(node).get_all_credentials(status_filter=status)
     return {
         "count": len(credentials),
         "status_filter": status,
@@ -1065,10 +1062,10 @@ async def get_all_credentials(status: Optional[str] = None):
 
 # ── Endpoints: contratos (P1-13) ─────────────────────────────────────────────
 
-@app.get("/contracts")
-async def list_contracts():
+@router.get("/contracts")
+async def list_contracts(node: NodeState = Depends(get_node)):
     """Contratos que corre este nodo, en orden, con los tipos de TX que manejan."""
-    registry = blockchain.contracts
+    registry = node.blockchain.contracts
     return {
         "height": registry.height,
         "contracts": [
@@ -1080,17 +1077,17 @@ async def list_contracts():
     }
 
 
-@app.get("/contracts/voting/{election_id}")
-async def get_election(election_id: str):
+@router.get("/contracts/voting/{election_id}")
+async def get_election(election_id: str, node: NodeState = Depends(get_node)):
     """Recuento de una elección del contrato de votación (votos confirmados).
 
     Para votar: ``POST /transactions`` con ``type=VOTE`` y payload
     ``{"election_id": ..., "choice": ...}``; un segundo voto de la misma
     dirección en la misma elección responde 400.
     """
-    state = blockchain.contract_state("voting")
+    state = node.blockchain.contract_state("voting")
     votes = state.elections.get(election_id, {})
-    pending = sum(1 for tx in blockchain.pending_dicts()
+    pending = sum(1 for tx in node.blockchain.pending_dicts()
                   if tx.get("type") == TransactionType.VOTE.value
                   and (tx.get("payload") or {}).get("election_id") == election_id)
     if not votes and not pending:
@@ -1101,71 +1098,71 @@ async def get_election(election_id: str):
         "tally": state.tally(election_id),
         "voters": list(votes),
         "pending_votes": pending,
-        "height": blockchain.contracts.height,
+        "height": node.blockchain.contracts.height,
     }
 
 
 # ── Endpoints: IA ─────────────────────────────────────────────────────────────
 
-@app.get("/ai/analytics")
-async def get_analytics():
-    chain_data = [b.to_dict() for b in blockchain.chain]
-    report = chain_analytics.analyze(chain_data)
+@router.get("/ai/analytics")
+async def get_analytics(node: NodeState = Depends(get_node)):
+    chain_data = [b.to_dict() for b in node.blockchain.chain]
+    report = node.chain_analytics.analyze(chain_data)
     return report.to_dict()
 
 
-@app.post("/ai/train", dependencies=[Depends(require_admin)])
-async def train_anomaly_detector():
+@router.post("/ai/train", dependencies=[Depends(require_admin)])
+async def train_anomaly_detector(node: NodeState = Depends(get_node)):
     all_txs = []
-    for block in blockchain.chain:
+    for block in node.blockchain.chain:
         all_txs.extend(block.transactions)
-    result = tx_anomaly_detector.train(all_txs)
+    result = node.tx_anomaly_detector.train(all_txs)
     if result.get("trained"):
-        tx_anomaly_detector.save(anomaly_model_path)
-        result["model_path"] = str(anomaly_model_path)
+        node.tx_anomaly_detector.save(node.anomaly_model_path)
+        result["model_path"] = str(node.anomaly_model_path)
     return result
 
 
-@app.get("/ai/anomaly/stats")
-async def anomaly_stats():
-    return tx_anomaly_detector.get_stats()
+@router.get("/ai/anomaly/stats")
+async def anomaly_stats(node: NodeState = Depends(get_node)):
+    return node.tx_anomaly_detector.get_stats()
 
 
 # ── Endpoints: seguridad ──────────────────────────────────────────────────────
 
-@app.get("/security/alerts")
-async def get_alerts(level: Optional[str] = None):
+@router.get("/security/alerts")
+async def get_alerts(level: Optional[str] = None, node: NodeState = Depends(get_node)):
     from security.monitor import AlertLevel
     lv = AlertLevel(level) if level else None
-    return {"alerts": security_monitor.get_alerts(level=lv)}
+    return {"alerts": node.security_monitor.get_alerts(level=lv)}
 
 
-@app.get("/security/threat-summary")
-async def threat_summary():
-    return security_monitor.get_threat_summary()
+@router.get("/security/threat-summary")
+async def threat_summary(node: NodeState = Depends(get_node)):
+    return node.security_monitor.get_threat_summary()
 
 
-@app.get("/security/attack-simulation")
-async def attack_simulation():
+@router.get("/security/attack-simulation")
+async def attack_simulation(node: NodeState = Depends(get_node)):
     return full_security_analysis(
-        node_count=len(p2p.peers) + 1,
+        node_count=len(node.p2p.peers) + 1,
         honest_hash_rate=70.0,
         attacker_hash_rate=30.0,
     )
 
 
-@app.get("/security/crypto-benchmark")
+@router.get("/security/crypto-benchmark")
 async def crypto_benchmark():
     return benchmark_crypto(iterations=5000)
 
 
-@app.get("/security/hardening")
+@router.get("/security/hardening")
 async def hardening_checklist():
     """Checklist de hardening en solo lectura (inspección de código, sin shell)."""
     return HardeningAuditor().run_audit()
 
 
-@app.post("/security/eclipse-simulation")
+@router.post("/security/eclipse-simulation")
 async def eclipse_simulation(max_connections: int = Query(32, ge=1, le=256),
                              attacker_nodes: int = Query(10, ge=0, le=1000),
                              network_size: int = Query(50, ge=2, le=1000)):
@@ -1182,7 +1179,7 @@ async def eclipse_simulation(max_connections: int = Query(32, ge=1, le=256),
 
 # ── Endpoints: wallet ─────────────────────────────────────────────────────────
 
-@app.post("/wallet/generate")
+@router.post("/wallet/generate")
 async def generate_wallet():
     wallet = Wallet.generate()
     return {
@@ -1195,25 +1192,83 @@ async def generate_wallet():
 
 # ── Endpoints: red P2P ────────────────────────────────────────────────────────
 
-@app.get("/network")
-async def network_info():
-    return p2p.get_network_stats()
+@router.get("/network")
+async def network_info(node: NodeState = Depends(get_node)):
+    return node.p2p.get_network_stats()
 
 
-@app.post("/network/peers", dependencies=[Depends(require_admin)])
-def add_peer(host: str, port: int):
+@router.post("/network/peers", dependencies=[Depends(require_admin)])
+def add_peer(host: str, port: int, node: NodeState = Depends(get_node)):
     # `def` (no async): el handshake es E/S bloqueante y FastAPI lo corre en un hilo.
-    ok = p2p.connect_to_peer(host, port)
+    ok = node.p2p.connect_to_peer(host, port)
     return {"connected": ok}
 
 
-@app.get("/network/sync")
-async def sync_chain():
-    return {"chain": [b.to_dict() for b in blockchain.chain], "height": blockchain.height}
+@router.get("/network/sync")
+async def sync_chain(node: NodeState = Depends(get_node)):
+    return {"chain": [b.to_dict() for b in node.blockchain.chain], "height": node.blockchain.height}
 
 
-@app.post("/network/sync", dependencies=[Depends(require_admin)])
-def sync_now():
+@router.post("/network/sync", dependencies=[Depends(require_admin)])
+def sync_now(node: NodeState = Depends(get_node)):
     """Fuerza la sincronización con todos los pares activos (P0-5)."""
-    adopted = p2p.sync_with_peers()
-    return {"adopted": adopted, "height": blockchain.height, "work": blockchain.total_work}
+    adopted = node.p2p.sync_with_peers()
+    return {"adopted": adopted, "height": node.blockchain.height, "work": node.blockchain.total_work}
+
+
+# ── Fábrica de la aplicación ──────────────────────────────────────────────────
+
+def create_app(settings: Optional[Settings] = None,
+               authority_address: Optional[str] = None) -> FastAPI:
+    """Crea una app FastAPI con su propio ``NodeState`` (``app.state.node``).
+
+    Sin ``settings`` los lee del entorno y de ``.env`` (``load_settings()``). Cada llamada
+    abre su cadena en ``settings.data_dir`` y su socket P2P en ``settings.node_port``
+    (al arrancar la app, no al crearla). ``authority_address`` (solo tests) sustituye la
+    autoridad del génesis por otra cuya llave sí se tiene.
+    """
+    settings = settings or load_settings()
+    configure_logging(settings.log_level)
+    node = build_node(settings, authority_address)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        node.p2p.start()
+        # Los pares de PEERS se conectan (y reconectan con backoff) en segundo plano.
+        for peer in settings.peers:
+            if ":" in peer:
+                host, port = peer.rsplit(":", 1)
+                node.p2p.add_peer(host, int(port))
+        logger.info(f"UPB-Chain nodo {settings.node_id} iniciado")
+        yield
+        node.mining_stop.set()
+        node.p2p.stop()
+        logger.info("Nodo detenido")
+
+    app = FastAPI(
+        title="UPB-Chain API",
+        description="Blockchain académica con IA para la Universidad Privada Boliviana",
+        version="1.0.0",
+        lifespan=lifespan,
+    )
+    app.state.node = node
+
+    # CORS restringido (P1-9): por defecto solo el propio origen del nodo en localhost.
+    cors_origins = settings.cors_origins or [
+        f"http://localhost:{settings.api_port}", f"http://127.0.0.1:{settings.api_port}"]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[o for o in cors_origins if o != "*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    try:
+        app.mount("/static", StaticFiles(directory="dashboard/static"), name="static")
+    except Exception:
+        pass
+    app.include_router(router)
+    return app
+
+
+app = create_app()

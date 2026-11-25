@@ -27,7 +27,7 @@ from blockchain.core.transaction import (
     create_revoke_transaction,
 )
 from blockchain.core.wallet import Wallet
-from tests.helpers import mine_and_add, mine_candidate
+from tests.helpers import make_app, mine_and_add, mine_candidate, reiniciar_nodo
 
 pytestmark = pytest.mark.integration
 
@@ -62,31 +62,23 @@ def _minar(bc: Blockchain) -> None:
 # ── Nodo de prueba: app real con cadena en tmp_path y autoridad de test ──────
 
 @pytest.fixture
-def nodo(tmp_path, monkeypatch):
-    """Sustituye el estado global de api.app por una cadena en tmp_path.
+def nodo(tmp_path):
+    """App propia (create_app) con la cadena en tmp_path.
 
     La autoridad es una wallet del test (el génesis de producción fija otra
     dirección, cuya llave privada no está en el repo). ``reiniciar()`` simula
     un reinicio del proceso: cadena y contrato nuevos desde el mismo directorio.
     """
-    import api.app as app_mod
     autoridad = Wallet.generate()
-    data_dir = str(tmp_path / "nodo")
-
-    def reiniciar():
-        bc = app_mod.build_node_state(data_dir, "nodo_test", autoridad.address,
-                                      initial_difficulty=DIFICULTAD)
-        monkeypatch.setattr(app_mod, "blockchain", bc)
-        return bc
-
-    monkeypatch.setattr(app_mod, "authority_wallet", autoridad)
-    reiniciar()
-    return SimpleNamespace(app=app_mod, autoridad=autoridad, reiniciar=reiniciar)
+    fastapi = make_app(tmp_path, autoridad=autoridad, mining_difficulty=DIFICULTAD)
+    return SimpleNamespace(
+        fastapi=fastapi, node=fastapi.state.node, autoridad=autoridad,
+        reiniciar=lambda: reiniciar_nodo(fastapi, autoridad))
 
 
 @pytest_asyncio.fixture
 async def client(nodo):
-    async with AsyncClient(transport=ASGITransport(app=nodo.app.app),
+    async with AsyncClient(transport=ASGITransport(app=nodo.fastapi),
                            base_url="http://test") as ac:
         yield ac
 
@@ -140,7 +132,7 @@ async def test_flujo_emitir_minar_reiniciar_revocar(client, nodo):
     v = (await client.get(f"/credentials/verify/{cid}")).json()
     assert v["status"] == "PENDING" and v["valid"] is False
     # La API no mutó el estado confirmado.
-    assert nodo.app.blockchain.contract_state("credentials").get_stats()["total_credentials"] == 0
+    assert nodo.fastapi.state.node.blockchain.contract_state("credentials").get_stats()["total_credentials"] == 0
 
     bloque = await _minar_api(client)
     v = (await client.get(f"/credentials/verify/{cid}")).json()
@@ -195,7 +187,7 @@ async def test_registro_de_emisor_no_autorizado_rechazado(client, nodo):
     assert "no registrado" in r.json()["detail"]
 
     # Un nodo sin la llave de autoridad no registra emisores.
-    nodo.app.authority_wallet = None
+    nodo.fastapi.state.node.authority_wallet = None
     r = await client.post("/credentials/issuers",
                           json={"issuer_address": emisor.address, "institution_code": "UPB"})
     assert r.status_code == 503

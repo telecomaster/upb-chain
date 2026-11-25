@@ -6,8 +6,8 @@ directamente sin levantar un servidor HTTP real.
 
 NOTA: NODE_PORT=0 fuerza al nodo P2P a solicitar un puerto efímero al SO,
 evitando conflictos en entornos de CI con múltiples procesos pytest.
-El valor debe establecerse ANTES de importar api.app porque las variables
-globales de módulo se evalúan una sola vez en la importación.
+El valor debe establecerse ANTES de importar api.app porque el `app` de módulo (create_app())
+se construye una sola vez en la importación.
 """
 import os
 import time

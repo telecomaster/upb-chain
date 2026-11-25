@@ -34,7 +34,7 @@ from blockchain.core.transaction import (
     create_vote_transaction,
 )
 from blockchain.core.wallet import Wallet
-from tests.helpers import mine_and_add, mine_candidate
+from tests.helpers import make_app, mine_and_add, mine_candidate
 
 DIFICULTAD = 1
 
@@ -239,19 +239,15 @@ def test_doble_voto_en_un_bloque_invalida_el_bloque(tmp_path):
 # ── Votación por la API ──────────────────────────────────────────────────────
 
 @pytest.fixture
-def nodo(tmp_path, monkeypatch):
-    import api.app as app_mod
+def nodo(tmp_path):
     autoridad = Wallet.generate()
-    bc = app_mod.build_node_state(str(tmp_path / "nodo"), "nodo_test", autoridad.address,
-                                  initial_difficulty=DIFICULTAD)
-    monkeypatch.setattr(app_mod, "blockchain", bc)
-    monkeypatch.setattr(app_mod, "authority_wallet", autoridad)
-    return SimpleNamespace(app=app_mod, autoridad=autoridad)
+    fastapi = make_app(tmp_path, autoridad=autoridad, mining_difficulty=DIFICULTAD)
+    return SimpleNamespace(fastapi=fastapi, node=fastapi.state.node, autoridad=autoridad)
 
 
 @pytest_asyncio.fixture
 async def client(nodo):
-    async with AsyncClient(transport=ASGITransport(app=nodo.app.app),
+    async with AsyncClient(transport=ASGITransport(app=nodo.fastapi),
                            base_url="http://test") as ac:
         yield ac
 

@@ -12,9 +12,10 @@ RAIZ = Path(__file__).resolve().parent.parent
 
 CODIGO = (
     "import api.app as a;"
-    "print(a.blockchain.data_dir.resolve());"
-    "print(a.blockchain._calculate_difficulty());"
-    "print(a.NODE_ID)"
+    "n = a.app.state.node;"
+    "print(n.blockchain.data_dir.resolve());"
+    "print(n.blockchain._calculate_difficulty());"
+    "print(n.settings.node_id)"
 )
 
 

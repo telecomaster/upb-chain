@@ -11,12 +11,11 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-import api.app as appmod
 from ai.anomaly.dataset import extraer_matriz, generar_dataset
 from ai.anomaly.detector import BlockAnomalyDetector, TransactionAnomalyDetector
-from api.app import app
 from blockchain.core.transaction import Transaction, TransactionType
 from blockchain.core.wallet import Wallet
+from tests.helpers import make_app
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from evaluar_anomalias import evaluar  # noqa: E402
@@ -24,9 +23,20 @@ from evaluar_anomalias import evaluar  # noqa: E402
 PEQUENO = dict(dias=6, tx_normales_por_dia=120, episodios_por_ataque=2)
 
 
+@pytest.fixture
+def fastapi(tmp_path):
+    """App propia (create_app) con datos en tmp_path."""
+    return make_app(tmp_path)
+
+
+@pytest.fixture
+def node(fastapi):
+    return fastapi.state.node
+
+
 @pytest_asyncio.fixture
-async def client():
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+async def client(fastapi):
+    async with AsyncClient(transport=ASGITransport(app=fastapi), base_url="http://test") as ac:
         yield ac
 
 
@@ -91,20 +101,21 @@ def test_get_block_no_muta_detector(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_get_blocks_dos_veces_no_cambia_estado(client):
-    antes = (list(appmod.block_anomaly_detector._block_times), list(appmod.block_anomaly_detector._block_sizes))
+async def test_get_blocks_dos_veces_no_cambia_estado(client, node):
+    det = node.block_anomaly_detector
+    antes = (list(det._block_times), list(det._block_sizes))
     for _ in range(2):
         r = await client.get("/blocks/0")
         assert r.status_code == 200 and "anomaly" in r.json()
-    assert (appmod.block_anomaly_detector._block_times, appmod.block_anomaly_detector._block_sizes) == antes
+    assert (det._block_times, det._block_sizes) == antes
 
 
 @pytest.mark.asyncio
-async def test_tx_marcada_genera_alerta_anomaly_por_api(client, monkeypatch):
+async def test_tx_marcada_genera_alerta_anomaly_por_api(client, node):
     # Umbral bajo: un payload gigante (0,4 en la heurística) basta para marcarla.
-    monkeypatch.setattr(appmod, "tx_anomaly_detector", TransactionAnomalyDetector(threshold=0.3))
+    node.tx_anomaly_detector = TransactionAnomalyDetector(threshold=0.3)
     w = Wallet.generate()
-    antes = len([a for a in appmod.security_monitor.get_alerts(limit=100000) if a["event_type"] == "ANOMALY"])
+    antes = len([a for a in node.security_monitor.get_alerts(limit=100000) if a["event_type"] == "ANOMALY"])
     tx = Transaction(type=TransactionType.DATA_RECORD, sender=w.address, recipient="DEST",
                      payload={"blob": "x" * 20000}, nonce=1)
     tx.sign(w.private_key_hex)
@@ -114,7 +125,7 @@ async def test_tx_marcada_genera_alerta_anomaly_por_api(client, monkeypatch):
     r = await client.post("/transactions", json=body)
     assert r.status_code == 200, r.text
     assert r.json()["anomaly"]["is_anomaly"] is True
-    alertas = [a for a in appmod.security_monitor.get_alerts(limit=100000) if a["event_type"] == "ANOMALY"]
+    alertas = [a for a in node.security_monitor.get_alerts(limit=100000) if a["event_type"] == "ANOMALY"]
     assert len(alertas) == antes + 1
     assert alertas[-1]["metadata"]["tx_id"] == tx.tx_id
     # y se ve en el endpoint público
@@ -123,20 +134,20 @@ async def test_tx_marcada_genera_alerta_anomaly_por_api(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ai_train_guarda_modelo_y_se_carga(client, monkeypatch, tmp_path):
+async def test_ai_train_guarda_modelo_y_se_carga(client, node, tmp_path):
     from types import SimpleNamespace
     regs = generar_dataset(2, **PEQUENO)
     falsa = SimpleNamespace(chain=[SimpleNamespace(transactions=[r.tx for r in regs])])
     ruta = tmp_path / "models" / "tx_iforest.joblib"
-    monkeypatch.setattr(appmod, "blockchain", falsa)
-    monkeypatch.setattr(appmod, "anomaly_model_path", ruta)
-    monkeypatch.setattr(appmod, "tx_anomaly_detector", TransactionAnomalyDetector())
-    r = await client.post("/ai/train", headers=_admin_headers())
+    node.blockchain = falsa
+    node.anomaly_model_path = ruta
+    node.tx_anomaly_detector = TransactionAnomalyDetector()
+    r = await client.post("/ai/train", headers=_admin_headers(node))
     assert r.status_code == 200, r.text
     assert r.json()["trained"] and ruta.exists()
     assert TransactionAnomalyDetector().load(ruta)
 
 
-def _admin_headers():
-    key = getattr(appmod.settings, "admin_api_key", "") or ""
+def _admin_headers(node):
+    key = node.settings.admin_api_key
     return {"X-API-Key": key} if key else {}

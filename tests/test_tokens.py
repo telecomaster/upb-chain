@@ -10,7 +10,6 @@
   determinismo tras replace_chain / recarga.
 - Carga CSV: todo o nada.
 """
-import dataclasses
 import os
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -34,7 +33,7 @@ from blockchain.core.transaction import (
 )
 from blockchain.core.wallet import Wallet
 from security.rate_limiter import TxRateLimiter
-from tests.helpers import mine_candidate
+from tests.helpers import make_app, mine_candidate
 
 DIFICULTAD = 1
 BOLIVIA = timezone(timedelta(hours=-4))
@@ -160,22 +159,19 @@ def test_no_hay_tx_para_mover_insignias():
 # ── Por la API ───────────────────────────────────────────────────────────────
 
 @pytest.fixture
-def nodo(tmp_path, monkeypatch):
-    import api.app as app_mod
+def nodo(tmp_path):
     autoridad = Wallet.generate()
-    bc = app_mod.build_node_state(str(tmp_path / "nodo"), "nodo_test", autoridad.address,
-                                  initial_difficulty=DIFICULTAD)
-    monkeypatch.setattr(app_mod, "blockchain", bc)
-    monkeypatch.setattr(app_mod, "authority_wallet", autoridad)
-    monkeypatch.setattr(app_mod, "tx_rate_limiter", TxRateLimiter(limit=1000))
-    return SimpleNamespace(app=app_mod, bc=bc, autoridad=autoridad,
+    fastapi = make_app(tmp_path, autoridad=autoridad, mining_difficulty=DIFICULTAD,
+                       tx_rate_limit=1000)
+    bc = fastapi.state.node.blockchain
+    return SimpleNamespace(fastapi=fastapi, node=fastapi.state.node, bc=bc, autoridad=autoridad,
                            emisor=Wallet.generate(), ana=Wallet.generate(),
                            beto=Wallet.generate())
 
 
 @pytest_asyncio.fixture
 async def client(nodo):
-    async with AsyncClient(transport=ASGITransport(app=nodo.app.app),
+    async with AsyncClient(transport=ASGITransport(app=nodo.fastapi),
                            base_url="http://test") as ac:
         yield ac
 
@@ -342,9 +338,9 @@ async def test_api_csv_todo_o_nada(client, nodo):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_api_csv_respeta_el_limite_de_tasa(client, nodo, monkeypatch):
+async def test_api_csv_respeta_el_limite_de_tasa(client, nodo):
     await _emisor_con_presupuesto(client, nodo, 10)
-    monkeypatch.setattr(nodo.app, "tx_rate_limiter", TxRateLimiter(limit=2))
+    nodo.node.tx_rate_limiter = TxRateLimiter(limit=2)
     filas = "".join(f"{nodo.ana.address},1,taller\n" for _ in range(3))
     r = await client.post("/tokens/award/csv", json={
         "issuer_address": nodo.emisor.address, "private_key_hex": nodo.emisor.private_key_hex,
@@ -355,9 +351,8 @@ async def test_api_csv_respeta_el_limite_de_tasa(client, nodo, monkeypatch):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_api_presupuesto_exige_admin(client, nodo, monkeypatch):
-    monkeypatch.setattr(nodo.app, "settings",
-                        dataclasses.replace(nodo.app.settings, admin_api_key="secreta"))
+async def test_api_presupuesto_exige_admin(client, nodo):
+    nodo.node.settings = nodo.node.settings.model_copy(update={"admin_api_key": "secreta"})
     cuerpo = {"issuer_address": nodo.emisor.address, "amount": 5}
     assert (await client.post("/tokens/budget", json=cuerpo)).status_code == 401
     assert (await client.post("/tokens/redeem-addresses", json={

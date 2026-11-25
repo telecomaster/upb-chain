@@ -11,7 +11,7 @@ import shutil
 import tempfile
 
 # ── Aislamiento del estado de import-time ──────────────────────────────────────
-# tests/test_api.py importa api.app, que crea el estado global del nodo al
+# tests/test_api.py importa api.app, que crea el ``app`` de módulo (create_app) al
 # cargarse (config.load_settings). Sin esto, la suite leería y escribiría la
 # cadena real (data/chain/chain.json) y la llave de autoridad real
 # (data/keys/authority.json) del desarrollador. Pytest importa este conftest

@@ -13,7 +13,7 @@ from blockchain.core.block import Block, hash_meets_bits
 from blockchain.core.chain import Blockchain
 from blockchain.core.transaction import Transaction, TransactionType
 from blockchain.core.wallet import Wallet
-from tests.helpers import mine_and_add, mine_candidate
+from tests.helpers import make_app, mine_and_add, mine_candidate
 
 
 def _tx(wallet, n=0, timestamp=None, nonce=1):
@@ -211,17 +211,16 @@ def test_dificultad_esperada_es_funcion_pura_y_acotada(tmp_path, w):
 
 
 @pytest_asyncio.fixture
-async def client():
-    async with AsyncClient(transport=ASGITransport(app=__import__("api.app", fromlist=["app"]).app),
-                           base_url="http://test") as ac:
+async def client(tmp_path):
+    app = make_app(tmp_path, "api")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        ac.node = app.state.node
         yield ac
 
 
 @pytest.mark.asyncio
-async def test_api_minar_y_no_aceptar_tx_ya_confirmada(client, tmp_path, monkeypatch):
-    import api.app as appmod
-    bc = Blockchain("n_api", str(tmp_path / "api"), initial_difficulty=1)
-    monkeypatch.setattr(appmod, "blockchain", bc)
+async def test_api_minar_y_no_aceptar_tx_ya_confirmada(client):
+    bc = client.node.blockchain
     w = Wallet.generate()
     tx = _tx(w, 7)
     body = {

@@ -25,7 +25,7 @@ from blockchain.core.transaction import (
     create_transfer_transaction,
 )
 from blockchain.core.wallet import Wallet
-from tests.helpers import mine_and_add, mine_candidate
+from tests.helpers import make_app, mine_and_add, mine_candidate, reiniciar_nodo
 
 pytestmark = pytest.mark.integration
 
@@ -35,26 +35,18 @@ DIFICULTAD = 1
 # ── Nodo de prueba por la API ────────────────────────────────────────────────
 
 @pytest.fixture
-def nodo(tmp_path, monkeypatch):
-    """Estado global de api.app sobre tmp_path, con una autoridad de test."""
-    import api.app as app_mod
+def nodo(tmp_path):
+    """App propia (create_app) sobre tmp_path, con una autoridad de test."""
     autoridad = Wallet.generate()
-    data_dir = str(tmp_path / "nodo")
-
-    def reiniciar():
-        bc = app_mod.build_node_state(data_dir, "nodo_test", autoridad.address,
-                                      initial_difficulty=DIFICULTAD)
-        monkeypatch.setattr(app_mod, "blockchain", bc)
-        return bc
-
-    monkeypatch.setattr(app_mod, "authority_wallet", autoridad)
-    reiniciar()
-    return SimpleNamespace(app=app_mod, autoridad=autoridad, reiniciar=reiniciar)
+    fastapi = make_app(tmp_path, autoridad=autoridad, mining_difficulty=DIFICULTAD)
+    return SimpleNamespace(
+        fastapi=fastapi, node=fastapi.state.node, autoridad=autoridad,
+        reiniciar=lambda: reiniciar_nodo(fastapi, autoridad))
 
 
 @pytest_asyncio.fixture
 async def client(nodo):
-    async with AsyncClient(transport=ASGITransport(app=nodo.app.app),
+    async with AsyncClient(transport=ASGITransport(app=nodo.fastapi),
                            base_url="http://test") as ac:
         yield ac
 
@@ -110,7 +102,7 @@ async def test_mint_transferencia_saldos_y_reinicio(client, nodo):
     assert cuenta_ana["balance"] == 695 and cuenta_ana["nonce"] == 1
     assert cuenta_ana["next_nonce"] == 2
     assert (await _cuenta(client, beto.address))["balance"] == 300
-    bc = nodo.app.blockchain
+    bc = nodo.fastapi.state.node.blockchain
     assert bc.accounts.total_supply == 995 and bc.accounts.burned_fees == 5
     saldo = (await client.get(f"/chain/balance/{ana.address}")).json()
     assert saldo["balance"] == 695 and saldo["chain_total_fees"] == 5
@@ -203,7 +195,7 @@ async def test_mint_de_quien_no_es_autoridad_rechazado(client, nodo):
     r = await client.post("/transactions", json=_cuerpo(tx))
     assert r.status_code == 400 and "autoridad" in r.json()["detail"]
     # Sin llave de autoridad el nodo no puede emitir.
-    nodo.app.authority_wallet = None
+    nodo.fastapi.state.node.authority_wallet = None
     r = await client.post("/tokens/mint", json={"recipient": intruso.address, "amount": 1})
     assert r.status_code == 503
 
@@ -238,7 +230,7 @@ async def test_credenciales_consumen_nonce_del_firmante(client, nodo):
     await _minar(client)
     assert (await _cuenta(client, nodo.autoridad.address))["nonce"] == 2
     assert (await _cuenta(client, emisor.address))["balance"] == 7
-    assert nodo.app.blockchain.contract_state("credentials").is_registered_issuer(emisor.address)
+    assert nodo.fastapi.state.node.blockchain.contract_state("credentials").is_registered_issuer(emisor.address)
 
 
 # ── Consenso: bloques con TXs inválidas para las cuentas ─────────────────────

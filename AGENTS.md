@@ -38,7 +38,7 @@ overstate what works).
 
 ## Layout
 
-- `config.py` settings from env/.env
+- `config.py` `Settings` (pydantic-settings, inmutable, validado; `load_settings()`/`build_settings()`; env gana a .env)
 - `blockchain/core` block, chain (persistence, fork resolution; owns the `ContractRegistry`),
   transaction, wallet (ECDSA secp256k1)
 - `blockchain/consensus` proof_of_work, pbft · `blockchain/network` P2P node (sincronización y peers en `node.py`)
@@ -52,7 +52,7 @@ overstate what works).
 - `ai/anomaly/detector.py`, `ai/analytics/chain_stats.py`
 - `security/` crypto_utils, monitor, hardening (checklist de solo lectura en `GET /security/hardening`),
   `attacks/` simulator, eclipse (usado por el simulador y `POST /security/eclipse-simulation`)
-- `api/app.py` FastAPI app (module-level globals) · `dashboard/templates/index.html`
+- `api/app.py` app factory `create_app(settings)`: estado del nodo en `NodeState` (`app.state.node`), endpoints con `Depends(get_node)`; `app = create_app()` para uvicorn; dos apps por proceso son independientes · `dashboard/templates/index.html`
 
 ## Rules
 
@@ -69,6 +69,7 @@ overstate what works).
   inside validation or contract state transitions.
 - Do not claim measured numbers (hash rate, TPS, temperature, AUC) that were not measured; label
   estimates as such. Hardware measurements come from the Pi owner.
+- Tests that need their own node build it with `tests.helpers.make_app(tmp_path, ...)` (`create_app` + `Settings`), never by patching module globals; two apps in one process are independent.
 - Always pass `encoding="utf-8"` to `open()` (Windows defaults to cp1252).
 - Keep it free of deprecated patterns (FastAPI `lifespan`, Pydantic v2, no `utcnow`).
 - Never commit `venv/`, `.env`, `data/`, wallets or private keys. Wallet endpoints return private keys

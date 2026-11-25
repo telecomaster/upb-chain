@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from api.app import _url_verificacion
 from blockchain.core.wallet import Wallet
 from tests.test_credentials_chain import (  # noqa: F401  (fixtures y ayudantes)
     _datos, _emitir, _minar_api, _registrar, _revocar, client, nodo,
@@ -48,17 +49,17 @@ async def test_desconocido_404(client):
 
 
 @pytest.mark.asyncio
-async def test_qr_png_con_url_publica(client, nodo, monkeypatch):
+async def test_qr_png_con_url_publica(client, nodo):
     _, cid = await _emitida(client)
     r = await client.get(f"/credentials/{cid}/qr")
     assert r.status_code == 200 and r.headers["content-type"] == "image/png"
     assert r.content.startswith(b"\x89PNG")
     # La URL embebida usa PUBLIC_BASE_URL si está definida, si no la del request.
     req = SimpleNamespace(base_url="http://test/")
-    monkeypatch.setattr(nodo.app, "settings", SimpleNamespace(public_base_url=""))
-    assert nodo.app._url_verificacion(req, cid) == f"http://test/verify/{cid}"
-    monkeypatch.setattr(nodo.app, "settings", SimpleNamespace(public_base_url="https://upb.example/"))
-    assert nodo.app._url_verificacion(req, cid) == f"https://upb.example/verify/{cid}"
+    nodo.node.settings = nodo.node.settings.model_copy(update={"public_base_url": ""})
+    assert _url_verificacion(nodo.node, req, cid) == f"http://test/verify/{cid}"
+    nodo.node.settings = nodo.node.settings.model_copy(update={"public_base_url": "https://upb.example/"})
+    assert _url_verificacion(nodo.node, req, cid) == f"https://upb.example/verify/{cid}"
 
 
 @pytest.mark.asyncio

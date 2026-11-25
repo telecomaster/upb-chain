@@ -1,27 +1,44 @@
 """
-Configuración del nodo UPB-Chain (P0-7).
+Configuración del nodo UPB-Chain (P0-7, P2-9).
 
-Único lugar donde se leen las variables de entorno. ``load_settings()`` carga
-``.env`` (sin sobrescribir variables ya definidas en el entorno) y devuelve un
-objeto inmutable con los valores ya convertidos.
+Único lugar donde se leen las variables de entorno. ``Settings`` es un modelo de
+``pydantic-settings`` inmutable y validado; ``load_settings()`` lo construye leyendo
+el entorno y ``.env`` (las variables de entorno ganan al ``.env``). Un valor
+inválido (puerto fuera de rango, dificultad negativa...) lanza ``ConfigError``
+con un mensaje en español.
 """
 import logging
-import os
-from dataclasses import dataclass, field
-from typing import List
+from typing import Annotated, List
 
-from dotenv import load_dotenv
+from pydantic import ValidationError, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+_NIVELES_LOG = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
 
 
-@dataclass(frozen=True)
-class Settings:
+class ConfigError(ValueError):
+    """Configuración inválida (mensaje en español, una línea por campo)."""
+
+
+def _lista(valor):
+    """``"a, b"`` -> ``["a", "b"]`` (las listas ya hechas pasan sin cambio)."""
+    if isinstance(valor, str):
+        return [p.strip() for p in valor.split(",") if p.strip()]
+    return valor
+
+
+class Settings(BaseSettings):
+    # Los valores pasados por argumento ganan al entorno, y el entorno gana al .env.
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", frozen=True)
+
     node_id: str = "node_1"
     node_host: str = "0.0.0.0"        # dirección de escucha P2P
-    node_port: int = 8001             # puerto P2P
+    node_port: int = 8001             # puerto P2P (0 = efímero, útil en tests)
     api_port: int = 8000
     # Dirección que se anuncia a los pares (si vacía, se usa node_host).
     node_advertise_host: str = ""
-    peers: List[str] = field(default_factory=list)
+    peers: Annotated[List[str], NoDecode] = []
     data_dir: str = "data/chain"      # aquí se guarda chain.json
     mining_difficulty: int = 16       # dificultad inicial en BITS (P2-5)
     log_level: str = "INFO"
@@ -32,34 +49,79 @@ class Settings:
     # Llave de los endpoints de administración (P1-9). Vacía = solo peticiones locales.
     admin_api_key: str = ""
     # Orígenes CORS permitidos. Vacía = solo el origen propio del nodo en localhost.
-    cors_origins: List[str] = field(default_factory=list)
+    cors_origins: Annotated[List[str], NoDecode] = []
     # Máximo de TX por minuto y emisor admitidas al mempool (P1-5). No es regla de consenso.
     tx_rate_limit: int = 100
+
+    @field_validator("peers", "cors_origins", mode="before")
+    @classmethod
+    def _separar_comas(cls, v):
+        return _lista(v)
+
+    @field_validator("node_port", "api_port")
+    @classmethod
+    def _puerto(cls, v: int) -> int:
+        if not 0 <= v <= 65535:
+            raise ValueError("debe ser un puerto entre 0 y 65535")
+        return v
+
+    @field_validator("mining_difficulty")
+    @classmethod
+    def _dificultad(cls, v: int) -> int:
+        if not 1 <= v <= 256:
+            raise ValueError("debe estar entre 1 y 256 (bits de dificultad)")
+        return v
+
+    @field_validator("tx_rate_limit")
+    @classmethod
+    def _limite(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("debe ser al menos 1")
+        return v
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _nivel(cls, v):
+        v = str(v).strip().upper()
+        if v not in _NIVELES_LOG:
+            raise ValueError(f"debe ser uno de {', '.join(_NIVELES_LOG)}")
+        return v
+
+    @field_validator("node_id")
+    @classmethod
+    def _nodo(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("no puede estar vacío")
+        return v
+
+    @field_validator("public_base_url", "admin_api_key")
+    @classmethod
+    def _recortar(cls, v: str) -> str:
+        return v.strip()
+
+
+def _mensaje(err: dict) -> str:
+    if err["type"].startswith("int_"):
+        return "debe ser un número entero"
+    return err["msg"].removeprefix("Value error, ")
+
+
+def build_settings(load_env_file: bool = True, **valores) -> Settings:
+    """Construye ``Settings`` (entorno + ``.env`` opcional) con ``valores`` por encima.
+
+    Convierte los errores de validación de pydantic en ``ConfigError`` en español.
+    """
+    try:
+        return Settings(_env_file=".env" if load_env_file else None, **valores)
+    except ValidationError as e:
+        lineas = [f"  {'.'.join(str(p) for p in err['loc']).upper()}: {_mensaje(err)}"
+                  for err in e.errors()]
+        raise ConfigError("Configuración inválida:\n" + "\n".join(lineas)) from None
 
 
 def load_settings(load_env_file: bool = True) -> Settings:
     """Lee la configuración del entorno (y de ``.env`` si existe)."""
-    if load_env_file:
-        load_dotenv(override=False, encoding="utf-8")
-    env = os.environ.get
-    peers = [p.strip() for p in env("PEERS", "").split(",") if p.strip()]
-    cors_origins = [o.strip() for o in env("CORS_ORIGINS", "").split(",") if o.strip()]
-    return Settings(
-        node_id=env("NODE_ID", "node_1"),
-        node_host=env("NODE_HOST", "0.0.0.0"),
-        node_port=int(env("NODE_PORT", "8001")),
-        api_port=int(env("API_PORT", "8000")),
-        node_advertise_host=env("NODE_ADVERTISE_HOST", ""),
-        peers=peers,
-        data_dir=env("DATA_DIR", "data/chain"),
-        mining_difficulty=int(env("MINING_DIFFICULTY", "16")),
-        log_level=env("LOG_LEVEL", "INFO").upper(),
-        authority_key_file=env("AUTHORITY_KEY_FILE", "data/keys/authority.json"),
-        public_base_url=env("PUBLIC_BASE_URL", "").strip(),
-        admin_api_key=env("ADMIN_API_KEY", "").strip(),
-        cors_origins=cors_origins,
-        tx_rate_limit=int(env("TX_RATE_LIMIT", "100")),
-    )
+    return build_settings(load_env_file)
 
 
 def configure_logging(level: str) -> None:

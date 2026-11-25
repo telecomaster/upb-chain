@@ -11,35 +11,36 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from blockchain.core.chain import Blockchain
-from tests.helpers import mine_and_add
+from tests.helpers import make_app, mine_and_add
+
+
+@pytest.fixture
+def app(tmp_path):
+    """App propia (create_app), dificultad 1 y datos en tmp_path."""
+    return make_app(tmp_path)
 
 
 @pytest_asyncio.fixture
-async def client():
-    import api.app as appmod
-    async with AsyncClient(transport=ASGITransport(app=appmod.app),
+async def client(app):
+    async with AsyncClient(transport=ASGITransport(app=app),
                            base_url="http://test") as ac:
         yield ac
 
 
-def _lento(monkeypatch, segundos):
+def _lento(app, monkeypatch, segundos):
     """Hace que el PoW tarde `segundos` (dentro del thread de minado)."""
-    import api.app as appmod
-    real = appmod.pow_engine.mine
+    real = app.state.node.pow_engine.mine
 
     def mine(block, **kw):
         time.sleep(segundos)
         return real(block, **kw)
 
-    monkeypatch.setattr(appmod.pow_engine, "mine", mine)
+    monkeypatch.setattr(app.state.node.pow_engine, "mine", mine)
 
 
 @pytest.mark.asyncio
-async def test_health_responde_durante_el_minado(client, tmp_path, monkeypatch):
-    import api.app as appmod
-    monkeypatch.setattr(appmod, "blockchain",
-                        Blockchain("n", str(tmp_path / "a"), initial_difficulty=1))
-    _lento(monkeypatch, 1.0)
+async def test_health_responde_durante_el_minado(client, app, monkeypatch):
+    _lento(app, monkeypatch, 1.0)
     minado = asyncio.create_task(
         client.post("/blocks/mine", json={"miner_address": "M"}))
     await asyncio.sleep(0.2)
@@ -52,11 +53,9 @@ async def test_health_responde_durante_el_minado(client, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dos_minados_concurrentes_uno_409(client, tmp_path, monkeypatch):
-    import api.app as appmod
-    bc = Blockchain("n", str(tmp_path / "b"), initial_difficulty=1)
-    monkeypatch.setattr(appmod, "blockchain", bc)
-    _lento(monkeypatch, 0.6)
+async def test_dos_minados_concurrentes_uno_409(client, app, monkeypatch):
+    bc = app.state.node.blockchain
+    _lento(app, monkeypatch, 0.6)
     t1 = asyncio.create_task(client.post("/blocks/mine", json={"miner_address": "M"}))
     await asyncio.sleep(0.2)
     r2 = await client.post("/blocks/mine", json={"miner_address": "M"})
@@ -66,30 +65,28 @@ async def test_dos_minados_concurrentes_uno_409(client, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_punta_cambia_durante_minado_da_409(client, tmp_path, monkeypatch):
-    import api.app as appmod
-    bc = Blockchain("n", str(tmp_path / "c"), initial_difficulty=1)
-    monkeypatch.setattr(appmod, "blockchain", bc)
-    real = appmod.pow_engine.mine
+async def test_punta_cambia_durante_minado_da_409(client, app, monkeypatch):
+    bc = app.state.node.blockchain
+    real = app.state.node.pow_engine.mine
 
     def mine(block, **kw):
         res = real(block, **kw)
         mine_and_add(bc)  # "llega un bloque de un peer" mientras se minaba
         return res
 
-    monkeypatch.setattr(appmod.pow_engine, "mine", mine)
+    monkeypatch.setattr(app.state.node.pow_engine, "mine", mine)
     r = await client.post("/blocks/mine", json={"miner_address": "M"})
     assert r.status_code == 409
 
 
 @pytest.mark.asyncio
-async def test_minado_usa_dificultad_de_la_cadena(client, tmp_path, monkeypatch):
-    import api.app as appmod
-    bc = Blockchain("n", str(tmp_path / "d"), initial_difficulty=2)
-    monkeypatch.setattr(appmod, "blockchain", bc)
+async def test_minado_usa_dificultad_de_la_cadena(tmp_path):
+    app = make_app(tmp_path, "dif2", mining_difficulty=2)
+    bc = app.state.node.blockchain
     # Un valor fijo distinto en el motor no debe influir.
-    monkeypatch.setattr(appmod.pow_engine, "difficulty", 5)
-    r = await client.post("/blocks/mine", json={"miner_address": "M"})
+    app.state.node.pow_engine.difficulty = 5
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/blocks/mine", json={"miner_address": "M"})
     assert r.status_code == 200
     blk = r.json()["block"]
     assert blk["header"]["difficulty"] == bc.expected_difficulty(bc.chain[:-1]) == 2
