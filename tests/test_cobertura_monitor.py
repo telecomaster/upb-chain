@@ -288,10 +288,6 @@ def test_get_alerts_devuelve_diccionarios_con_los_campos_del_contrato(mon):
     assert set(alerta) == {"level", "event_type", "message", "timestamp", "metadata"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="get_alerts usa alerts[-limit:]; con limit=0 la rebanada [-0:] devuelve todas "
-           "las alertas en lugar de ninguna.")
 def test_get_alerts_con_limite_cero_no_devuelve_nada(mon):
     mon.on_unknown_peer("p1")
     assert mon.get_alerts(limit=0) == []

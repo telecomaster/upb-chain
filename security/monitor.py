@@ -212,6 +212,9 @@ class SecurityMonitor:
         alerts = self._alerts
         if level:
             alerts = [a for a in alerts if a.level == level]
+        # alerts[-0:] es la lista entera: con limit <= 0 no se devuelve ninguna alerta
+        if limit <= 0:
+            return []
         return [a.to_dict() for a in alerts[-limit:]]
 
     def get_threat_summary(self) -> dict:
