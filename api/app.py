@@ -19,7 +19,7 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
@@ -30,6 +30,7 @@ from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from config import Settings, load_settings, configure_logging
+from api.metrics import EventCounters, CONTENT_TYPE as METRICS_CONTENT_TYPE, build_registry, render as render_metrics
 from blockchain.core.chain import Blockchain
 from blockchain.core.merkle import build_proof, leaf_hash
 from blockchain.core import commitment
@@ -126,6 +127,7 @@ class NodeState:
     pbft_node: PBFTNode
     p2p: P2PNode
     events: EventBus                   # P2-7: bus de eventos para GET /events
+    counters: EventCounters = field(default_factory=EventCounters)   # P2-10
 
     def announce_block(self, block: dict) -> None:
         """Bloque nuevo (propio o de un par): monitor + evento ``block``."""
@@ -229,7 +231,15 @@ def _enforce_tx_rate_limit(node: NodeState, sender: str) -> None:
     allowed, count = node.tx_rate_limiter.check(sender)
     if not allowed:
         node.security_monitor.on_tx_rate_limited(sender, count, node.tx_rate_limiter.limit)
+        node.counters.inc("tx_rate_limited")
         raise HTTPException(429, f"Límite de {node.tx_rate_limiter.limit} TX por minuto excedido")
+
+
+def _admit_tx(node: NodeState, tx: Transaction):
+    """``add_transaction`` contando admitidas/rechazadas para /metrics (P2-10)."""
+    ok, reason = node.blockchain.add_transaction(tx)
+    node.counters.inc("tx_admitted" if ok else "tx_rejected")
+    return ok, reason
 
 
 _HOSTS_LOCALES = {"127.0.0.1", "::1", "localhost", "testclient"}
@@ -251,6 +261,13 @@ async def require_admin(request: Request) -> None:
     host = request.client.host if request.client else ""
     if host not in _HOSTS_LOCALES:
         raise HTTPException(403, "endpoint de administración: solo local o con ADMIN_API_KEY")
+
+
+async def require_metrics_access(request: Request) -> None:
+    """Acceso a /metrics (P2-10): libre con ``METRICS_PUBLIC=true``; si no, como ``require_admin``."""
+    if request.app.state.node.settings.metrics_public:
+        return
+    await require_admin(request)
 
 
 router = APIRouter()
@@ -456,6 +473,13 @@ async def events_stream(request: Request, node: NodeState = Depends(get_node)):
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@router.get("/metrics", dependencies=[Depends(require_metrics_access)])
+async def metrics(request: Request):
+    """Métricas en formato de exposición de Prometheus (se leen al momento del scrape)."""
+    return Response(render_metrics(request.app.state.metrics_registry),
+                    media_type=METRICS_CONTENT_TYPE)
+
+
 @router.post("/blocks/mine", dependencies=[Depends(require_admin)])
 async def mine_block(request: MineRequest, background_tasks: BackgroundTasks, node: NodeState = Depends(get_node)):
     if node.mining_lock.locked():
@@ -482,6 +506,7 @@ async def mine_block(request: MineRequest, background_tasks: BackgroundTasks, no
             node.security_monitor.on_invalid_block(reason, node.settings.node_id)
             raise HTTPException(409, f"Bloque minado ya no es válido: {reason}")
         node.announce_block(result.block.to_dict())
+        node.counters.inc("blocks_mined")
     # Difusión a los pares (E/S de red bloqueante) fuera del event loop (P0-5).
     await asyncio.to_thread(node.p2p.broadcast_block, result.block.to_dict())
     return {
@@ -539,7 +564,7 @@ async def create_transaction(request: TransactionRequest, node: NodeState = Depe
     anomaly = node.tx_anomaly_detector.predict(tx.to_dict())
     node.security_monitor.on_transaction(tx.to_dict())
 
-    ok, reason = node.blockchain.add_transaction(tx)
+    ok, reason = _admit_tx(node, tx)
     if not ok:
         raise HTTPException(400, reason)
     node.events.publish("tx", {"tx_id": tx.tx_id, "pending": len(node.blockchain.mempool)})
@@ -854,7 +879,7 @@ def _credentials(node: NodeState) -> CredentialState:
 def _submit_contract_tx(node: NodeState, tx: Transaction) -> None:
     """Admite una TX al mempool (límite por emisor, firma, cuentas y reglas del contrato) o lanza 400/429."""
     _enforce_tx_rate_limit(node, tx.sender)
-    ok, reason = node.blockchain.add_transaction(tx)
+    ok, reason = _admit_tx(node, tx)
     if not ok:
         raise HTTPException(400, reason)
     node.announce_tx(tx.to_dict())
@@ -1315,6 +1340,7 @@ def create_app(settings: Optional[Settings] = None,
         lifespan=lifespan,
     )
     app.state.node = node
+    app.state.metrics_registry = build_registry(node)   # P2-10: uno por app
 
     # CORS restringido (P1-9): por defecto solo el propio origen del nodo en localhost.
     cors_origins = settings.cors_origins or [

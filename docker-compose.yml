@@ -16,6 +16,9 @@ x-entorno: &entorno
   LOG_LEVEL: INFO
   ADMIN_API_KEY: ${ADMIN_API_KEY:?definir ADMIN_API_KEY}
   AUTHORITY_KEY_FILE: /run/secrets/authority.json
+  # P2-10: /metrics abierto sin llave para que Prometheus (otro contenedor) lo raspe. Los
+  # puertos del host siguen en 127.0.0.1; los endpoints de administración siguen con llave.
+  METRICS_PUBLIC: "true"
 
 services:
   node_1:
@@ -72,6 +75,35 @@ services:
     volumes:
       - datos_node_4:/data
 
+  # P2-10: monitoreo opcional -> docker compose --profile monitoring up -d
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    networks: [upbnet]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - datos_prometheus:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on: [node_1, node_2, node_3, node_4]
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    networks: [upbnet]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - datos_grafana:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on: [prometheus]
+
 networks:
   upbnet:
     driver: bridge
@@ -81,3 +113,5 @@ volumes:
   datos_node_2:
   datos_node_3:
   datos_node_4:
+  datos_prometheus:
+  datos_grafana:

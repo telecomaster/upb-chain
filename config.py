@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     public_base_url: str = ""
     # Llave de los endpoints de administración (P1-9). Vacía = solo peticiones locales.
     admin_api_key: str = ""
+    # /metrics (P2-10): False = mismo control que los endpoints de administración;
+    # True = abierto (solo para una red interna, p. ej. Prometheus dentro de docker compose).
+    metrics_public: bool = False
     # Orígenes CORS permitidos. Vacía = solo el origen propio del nodo en localhost.
     cors_origins: Annotated[List[str], NoDecode] = []
     # Máximo de TX por minuto y emisor admitidas al mempool (P1-5). No es regla de consenso.

@@ -155,7 +155,7 @@ Flujos de trabajo y orden de dependencias:
 - [x] **P2-7** Dashboard en vivo por WebSocket/SSE con progreso de minado (`mine_async_friendly`).
 - [x] **P2-8** Docker Compose con 4 nodos y CI en GitHub Actions.
 - [x] **P2-9** Configuración tipada (`pydantic-settings`) y app factory en lugar de globales (desbloquea P0-8).
-- [ ] **P2-10** Métricas Prometheus y tablero Grafana.
+- [x] **P2-10** Métricas Prometheus y tablero Grafana (`GET /metrics`, perfil `monitoring` de compose).
 - [ ] **P2-11** Contratos desplegables por estudiantes: `CONTRACT_DEPLOY`/`CONTRACT_CALL` sobre una VM de
   pila hecha a mano (~500 líneas) con gas pagado en puntos de testnet. Nunca ejecutar Python del
   estudiante con `exec()`. Para Solidity, laboratorios aparte en una testnet pública (Sepolia), no

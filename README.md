@@ -213,6 +213,29 @@ docker compose down          # conserva las cadenas (volúmenes); con -v las bor
 Para registrar emisores, descomentar en `node_1` el montaje de `./data/keys/authority.json`
 (solo lectura). Sin esa llave, el registro de emisores responde 503.
 
+### Métricas (Prometheus y Grafana)
+
+Cada nodo expone `GET /metrics` en formato de texto de Prometheus (`prometheus_client`, un
+registro por app). Los valores se leen al momento del scrape: `upb_chain_height`,
+`upb_chain_work` (float64: pierde precisión sobre 2^53), `upb_difficulty_bits`,
+`upb_mempool_size`, `upb_peers_total`/`upb_peers_active`, `upb_mining_in_progress`,
+`upb_last_block_age_seconds`, `upb_alerts{severity}`, `upb_node_info{node_id}` y los
+contadores `upb_blocks_mined_total` y `upb_tx_total{result=admitted|rejected|rate_limited}`
+(solo TX recibidas por la API, no las llegadas por P2P).
+
+Acceso: `/metrics` revela la topología, así que por defecto sigue la regla de los endpoints de
+administración (loopback sin llave, o cabecera `X-API-Key` si hay `ADMIN_API_KEY`). Con
+`METRICS_PUBLIC=true` queda abierto; `docker-compose.yml` lo activa porque Prometheus raspa
+desde otro contenedor, y los puertos del host siguen enlazados a `127.0.0.1`.
+
+```bash
+ADMIN_API_KEY=cambiame docker compose --profile monitoring up --build -d
+# Prometheus: http://127.0.0.1:9090 · Grafana: http://127.0.0.1:3000 (admin / $GRAFANA_PASSWORD, por defecto admin)
+```
+
+El tablero "UPB-Chain" (altura por nodo, dificultad, mempool, pares, alertas, edad del último
+bloque y bloques minados por minuto) se provisiona desde `monitoring/grafana/`.
+
 La integración continua (`.github/workflows/tests.yml`) corre `python -m pytest tests -q` en
 Ubuntu con Python 3.12 en cada push y pull request a `main`.
 

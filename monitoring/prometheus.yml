@@ -1,0 +1,12 @@
+# P2-10: Prometheus raspa las 4 APIs de docker-compose.yml (red interna upbnet, puerto 8000).
+# Los nodos arrancan con METRICS_PUBLIC=true en compose: /metrics queda abierto solo dentro
+# de esa red (los puertos del host siguen enlazados a 127.0.0.1).
+global:
+  scrape_interval: 10s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: upb_chain
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["node_1:8000", "node_2:8000", "node_3:8000", "node_4:8000"]
