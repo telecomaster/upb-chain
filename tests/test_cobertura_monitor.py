@@ -123,10 +123,6 @@ def test_percentil_95_de_veinte_valores_en_rango_de_nearest_rank(mon):
     assert mon.compute_fee_percentile() == 19  # 19 = ceil(0.95 * 20), nearest-rank
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="compute_fee_percentile usa int(n*p/100)-1: con n*p/100 no entero (10 fees, p95) "
-           "devuelve el 9.º valor en vez del 10.º (nearest-rank = ceil(9.5) = 10).")
 def test_percentil_95_de_diez_valores_es_el_decimo(mon):
     for fee in range(1, 11):
         mon.on_transaction(_tx(fee=fee))

@@ -4,6 +4,7 @@ Detecta patrones anómalos en la red: reorganizaciones, spamming de transaccione
 nodos maliciosos y cambios bruscos de dificultad.
 """
 import logging
+import math
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -321,7 +322,10 @@ class SecurityMonitor:
         if not self._fee_history:
             return 0.0
         sorted_fees = sorted(self._fee_history)
-        idx = max(0, int(len(sorted_fees) * percentile / 100) - 1)
+        n = len(sorted_fees)
+        # Nearest-rank: posición = ceil(n*p/100), índice = posición - 1, acotado a [0, n-1]
+        rango = math.ceil(n * percentile / 100)
+        idx = min(max(rango - 1, 0), n - 1)
         return sorted_fees[idx]
 
     def get_rolling_stats(self, window_minutes: int = 5) -> dict:
