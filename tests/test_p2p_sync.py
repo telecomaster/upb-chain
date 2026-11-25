@@ -215,3 +215,21 @@ def test_par_que_anuncia_0000_se_registra_con_su_ip_real(red):
     assert x.connect_to_peer(HOST, a.port)
     assert f"{HOST}:{x.port}" in a.peers
     assert not any(p.host == "0.0.0.0" for p in a.peers.values())
+
+
+def test_handshake_registra_al_par_antes_de_responder(red):
+    """Regresión (carrera): el receptor debe registrar al par antes de enviar su HANDSHAKE;
+    si no, el cliente vuelve de connect_to_peer y aún no figura en los pares del receptor."""
+    a = red.nodo("a")
+    b = red.nodo("b")
+    visto = []
+    original = a._send_framed
+
+    def espia(conn, message):
+        if message.get("type") == "HANDSHAKE":
+            visto.append(f"{HOST}:{b.port}" in a.peers)
+        return original(conn, message)
+
+    a._send_framed = espia
+    assert b.connect_to_peer(HOST, a.port)
+    assert visto and all(visto)

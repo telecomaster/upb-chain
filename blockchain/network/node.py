@@ -377,17 +377,20 @@ class P2PNode:
             logger.warning(f"Par {peer_id} rechazado: génesis distinto")
             self._send_framed(conn, {"type": MSG_REJECT, "reason": "Génesis distinto"})
             return
-        self._send_framed(conn, {"type": MSG_HANDSHAKE, **self._status()})
         host = self._peer_host(message.get("host", ""), conn)
         port = int(message.get("port") or 0)
         if not host or not port or self._is_self(host, port, peer_id):
+            self._send_framed(conn, {"type": MSG_HANDSHAKE, **self._status()})
             return
         if self.on_unknown_peer and self.known_peers and f"{host}:{port}" not in self.known_peers:
             with self._peers_lock:
                 nuevo = f"{host}:{port}" not in self.peers
             if nuevo:
                 self._notify(self.on_unknown_peer, f"{host}:{port}")
+        # Se registra al par ANTES de responder: si no, el cliente recibe el HANDSHAKE y
+        # puede observar que este nodo aún no lo conoce (carrera intermitente).
         self._register_peer(host, port, message)
+        self._send_framed(conn, {"type": MSG_HANDSHAKE, **self._status()})
         self._learn_peers(message.get("peers", []))
         if int(message.get("work", 0)) > self._local_work():
             self._spawn(self.sync_with, f"{host}:{port}")
