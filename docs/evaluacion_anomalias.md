@@ -33,3 +33,24 @@ Para cada ataque, el conjunto es ese ataque + todo el tráfico normal de prueba.
 El AUC global de Isolation Forest es 0.964 (> 0,85) en este conjunto sintético (semilla 7).
 
 Limitaciones: el tráfico normal y los ataques son supuestos del autor del generador, de modo que el resultado mide qué tan separables son estos patrones y no el desempeño en la red real. Los ataques que sólo difieren en una dimensión débil (p. ej. `odd_hour`, porque el tráfico normal incluye ~1 % de madrugada legítima) son más difíciles para un detector no supervisado. La validación con tráfico real de UPB queda pendiente.
+
+## Explicación por característica (Idea 7)
+
+Cada alerta `ANOMALY` y cada `anomaly` de `POST /transactions` lleva `explicacion` (lista ordenada) y `resumen` (frase en español). Los campos anteriores no cambian.
+
+**Método (oclusión).** Para cada una de las 9 características se reemplaza su valor por la **mediana del entrenamiento** y se recalcula el score crudo del bosque (`-score_samples`). `contribucion = score(x) - score(x con la característica neutralizada)`: positiva empuja hacia anómalo, negativa hacia normal. Es determinista (el bosque entrenado es fijo) y cuesta una sola llamada vectorizada de 10 filas. Cada elemento: `{caracteristica, valor, referencia (mediana), contribucion, rango_normal [Q1, Q3]}`, en unidades originales. Limitación: la oclusión es univariada; si dos características están correlacionadas (p. ej. `new_senders_recent` e `is_new_sender`) se reparten o se tapan la contribución. Los modelos guardados antes de esta versión no traen la mediana y usan la media del escalador.
+
+**Sin modelo entrenado (heurística).** `explicacion` lista cada regla: `{caracteristica, valor, referencia = umbral, contribucion = puntos que suma, regla}`.
+
+**Evaluación sintética (semilla 7, 14 días, entrenamiento 70 %, tramo de prueba).** Fracción de TX de ataque en que la característica inyectada queda primera / en el top-3 (80 TX; `odd_hour` se omite):
+
+| Ataque | n | #1 | top-3 |
+|---|---|---|---|
+| fee_outlier (`fee`) | 13 | 13 | 13 |
+| huge_payload (`payload_size`) | 3 | 3 | 3 |
+| replay (`payload_repeats`) | 16 | 15 | 15 |
+| new_address_flood (`new_senders_recent`) | 15 | 1 | 15 |
+| spam_burst (`sender_rate`) | 33 | 32 | 32 |
+| **Total** | 80 | 64 (80,0 %) | 78 (97,5 %) |
+
+Cuando una característica correlacionada (p. ej. `is_new_sender` en `new_address_flood`) absorbe la primera posición, la inyectada suele seguir en el top-3. Resultado sobre datos sintéticos, no sobre tráfico real.

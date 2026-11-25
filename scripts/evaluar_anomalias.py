@@ -63,6 +63,33 @@ def evaluar(seed: int = 7, dias: int = 14, tx_normales_por_dia: int = 300,
     return res
 
 
+# Característica que cada ataque sintético "infla" (la explicación debería señalarla).
+CARACTERISTICA_ESPERADA = {"huge_payload": "payload_size", "fee_outlier": "fee", "spam_burst": "sender_rate",
+                           "replay": "payload_repeats", "new_address_flood": "new_senders_recent"}
+
+
+def evaluar_explicaciones(seed: int = 7, dias: int = 14, frac_train: float = 0.7) -> dict:
+    """Idea 7: en qué fracción de TX de ataque (tramo de prueba) la característica inyectada
+    queda #1 / en el top-3 de la explicación por oclusión. Sintético; `odd_hour` se omite
+    (su característica, hour_of_day, también la comparten TX normales de madrugada)."""
+    regs = generar_dataset(seed, dias)
+    X = extraer_matriz(regs)
+    (_, X_tr), (r_te, X_te) = dividir_cronologico(regs, X, frac_train)
+    det = TransactionAnomalyDetector()
+    det.fit_features(X_tr, seed=seed)
+    out = {}
+    for r, x in zip(r_te, X_te):
+        esperada = CARACTERISTICA_ESPERADA.get(r.attack)
+        if not esperada:
+            continue
+        nombres = [e["caracteristica"] for e in det.explain_contributions(x)]
+        d = out.setdefault(r.attack, {"n": 0, "top1": 0, "top3": 0})
+        d["n"] += 1
+        d["top1"] += nombres[0] == esperada
+        d["top3"] += esperada in nombres[:3]
+    return out
+
+
 def _f(x) -> str:
     return "n/d" if x != x else f"{x:.3f}"
 
@@ -118,7 +145,44 @@ def informe(res: dict) -> str:
           "que sólo difieren en una dimensión débil (p. ej. `odd_hour`, porque el tráfico normal incluye ~1 % "
           "de madrugada legítima) son más difíciles para un detector no supervisado. La validación con tráfico "
           "real de UPB queda pendiente."]
+    if res.get("explicaciones"):
+        L += _seccion_explicaciones(res["explicaciones"], res["seed"], res["dias"], res["frac_train"])
     return "\n".join(L) + "\n"
+
+
+def _seccion_explicaciones(ex: dict, seed: int, dias: int, frac_train: float) -> list:
+    """Sección 'Explicación por característica (Idea 7)': método y tabla medida."""
+    n = sum(v["n"] for v in ex.values())
+    t1 = sum(v["top1"] for v in ex.values())
+    t3 = sum(v["top3"] for v in ex.values())
+
+    def pct(k):
+        return f"{100 * k / n:.1f}".replace(".", ",") if n else "—"
+    L = ["", "## Explicación por característica (Idea 7)", "",
+         "Cada alerta `ANOMALY` y cada `anomaly` de `POST /transactions` lleva `explicacion` (lista ordenada) y "
+         "`resumen` (frase en español). Los campos anteriores no cambian.", "",
+         "**Método (oclusión).** Para cada una de las 9 características se reemplaza su valor por la **mediana "
+         "del entrenamiento** y se recalcula el score crudo del bosque (`-score_samples`). "
+         "`contribucion = score(x) - score(x con la característica neutralizada)`: positiva empuja hacia anómalo, "
+         "negativa hacia normal. Es determinista (el bosque entrenado es fijo) y cuesta una sola llamada "
+         "vectorizada de 10 filas. Cada elemento: `{caracteristica, valor, referencia (mediana), contribucion, "
+         "rango_normal [Q1, Q3]}`, en unidades originales. Limitación: la oclusión es univariada; si dos "
+         "características están correlacionadas (p. ej. `new_senders_recent` e `is_new_sender`) se reparten o se "
+         "tapan la contribución. Los modelos guardados antes de esta versión no traen la mediana y usan la media "
+         "del escalador.", "",
+         "**Sin modelo entrenado (heurística).** `explicacion` lista cada regla: `{caracteristica, valor, "
+         "referencia = umbral, contribucion = puntos que suma, regla}`.", "",
+         f"**Evaluación sintética (semilla {seed}, {dias} días, entrenamiento {int(frac_train * 100)} %, tramo de "
+         f"prueba).** Fracción de TX de ataque en que la característica inyectada queda primera / en el top-3 "
+         f"({n} TX; `odd_hour` se omite):", "",
+         "| Ataque | n | #1 | top-3 |", "|---|---|---|---|"]
+    for a, v in ex.items():
+        L.append(f"| {a} (`{CARACTERISTICA_ESPERADA[a]}`) | {v['n']} | {v['top1']} | {v['top3']} |")
+    L += [f"| **Total** | {n} | {t1} ({pct(t1)} %) | {t3} ({pct(t3)} %) |", "",
+          "Cuando una característica correlacionada (p. ej. `is_new_sender` en `new_address_flood`) absorbe la "
+          "primera posición, la inyectada suele seguir en el top-3. Resultado sobre datos sintéticos, no sobre "
+          "tráfico real."]
+    return L
 
 
 def main() -> int:
@@ -128,6 +192,7 @@ def main() -> int:
     ap.add_argument("--salida", default=str(RAIZ / "docs" / "evaluacion_anomalias.md"))
     a = ap.parse_args()
     res = evaluar(seed=a.seed, dias=a.dias)
+    res["explicaciones"] = evaluar_explicaciones(seed=a.seed, dias=a.dias)
     texto = informe(res)
     Path(a.salida).write_text(texto, encoding="utf-8")
     print(texto)

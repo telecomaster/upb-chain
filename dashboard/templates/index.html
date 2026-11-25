@@ -1662,6 +1662,8 @@ async function loadLiveAlerts() {
     fila.style.color = colores[a.level] || 'var(--upb-text)';
     const hora = new Date(a.timestamp * 1000).toLocaleTimeString();
     fila.textContent = `${hora} [${a.level}] ${a.event_type}: ${a.message}`;
+    const top = ((a.metadata || {}).explicacion || []).filter(e => e.contribucion > 0).slice(0, 3);
+    if (top.length) fila.textContent += ' · porque: ' + top.map(e => `${e.caracteristica}=${e.valor}`).join(', ');
     box.appendChild(fila);
   }
 }

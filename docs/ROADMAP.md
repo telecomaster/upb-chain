@@ -178,6 +178,7 @@ Flujos de trabajo y orden de dependencias:
 5. **RPi consciente de temperatura:** controlador que ajusta la dificultad según la temperatura.
 6. **Detección federada de anomalías** entre nodos.
 7. **Alertas explicables** con contribución por característica.
+   *Hecho: oclusión por característica (mediana de entrenamiento) en `explicacion`/`resumen` de alertas ANOMALY y de `anomaly`; ver `docs/evaluacion_anomalias.md`.*
 8. **Elecciones estudiantiles** sobre el tipo `VOTE` existente.
    *Hecho: título, elegibilidad por credencial, estado pending/open/closed, participación y certificación del resultado al cierre (`docs/contratos.md`); la ventana por altura y el voto ponderado ya venían de P2-12.*
 9. **Arnés reproducible del paper:** `scripts/experiments/` regenera todas las tablas y figuras.

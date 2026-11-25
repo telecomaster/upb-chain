@@ -134,7 +134,8 @@ class SecurityMonitor:
             event_type="ANOMALY",
             message=f"TX anómala de {sender[:16]}… (score {score}): " + "; ".join(reasons),
             metadata={"sender": sender, "tx_id": tx.get("tx_id", ""), "tx_type": str(tx.get("type", "")),
-                      "score": score, "explanation": reasons},
+                      "score": score, "explanation": reasons,
+                      "explicacion": report.get("explicacion", []), "resumen": report.get("resumen", "")},
         ))
 
     def on_block(self, block: dict) -> None:

@@ -59,6 +59,8 @@ class AnomalyReport:
     features: dict
     explanation: List[str] = field(default_factory=list)
     timestamp: float = field(default_factory=time.time)
+    explicacion: List[dict] = field(default_factory=list)   # [{caracteristica, valor, referencia, contribucion}]
+    resumen: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -69,6 +71,8 @@ class AnomalyReport:
             "features": self.features,
             "explanation": self.explanation,
             "timestamp": self.timestamp,
+            "explicacion": self.explicacion,
+            "resumen": self.resumen,
         }
 
 
@@ -155,6 +159,7 @@ class TransactionAnomalyDetector:
         self._scaler = None
         self._training_samples = 0
         self._is_trained = False
+        self._ref = None   # referencia de entrenamiento {"mediana","q1","q3"} en el espacio log1p
         self.context = ContextoTx()
 
     # ── Características ──────────────────────────────────────────────────────
@@ -195,6 +200,9 @@ class TransactionAnomalyDetector:
         X = self._matrix(features)
         self._scaler = StandardScaler()
         X_scaled = self._scaler.fit_transform(X)
+        self._ref = {"mediana": np.median(X, axis=0).tolist(),
+                     "q1": np.percentile(X, 25, axis=0).tolist(),
+                     "q3": np.percentile(X, 75, axis=0).tolist()}
         self._model = IsolationForest(
             contamination=self.contamination, random_state=seed, n_estimators=100)
         self._model.fit(X_scaled)
@@ -235,7 +243,7 @@ class TransactionAnomalyDetector:
             "version": self.MODEL_VERSION, "features": self.FEATURE_NAMES,
             "model": self._model, "scaler": self._scaler,
             "contamination": self.contamination, "threshold": self.threshold,
-            "training_samples": self._training_samples,
+            "training_samples": self._training_samples, "ref": self._ref,
         }, tmp)
         tmp.replace(path)
 
@@ -254,6 +262,7 @@ class TransactionAnomalyDetector:
             self.contamination = data["contamination"]
             self.threshold = data["threshold"]
             self._training_samples = data["training_samples"]
+            self._ref = data.get("ref")   # modelos viejos no la traen: se usa la media del escalador
             self._is_trained = True
             return True
         except Exception:
@@ -278,8 +287,14 @@ class TransactionAnomalyDetector:
             is_anomaly = bool(self._model.predict(X_scaled)[0] == -1)
 
         explanation = self._explain(feat_dict, is_anomaly)
+        if self._is_trained:
+            explicacion = self.explain_contributions(features)
+        else:
+            explicacion = self._explicacion_reglas(features)
+        resumen = self._resumen(explicacion, is_anomaly)
 
         return AnomalyReport(
+            explicacion=explicacion, resumen=resumen,
             entity_id=tx.get("tx_id", "unknown"),
             entity_type="transaction",
             score=round(score, 4),
@@ -287,6 +302,69 @@ class TransactionAnomalyDetector:
             features=feat_dict,
             explanation=explanation,
         )
+
+    # ── Explicación por característica (Idea 7) ──────────────────────────────
+
+    def explain_contributions(self, features: List[float]) -> List[dict]:
+        """
+        Contribución de cada característica al score de anomalía por OCLUSIÓN: se reemplaza su
+        valor por la mediana del entrenamiento (en el espacio escalado) y se mide cuánto baja el
+        score crudo (-score_samples). contribucion = score(x) - score(x con la característica
+        neutralizada); positiva = empuja hacia anómalo. Determinista (el bosque es fijo) y barato:
+        10 evaluaciones en una sola llamada vectorizada. Orden: mayor |contribución| primero.
+        `valor` y `referencia` van en unidades originales (se deshace el log1p).
+        """
+        x = self._matrix([features])
+        xs = self._scaler.transform(x)[0]
+        ref = self._ref or {}
+        med = np.array(ref.get("mediana", self._scaler.mean_), dtype=float)
+        med_s = (med - self._scaler.mean_) / np.where(self._scaler.scale_ == 0, 1.0, self._scaler.scale_)
+        n = len(xs)
+        lote = np.tile(xs, (n + 1, 1))
+        for j in range(n):
+            lote[j + 1, j] = med_s[j]
+        scores = -self._model.score_samples(lote)
+        log_cols = {0, 1, 5, 6, 7}
+        q1, q3 = ref.get("q1"), ref.get("q3")
+
+        def orig(v, j):
+            return float(np.expm1(v)) if j in log_cols else float(v)
+        out = []
+        for j, nombre in enumerate(self.FEATURE_NAMES):
+            item = {
+                "caracteristica": nombre,
+                "valor": round(float(features[j]), 4),
+                "referencia": round(orig(med[j], j), 4),
+                "contribucion": round(float(scores[0] - scores[j + 1]), 4),
+            }
+            if q1 is not None:
+                item["rango_normal"] = [round(orig(q1[j], j), 4), round(orig(q3[j], j), 4)]
+            out.append(item)
+        out.sort(key=lambda e: (-abs(e["contribucion"]), e["caracteristica"]))
+        return out
+
+    @staticmethod
+    def _explicacion_reglas(features: List[float]) -> List[dict]:
+        """Sin modelo: cada regla de la heurística con su umbral, valor observado y puntos que suma."""
+        payload_size, fee, hour = features[0], features[1], features[2]
+        reglas = [("payload_size", payload_size, 10000, payload_size > 10000, 0.4, ">"),
+                  ("fee", fee, 100, fee > 100, 0.3, ">"),
+                  ("hour_of_day", hour, HORA_NOCTURNA_MAX, hour < HORA_NOCTURNA_MAX, 0.1, "<")]
+        out = [{"caracteristica": n, "valor": float(v), "referencia": float(u),
+                "contribucion": pts if activa else 0.0, "regla": f"{n} {op} {u}"}
+               for n, v, u, activa, pts, op in reglas]
+        out.sort(key=lambda e: (-e["contribucion"], e["caracteristica"]))
+        return out
+
+    @staticmethod
+    def _resumen(explicacion: List[dict], is_anomaly: bool) -> str:
+        """Frase corta en español con las 3 contribuciones principales."""
+        top = [e for e in explicacion if e["contribucion"] > 0][:3]
+        if not top:
+            return "Sin características que empujen hacia lo anómalo."
+        partes = ", ".join(f"{e['caracteristica']}={e['valor']:g} (ref. {e['referencia']:g}, +{e['contribucion']:.3f})"
+                           for e in top)
+        return ("Anómala por: " if is_anomaly else "Mayor influencia: ") + partes
 
     @staticmethod
     def _heuristic_score(features: List[float]) -> float:
