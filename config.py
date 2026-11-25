@@ -39,8 +39,13 @@ class Settings(BaseSettings):
     # Dirección que se anuncia a los pares (si vacía, se usa node_host).
     node_advertise_host: str = ""
     peers: Annotated[List[str], NoDecode] = []
-    data_dir: str = "data/chain"      # aquí se guarda chain.json
+    data_dir: str = "data/chain"      # aquí se guarda chain.db (P2-4)
     mining_difficulty: int = 16       # dificultad inicial en BITS (P2-5)
+    # Arranque (P2-4): "fast" = verificación barata + foto de estado; "full" =
+    # revalidar firmas y contratos desde el génesis. Ver docs/arquitectura.md.
+    revalidate_on_start: str = "fast"
+    # Cada cuántos bloques se guarda una foto del estado de los contratos (0 = nunca).
+    snapshot_interval: int = 100
     log_level: str = "INFO"
     # Llave privada de la autoridad UPB (P0-6). Archivo local, ignorado por git.
     authority_key_file: str = "data/keys/authority.json"
@@ -70,6 +75,21 @@ class Settings(BaseSettings):
     def _dificultad(cls, v: int) -> int:
         if not 1 <= v <= 256:
             raise ValueError("debe estar entre 1 y 256 (bits de dificultad)")
+        return v
+
+    @field_validator("revalidate_on_start", mode="before")
+    @classmethod
+    def _arranque(cls, v):
+        v = str(v).strip().lower()
+        if v not in ("fast", "full"):
+            raise ValueError("debe ser 'fast' o 'full'")
+        return v
+
+    @field_validator("snapshot_interval")
+    @classmethod
+    def _intervalo(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("debe ser 0 o mayor")
         return v
 
     @field_validator("tx_rate_limit")

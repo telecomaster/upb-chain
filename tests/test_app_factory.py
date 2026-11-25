@@ -34,8 +34,8 @@ def test_dos_apps_en_el_mismo_proceso_son_independientes(tmp_path):
         assert len(na.blockchain.chain) == 2 and len(nb.blockchain.chain) == 1
         assert na.p2p.port != nb.p2p.port and na.p2p.port != 0
     # los datos viven en directorios distintos
-    assert (tmp_path / "nodo_a" / "chain.json").exists()
-    assert (tmp_path / "nodo_b" / "chain.json").exists()
+    assert (tmp_path / "nodo_a" / "chain.db").exists()
+    assert (tmp_path / "nodo_b" / "chain.db").exists()
 
 
 def test_dos_apps_se_conectan_y_sincronizan_en_proceso(tmp_path):

@@ -359,6 +359,32 @@ class CredentialContract(Contract):
     def initial_state(self) -> CredentialState:
         return CredentialState()
 
+    # ── Fotos de estado (P2-4): CredentialState no es dataclass ──────────────
+
+    def state_to_json(self, state: CredentialState) -> dict:
+        creds = {}
+        for cid, c in state._credentials.items():
+            d = c.to_dict()
+            d["credential_type"] = CredentialType(c.credential_type).value
+            d["status"] = CredentialStatus(c.status).value
+            creds[cid] = d
+        return {
+            "credentials": creds,
+            "issuers": dict(state._issuer_registry),
+            "students": {k: list(v) for k, v in state._student_index.items()},
+        }
+
+    def state_from_json(self, data: dict) -> CredentialState:
+        state = CredentialState()
+        for cid, d in data["credentials"].items():
+            d = dict(d)
+            d["credential_type"] = CredentialType(d["credential_type"])
+            d["status"] = CredentialStatus(d["status"])
+            state._credentials[cid] = AcademicCredential(**d)
+        state._issuer_registry = dict(data["issuers"])
+        state._student_index = {k: list(v) for k, v in data["students"].items()}
+        return state
+
     @staticmethod
     def credential_id_of_tx(tx: dict) -> Optional[str]:
         return credential_id_of_tx(tx)

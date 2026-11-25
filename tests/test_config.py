@@ -37,8 +37,8 @@ def test_dos_nodos_usan_directorios_separados(tmp_path):
     a, b = tmp_path / "A", tmp_path / "B"
     _importar_app({"DATA_DIR": str(a), "NODE_ID": "node_a"}, cwd=tmp_path)
     _importar_app({"DATA_DIR": str(b), "NODE_ID": "node_b"}, cwd=tmp_path)
-    assert (a / "chain.json").exists()
-    assert (b / "chain.json").exists()
+    assert (a / "chain.db").exists()
+    assert (b / "chain.db").exists()
     assert not (tmp_path / "data").exists()  # nada cae en el directorio por defecto
 
 
@@ -70,3 +70,20 @@ def test_load_settings_valores(monkeypatch):
     assert s.peers == ["10.0.0.1:8001", "10.0.0.2:8001"]
     assert s.node_advertise_host == "192.168.1.5"
     assert s.mining_difficulty == 3
+
+
+def test_revalidate_on_start_y_snapshot_interval_llegan_a_la_cadena(tmp_path, monkeypatch):
+    """P2-4: REVALIDATE_ON_START / SNAPSHOT_INTERVAL desde el entorno hasta la Blockchain."""
+    import pytest
+    from config import ConfigError
+    from tests.helpers import make_app
+
+    monkeypatch.setenv("REVALIDATE_ON_START", "FULL")
+    monkeypatch.setenv("SNAPSHOT_INTERVAL", "7")
+    s = load_settings(load_env_file=False)
+    assert (s.revalidate_on_start, s.snapshot_interval) == ("full", 7)
+    bc = make_app(tmp_path, revalidate_on_start="full", snapshot_interval=7).state.node.blockchain
+    assert (bc.revalidate_on_start, bc.snapshot_interval) == ("full", 7)
+    monkeypatch.setenv("REVALIDATE_ON_START", "a-veces")
+    with pytest.raises(ConfigError, match="REVALIDATE_ON_START"):
+        load_settings(load_env_file=False)

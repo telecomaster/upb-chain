@@ -62,6 +62,70 @@ dueño; la regla de reajuste lo lleva hacia 10 s en cualquier caso.
 ambas unidades), pero los bloques guardados con la unidad hexadecimal ya no validan. Todos los
 nodos deben actualizarse a la vez y borrar su `DATA_DIR` (p. ej. `data/chain`) antes de arrancar.
 
+### 2.5 Almacenamiento en SQLite, índices y fotos de estado (P2-4)
+
+**Antes.** La cadena vivía en `chain.json`, reescrito ENTERO (temporal + fsync + rename, P1-8)
+con cada bloque: O(altura) bytes por bloque. Al arrancar se revalidaba todo desde el génesis
+(firmas ECDSA y contratos), y buscar una TX, un bloque por hash o las credenciales de una
+dirección recorría la cadena completa.
+
+**Ahora.** `blockchain/core/storage.py` (`ChainStore`, solo `sqlite3` de la biblioteca estándar)
+guarda `<DATA_DIR>/chain.db`:
+
+| Tabla | Columnas | Para qué |
+|-------|----------|----------|
+| `blocks` | `height` PK, `hash` UNIQUE, `prev_hash`, `timestamp`, `difficulty`, `n_txs`, `data` (JSON del bloque) | la cadena; bloque por hash con el índice UNIQUE |
+| `txs` | `tx_id` PK, `height`, `position`, `type`, `sender`, `recipient` (+ índices por `sender`, `recipient`, `height`) | TX por id → (altura, posición) para la prueba Merkle; TXs de una dirección |
+| `snapshots` | `height` PK, `block_hash`, `contracts`, `states` (JSON), `digest` (SHA-256) | foto del estado de los contratos cada `SNAPSHOT_INTERVAL` bloques (100); se guardan las 3 últimas |
+| `meta` | `key`, `value` | versión del esquema |
+
+- **Agregar un bloque** = una transacción SQLite: INSERT del bloque, de sus TXs y, si toca, de la
+  foto. **Reorganización** = una transacción: DELETE de las alturas mayores que la bifurcación
+  (bloques, TXs y fotos) e INSERT de las nuevas. El disco se escribe ANTES de cambiar la memoria;
+  si la escritura falla, el bloque no entró y la cadena en memoria sigue igual.
+- **Cortes de energía.** `BEGIN IMMEDIATE … COMMIT`: si el proceso muere a la mitad, al reabrir
+  SQLite descarta la transacción (lo prueba `tests/test_storage.py` matando un proceso con
+  `os._exit` dentro de ella). `journal_mode=WAL` deja leer a la API mientras la red escribe.
+  `synchronous=FULL` hace fsync del WAL en cada COMMIT: en una microSD un bloque confirmado
+  sobrevive a un corte de luz. Con `NORMAL` la base tampoco se corrompe, pero se pueden perder los
+  últimos bloques; se eligió FULL porque a ~1 bloque cada 10 s el fsync extra no importa.
+- **chain.db dañado** (no es SQLite o falla `PRAGMA quick_check`): el nodo no arranca y explica
+  qué hacer (mover `chain.db*` y resincronizar desde los pares, o reimportar `chain.json.migrated`
+  renombrándolo a `chain.json`). Nunca se borra nada automáticamente.
+- **Memoria.** `Blockchain.chain` sigue siendo la lista de bloques en memoria (la usan la
+  validación, la red y varios endpoints); P2-4 elimina las reescrituras y los recorridos, no la
+  lista. Siguen recorriendo la cadena, porque necesitan todos los bloques: `/ai/analytics`,
+  `/ai/train`, el envío de la cadena por P2P y `GET /network/sync`.
+
+**Arranque (`REVALIDATE_ON_START`).**
+
+- `fast` (por defecto): (1) verificación barata de TODOS los bloques: índice, enlace con el
+  anterior, hash, dificultad exigida, PoW y raíz Merkle (solo SHA-256 y enteros); (2) estado de los
+  contratos desde la foto más alta que coincida con la cadena (mismo hash de bloque, mismos
+  contratos, SHA-256 correcto); (3) validación de consenso COMPLETA (firmas + contratos) de los
+  bloques posteriores a la foto. Sin foto utilizable equivale a `full`.
+- `full`: validación completa desde el génesis, como antes; además descarta las fotos y guarda una
+  nueva en la punta. Usarlo tras cambiar las reglas de un contrato.
+
+Se eligió `fast` por defecto porque lo caro de revalidar es verificar cada firma ECDSA y reproducir
+los contratos, y eso crece con la historia: en un Pi el arranque crecería sin límite. Con 300
+bloques de prueba, en un portátil de desarrollo (no medido en un Pi), el arranque rápido fue del
+orden de 10 veces más corto que el completo; la prueba solo exige que sea menos de la mitad.
+
+**Modelo de amenazas del arranque rápido.** La foto se cree porque la escribió ESTE nodo después
+de validar los bloques que resume; nunca se recibe de la red (un par solo puede mandar bloques, que
+se validan por completo). Su SHA-256 detecta daños del medio (microSD), no a un atacante con
+permiso de escritura en `DATA_DIR`: ese podría recalcular el SHA-256, y también cambiar el código
+del nodo, así que la defensa ahí son los permisos del sistema operativo. Lo que SÍ detecta el modo
+rápido: bloques o TXs manipulados en disco (cambian el hash o la raíz Merkle), bloques sin PoW o con
+otra dificultad, y fotos dañadas (se ignoran y se reproduce desde la anterior). Si hay duda,
+`REVALIDATE_ON_START=full`.
+
+**Migración.** Si existe `chain.json` (o su `.bak`) y no hay `chain.db`, se importa una vez con
+validación completa y el archivo se renombra a `chain.json.migrated` (no se borra). Para ver la
+cadena como JSON: `venv\Scripts\python.exe scripts\exportar_cadena.py [DATA_DIR] [-o salida.json]`
+(abre la base en solo lectura; sirve con el nodo encendido).
+
 ### 2.2 ¿Por qué ECDSA secp256k1 y no RSA?
 
 - Llaves 32 veces más pequeñas con la misma seguridad (256 bits vs 3072 bits RSA)

@@ -107,7 +107,7 @@ async def test_mint_transferencia_saldos_y_reinicio(client, nodo):
     saldo = (await client.get(f"/chain/balance/{ana.address}")).json()
     assert saldo["balance"] == 695 and saldo["chain_total_fees"] == 5
 
-    # Reinicio: el estado se reproduce desde chain.json.
+    # Reinicio: el estado se recupera desde chain.db (foto + bloques posteriores, P2-4).
     nodo.reiniciar()
     assert (await _cuenta(client, ana.address))["balance"] == 695
     assert (await _cuenta(client, beto.address))["balance"] == 300

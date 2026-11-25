@@ -42,6 +42,7 @@ siempre le pasa una COPIA DE TRABAJO, nunca el estado confirmado. Visto desde
 afuera la transición es pura: el estado confirmado solo cambia cuando el
 bloque entero resultó válido (ver ``ContractRegistry.check_block``).
 """
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Tuple
 
@@ -112,6 +113,27 @@ class Contract:
 
     def apply(self, state: Any, tx: dict, ctx: TxContext) -> Any:
         raise NotImplementedError
+
+    # ── Fotos de estado (P2-4) ────────────────────────────────────────────────
+    # El nodo guarda cada N bloques una foto del estado en JSON para no
+    # reproducir la cadena desde el génesis al arrancar. Por defecto sirve para
+    # estados que son ``dataclass`` con dicts/listas/ints/str adentro; un
+    # contrato con otra forma de estado sobrescribe ambos métodos
+    # (ver ``CredentialContract``). Regla: ``state_from_json(state_to_json(s))``
+    # debe comportarse igual que ``s``, incluido el orden de los dicts.
+
+    def state_to_json(self, state: Any) -> Any:
+        """Estado → valor serializable con ``json`` (dicts, listas, str, int…)."""
+        if dataclasses.is_dataclass(state):
+            return dataclasses.asdict(state)
+        return state   # dict/lista/valores simples: ya es JSON
+
+    def state_from_json(self, data: Any) -> Any:
+        """Inverso de ``state_to_json``."""
+        initial = self.initial_state()
+        if dataclasses.is_dataclass(initial):
+            return type(initial)(**data)
+        return data
 
     def execute(self, state: Any, tx: dict, ctx: TxContext = MEMPOOL) -> Tuple[bool, str, Any]:
         """``validate`` + ``apply`` en un paso (para tests y ejemplos).

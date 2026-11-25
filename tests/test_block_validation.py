@@ -13,7 +13,8 @@ from blockchain.core.block import Block, hash_meets_bits
 from blockchain.core.chain import Blockchain
 from blockchain.core.transaction import Transaction, TransactionType
 from blockchain.core.wallet import Wallet
-from tests.helpers import make_app, mine_and_add, mine_candidate
+from tests.helpers import (bloques_en_disco, escribir_bloque_en_disco, make_app, mine_and_add,
+                           mine_candidate)
 
 
 def _tx(wallet, n=0, timestamp=None, nonce=1):
@@ -135,28 +136,26 @@ def test_mempool_rechaza_tx_ya_confirmada(tmp_path, w):
     assert not ok and "confirmada" in motivo
 
 
-def test_archivo_manipulado_se_rechaza_al_cargar(tmp_path, w):
+@pytest.mark.parametrize("modo", ["fast", "full"])
+def test_archivo_manipulado_se_rechaza_al_cargar(tmp_path, w, modo):
     bc = _nuevo(tmp_path)
     assert mine_and_add(bc, [_tx(w)])[0]
-    f = tmp_path / "c" / "chain.json"
-    data = json.loads(f.read_text(encoding="utf-8"))
-    data[1]["transactions"][0]["payload"] = {"n": 666}
-    f.write_text(json.dumps(data), encoding="utf-8")
+    bloque = bloques_en_disco(tmp_path / "c")[1]
+    bloque["transactions"][0]["payload"] = {"n": 666}
+    escribir_bloque_en_disco(tmp_path / "c", bloque)
     with pytest.raises(ValueError):
-        Blockchain("n", str(tmp_path / "c"), initial_difficulty=1)
+        Blockchain("n", str(tmp_path / "c"), initial_difficulty=1, revalidate_on_start=modo)
 
 
-def test_archivo_con_bloque_sin_pow_se_rechaza_al_cargar(tmp_path, w):
+@pytest.mark.parametrize("modo", ["fast", "full"])
+def test_archivo_con_bloque_sin_pow_se_rechaza_al_cargar(tmp_path, w, modo):
     bc = _nuevo(tmp_path)
     assert mine_and_add(bc, [_tx(w)])[0]
-    f = tmp_path / "c" / "chain.json"
-    data = json.loads(f.read_text(encoding="utf-8"))
-    data[1]["header"]["difficulty"] = 0
-    blk = _rehash(Block.from_dict(data[1]))
-    data[1] = blk.to_dict()
-    f.write_text(json.dumps(data), encoding="utf-8")
+    bloque = bloques_en_disco(tmp_path / "c")[1]
+    bloque["header"]["difficulty"] = 0
+    escribir_bloque_en_disco(tmp_path / "c", _rehash(Block.from_dict(bloque)).to_dict())
     with pytest.raises(ValueError):
-        Blockchain("n", str(tmp_path / "c"), initial_difficulty=1)
+        Blockchain("n", str(tmp_path / "c"), initial_difficulty=1, revalidate_on_start=modo)
 
 
 def test_cadena_vieja_con_txs_de_mas_de_1h_sigue_valida(tmp_path, w):

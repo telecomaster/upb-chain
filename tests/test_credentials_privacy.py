@@ -33,8 +33,9 @@ async def _emitida_confirmada(client, **extra):
 async def test_cadena_y_chain_json_no_contienen_datos_personales(client, nodo):
     emitida = await _emitida_confirmada(client)
     bc = nodo.node.blockchain
-    texto = (bc.data_dir / "chain.json").read_text(encoding="utf-8")
     import json
+    from tests.helpers import bloques_en_disco
+    texto = json.dumps(bloques_en_disco(bc.data_dir), ensure_ascii=False)   # chain.db (P2-4)
     texto += json.dumps([b.to_dict() for b in bc.chain])
     assert NOMBRE not in texto and "93.5" not in texto
     assert emitida["fields_root"] in texto

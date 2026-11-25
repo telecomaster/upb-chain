@@ -271,7 +271,7 @@ def test_dos_nodos_derivan_el_mismo_estado(tmp_path):
     assert ok, why
     assert _estado(b) == _estado(a)
 
-    # Nodo C arranca desde el chain.json de A.
+    # Nodo C arranca desde el chain.db de A.
     c = _cadena(tmp_path / "a", autoridad)
     assert _estado(c) == _estado(a)
 

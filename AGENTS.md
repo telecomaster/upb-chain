@@ -39,8 +39,15 @@ overstate what works).
 ## Layout
 
 - `config.py` `Settings` (pydantic-settings, inmutable, validado; `load_settings()`/`build_settings()`; env gana a .env)
-- `blockchain/core` block, chain (persistence, fork resolution; owns the `ContractRegistry`),
-  transaction, wallet (ECDSA secp256k1)
+- `blockchain/core` block, chain (fork resolution; owns the `ContractRegistry`; keeps `self.chain`
+  in memory), transaction, wallet (ECDSA secp256k1), `storage.py` `ChainStore` (P2-4): SQLite
+  `<DATA_DIR>/chain.db` (WAL, `synchronous=FULL`) with tables `blocks`, `txs` (index by id/sender/
+  recipient), `snapshots` (contract states as JSON every `SNAPSHOT_INTERVAL` blocks); one SQLite
+  transaction per append/reorg, never a full rewrite. Startup `REVALIDATE_ON_START=fast` (default:
+  cheap header/PoW/Merkle check + latest snapshot + full validation of later blocks) or `full`.
+  An old `chain.json` is imported once and kept as `chain.json.migrated`;
+  `scripts/exportar_cadena.py` dumps chain.db to JSON. Tests tamper with the DB via
+  `tests/helpers.py` (`bloques_en_disco`, `escribir_bloque_en_disco`)
 - `blockchain/consensus` proof_of_work, pbft · `blockchain/network` P2P node (sincronización y peers en `node.py`)
 - `blockchain/contracts` (P1-13, guía en `docs/contratos.md`): `base.py` interfaz `Contract`
   (`validate`/`apply`/`initial_state`, estado = reproducción de las TXs confirmadas; una TX inválida

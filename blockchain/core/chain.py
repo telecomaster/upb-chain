@@ -22,11 +22,26 @@ Manejo de forks (fork resolution):
     empate se conserva la propia. Es la regla de Nakamoto.
     Ref: Nakamoto (2008), Sección 5.
 
+Persistencia (P2-4): ``storage.ChainStore`` en ``<data_dir>/chain.db`` (SQLite).
+    Cada bloque es un INSERT en una transacción; un reorg borra e inserta solo
+    las alturas que cambian. La lista ``self.chain`` se sigue manteniendo en
+    memoria (la usan la validación, la red y la API); el disco ya no se
+    reescribe entero y las búsquedas por id/dirección/hash usan los índices.
+
+Arranque (``revalidate_on_start``):
+    "fast" (por defecto): verificación barata de TODOS los bloques (enlaces,
+        hash, dificultad, PoW y raíz Merkle; sin firmas ni contratos) + estado
+        desde la última foto (``snapshots``) + validación completa de los
+        bloques posteriores a la foto.
+    "full": validación de consenso completa desde el génesis (firmas y
+        contratos), como antes de P2-4; además rehace las fotos.
+
 Complejidades:
     add_transaction()  → O(m) donde m = tamaño del mempool (búsqueda de duplicados)
-    add_block()        → O(n) donde n = número de TXs en el bloque
+    add_block()        → O(n) donde n = número de TXs en el bloque (+ un INSERT)
     validate_chain()   → O(H * n) donde H = altura, n = TXs por bloque
-    get_credentials()  → O(H * n) — búsqueda lineal sobre la cadena completa
+    get_transaction()  → O(log N) por el índice de TXs de chain.db
+    get_credentials_for() → O(log N + k) por el índice de destinatarios
     replace_chain()    → O(H' * n) donde H' = altura de la cadena candidata
 
 Thread safety:
@@ -36,7 +51,7 @@ Thread safety:
 import json
 import logging
 import os
-import shutil
+import sqlite3
 import time
 from pathlib import Path
 from threading import Lock
@@ -48,6 +63,7 @@ from blockchain.contracts.base import Contract
 from blockchain.contracts.registry import ContractRegistry
 from blockchain.core.block import (GENESIS_HASH, Block, BlockHeader, hash_meets_bits,
                                    work_for_bits)
+from blockchain.core.storage import ChainStore, Snapshot
 from blockchain.core.transaction import Transaction, TransactionType
 
 logger = logging.getLogger("upb_chain.core")
@@ -102,8 +118,15 @@ class Blockchain:
         max_bits_step: int = 2,
         authority_address: Optional[str] = None,
         contracts: Optional[List[Contract]] = None,
+        revalidate_on_start: str = "fast",
+        snapshot_interval: int = 100,
     ):
+        if revalidate_on_start not in ("fast", "full"):
+            raise ValueError("revalidate_on_start debe ser 'fast' o 'full'")
         self.node_id = node_id
+        # Arranque y fotos de estado (P2-4): ver el docstring del módulo.
+        self.revalidate_on_start = revalidate_on_start
+        self.snapshot_interval = max(0, int(snapshot_interval))   # 0 = sin fotos
         # Parámetros de la regla de dificultad (parte del consenso: deben ser
         # iguales en todos los nodos de la red). Dificultades en BITS (P2-5).
         self.initial_difficulty = initial_difficulty
@@ -131,40 +154,73 @@ class Blockchain:
         self.contracts = ContractRegistry([AccountContract(authority_address), *contracts])
         # Avisos de reorganización para red/log (P0-5): ver add_reorg_listener().
         self.on_chain_reorg: List[Callable[[int, List[Block], List[Block]], None]] = []
+        # Bloques validados por completo (firmas + contratos) al arrancar (P2-4).
+        self.replayed_on_start = 0
 
         self._load_or_init()
 
-    # ── Inicialización ────────────────────────────────────────────────────────
+    # ── Inicialización (P2-4: chain.db) ──────────────────────────────────────
 
     def _load_or_init(self) -> None:
-        chain_file = self.data_dir / "chain.json"
+        self.store = ChainStore(self.data_dir / "chain.db")
+        json_file = self.data_dir / "chain.json"
         bak_file = self.data_dir / "chain.json.bak"
-        if not chain_file.exists() and not bak_file.exists():
-            genesis = Block.create_genesis(self.node_id)
-            self.chain.append(genesis)
-            self.contracts.rebuild(self.chain)
-            self._save_to_disk()
-            logger.info("Génesis creado")
+        if self.store.tip_height() is not None:
+            if json_file.exists():
+                logger.warning("Existe chain.json pero los datos están en chain.db; "
+                               "chain.json se ignora")
+            self._load_from_store()
             return
+        if json_file.exists() or bak_file.exists():
+            self._migrate_from_json(json_file, bak_file)
+            return
+        genesis = Block.create_genesis(self.node_id)
+        self.store.append_block(genesis)
+        self.chain.append(genesis)
+        self._confirmed_ids = self._collect_ids(self.chain)
+        self.contracts.rebuild(self.chain)
+        logger.info("Génesis creado")
+
+    def close(self) -> None:
+        """Cierra chain.db (opcional: el recolector de basura también la cierra)."""
+        self.store.close()
+
+    # Migración desde chain.json (P1-8 → P2-4) ───────────────────────────────
+
+    def _migrate_from_json(self, json_file: Path, bak_file: Path) -> None:
+        """Importa chain.json a chain.db con validación COMPLETA y lo renombra.
+
+        El archivo no se borra: queda como ``chain.json.migrated`` (y el
+        respaldo como ``chain.json.bak.migrated``). Si chain.json no se puede
+        leer se usa el respaldo, como en P1-8. Si el proceso se corta entre la
+        importación y el renombre, al reiniciar manda chain.db y chain.json
+        solo se ignora (con un aviso).
+        """
         try:
-            data = self._read_json(chain_file)
+            data = self._read_json(json_file)
+            source = json_file
         except (OSError, ValueError) as e:
-            # Archivo ausente o JSON truncado (corte de energía): usar el respaldo.
             if not bak_file.exists():
-                raise ValueError(f"{chain_file}: no se pudo leer: {e}") from e
-            logger.warning(
-                f"chain.json no legible ({e}); cargando respaldo chain.json.bak"
-            )
+                raise ValueError(f"{json_file}: no se pudo leer: {e}") from e
+            logger.warning(f"chain.json no legible ({e}); se importa el respaldo chain.json.bak")
             data = self._read_json(bak_file)
-            self._install_chain(data, bak_file)
-            # Reescribir chain.json sano; el corrupto no debe pisar el respaldo.
-            if chain_file.exists():
-                chain_file.unlink()
-            self._save_to_disk()
-            logger.info(f"Cadena restaurada desde respaldo: {len(self.chain)} bloques")
-            return
-        self._install_chain(data, chain_file)
-        logger.info(f"Cadena cargada: {len(self.chain)} bloques")
+            source = bak_file
+        states = self._install_chain(data, source)
+        self.store.import_chain(self.chain, self._make_snapshot(self.last_block, states))
+        for f in (json_file, bak_file):
+            if f.exists():
+                os.replace(f, self._free_name(f.with_name(f.name + ".migrated")))
+        logger.info(f"chain.json migrado a chain.db: {len(self.chain)} bloques "
+                    f"(original guardado como chain.json.migrated)")
+
+    @staticmethod
+    def _free_name(path: Path) -> Path:
+        """``path`` o ``path.1``, ``path.2``… el primero que no exista (no pisar datos)."""
+        candidate, n = path, 0
+        while candidate.exists():
+            n += 1
+            candidate = path.with_name(f"{path.name}.{n}")
+        return candidate
 
     @staticmethod
     def _read_json(path: Path) -> list:
@@ -172,20 +228,141 @@ class Blockchain:
         with open(path, encoding="utf-8") as f:
             return json.load(f)
 
-    def _install_chain(self, data: list, path: Path) -> None:
-        """Valida `data` (lista de bloques serializados) y la adopta como cadena."""
+    def _install_chain(self, data: list, path: Path) -> dict:
+        """Valida `data` (lista de bloques serializados) por COMPLETO y la adopta.
+
+        Devuelve el estado de los contratos en la punta.
+        """
         chain = [Block.from_dict(b) for b in data]
         ok, reason = self._check_genesis(chain)
         if not ok:
             raise ValueError(f"{path}: {reason}")
-        # Revalidar TODA la cadena al cargar (P0-3): un archivo manipulado se
-        # rechaza. La misma pasada deja el estado de los contratos (P1-13).
+        # Revalidar TODA la cadena (P0-3): un archivo manipulado se rechaza.
+        # La misma pasada deja el estado de los contratos (P1-13).
         ok, reason, states = self._replay_blocks(chain)
         if not ok:
             raise ValueError(f"{path}: cadena inválida en disco: {reason}")
         self.chain = chain
         self._confirmed_ids = self._collect_ids(chain)
         self.contracts.commit(states, len(chain) - 1)
+        self.replayed_on_start = len(chain) - 1
+        return states
+
+    # Arranque desde chain.db ─────────────────────────────────────────────────
+
+    def _load_from_store(self) -> None:
+        path = self.store.path
+        try:
+            chain = [Block.from_dict(b) for b in self.store.load_blocks()]
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError(f"{path}: bloque ilegible en disco: {e}") from e
+        if self.revalidate_on_start == "full":
+            states = self._install_chain([b.to_dict() for b in chain], path)
+            # Las fotos viejas se descartan (p. ej. si cambiaron las reglas de
+            # un contrato) y se rehace una con el estado recién reproducido.
+            self.store.reset_snapshots(self._make_snapshot(self.last_block, states))
+            logger.info(f"Cadena cargada con revalidación completa: {len(chain)} bloques")
+            return
+        self._restore_fast(chain, path)
+
+    def _restore_fast(self, chain: List[Block], path: Path) -> None:
+        """Arranque rápido: verificación barata + foto + reproducción de lo posterior.
+
+        Modelo de amenazas: la foto se cree porque la escribió ESTE nodo tras
+        validar los bloques que resume; su SHA-256 detecta daños del medio
+        (microSD), no a alguien con permiso de escritura en DATA_DIR (ese
+        podría cambiar también el código). Ante la duda: REVALIDATE_ON_START=full.
+        """
+        ok, reason = self._verify_headers(chain)
+        if not ok:
+            raise ValueError(f"{path}: cadena inválida en disco: {reason} "
+                             f"(verificación rápida al arrancar)")
+        base, states = self._latest_snapshot(chain)
+        seen = self._collect_ids(chain[:base + 1])
+        now = time.time()
+        for i in range(base + 1, len(chain)):
+            ok, reason, states = self._validate_block_at(
+                chain[i], chain[:i], seen, now,
+                lambda block, st=states: self.contracts.run_block(st, block))
+            if not ok:
+                raise ValueError(f"{path}: cadena inválida en disco: Bloque {i}: {reason}")
+        self.chain = chain
+        self._confirmed_ids = self._collect_ids(chain)
+        self.contracts.commit(states, len(chain) - 1)
+        self.replayed_on_start = self.height - base   # para logs y pruebas
+        if self.snapshot_interval and self.replayed_on_start >= self.snapshot_interval:
+            snap = self._make_snapshot(self.last_block, states)
+            if snap is not None:
+                self.store.put_snapshot(snap)
+        logger.info(f"Cadena cargada (arranque rápido): {len(chain)} bloques, estado desde "
+                    f"la altura {base}, {self.replayed_on_start} bloque(s) reproducido(s)")
+
+    def _verify_headers(self, chain: List[Block]) -> Tuple[bool, str]:
+        """Verificación barata de toda la cadena: sin firmas ECDSA ni contratos.
+
+        Por bloque: índice, enlace con el anterior, hash, dificultad exigida,
+        PoW y raíz Merkle (que ata las TXs guardadas al encabezado). Son solo
+        hashes SHA-256 y enteros; lo caro de validar (firmas y contratos) es lo
+        que ahorra la foto de estado.
+        """
+        ok, reason = self._check_genesis(chain)
+        if not ok:
+            return False, reason
+        for i in range(1, len(chain)):
+            block, h = chain[i], chain[i].header
+            if h.index != i:
+                return False, f"Bloque {i}: índice {h.index} fuera de lugar"
+            if h.previous_hash != chain[i - 1].hash:
+                return False, f"Bloque {i}: hash previo no coincide"
+            if block.compute_hash() != block.hash:
+                return False, f"Bloque {i}: hash del bloque inválido"
+            if h.difficulty != self.expected_difficulty(chain[:i]):
+                return False, f"Bloque {i}: dificultad incorrecta"
+            if not hash_meets_bits(block.hash, h.difficulty):
+                return False, f"Bloque {i}: Proof of Work insuficiente"
+            if Block.compute_merkle_root(block.transactions) != h.merkle_root:
+                return False, f"Bloque {i}: Merkle root inválido"
+        return True, "OK"
+
+    def _latest_snapshot(self, chain: List[Block]) -> Tuple[int, dict]:
+        """``(altura, estados)`` de la foto más alta utilizable, o ``(0, iniciales)``.
+
+        Se descarta una foto si está por encima de la punta, si su bloque no es
+        el de la cadena en esa altura, si los contratos no son los mismos o si
+        su SHA-256 no coincide (dañada). Sin foto se reproduce desde el génesis.
+        """
+        names = ",".join(self.contracts.names)
+        for snap in self.store.snapshots():
+            if snap.height >= len(chain) or chain[snap.height].hash != snap.block_hash:
+                continue
+            if snap.contracts != names:
+                logger.info(f"Foto de la altura {snap.height} con otros contratos; se ignora")
+                continue
+            if not snap.is_intact():
+                logger.warning(f"Foto de la altura {snap.height} dañada (SHA-256); se ignora")
+                continue
+            try:
+                return snap.height, self.contracts.load_states(snap.states)
+            except (ValueError, KeyError, TypeError) as e:
+                logger.warning(f"Foto de la altura {snap.height} ilegible ({e}); se ignora")
+        return 0, self.contracts.initial_states()
+
+    def _make_snapshot(self, block: Block, states: dict) -> Optional[Snapshot]:
+        """Foto de ``states`` tras ``block`` (None si las fotos están apagadas,
+        si es el génesis o si algún estado no se pudo pasar a JSON)."""
+        if not self.snapshot_interval or block.header.index <= 0:
+            return None
+        try:
+            text = self.contracts.dump_states(states)
+        except (TypeError, ValueError) as e:
+            logger.warning(f"No se pudo serializar el estado de los contratos: {e}")
+            return None
+        return Snapshot.build(block.header.index, block.hash, self.contracts.names, text)
+
+    def _snapshot_due(self, from_height: int, to_height: int) -> bool:
+        """¿Hay un múltiplo de ``snapshot_interval`` en (from_height, to_height]?"""
+        n = self.snapshot_interval
+        return bool(n) and to_height // n > from_height // n
 
     @staticmethod
     def _collect_ids(chain: List[Block]) -> set:
@@ -199,29 +376,6 @@ class Blockchain:
         if chain[0].hash != GENESIS_HASH or chain[0].compute_hash() != GENESIS_HASH:
             return False, "Génesis distinto al de la red (GENESIS_HASH no coincide)"
         return True, "OK"
-
-    def _save_to_disk(self) -> None:
-        """Escritura atómica (P1-8): temporal + fsync + respaldo + reemplazo.
-
-        Si el proceso se corta antes de `os.replace`, chain.json queda intacto.
-        Antes del reemplazo, la versión anterior se copia a chain.json.bak.
-        """
-        chain_file = self.data_dir / "chain.json"
-        tmp_file = self.data_dir / "chain.json.tmp"
-        bak_file = self.data_dir / "chain.json.bak"
-        try:
-            with open(tmp_file, "w", encoding="utf-8") as f:
-                json.dump([b.to_dict() for b in self.chain], f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            if chain_file.exists():
-                shutil.copy2(chain_file, bak_file)
-            os.replace(tmp_file, chain_file)
-        except BaseException:
-            # No dejar un temporal a medio escribir; chain.json sigue como estaba.
-            if tmp_file.exists():
-                tmp_file.unlink()
-            raise
 
     # ── Propiedades ───────────────────────────────────────────────────────────
 
@@ -312,6 +466,17 @@ class Blockchain:
                 self.contracts.check_block)
             if not valid:
                 return False, reason
+            # Primero el disco (P2-4): una transacción SQLite con el bloque, sus
+            # TXs y, cada `snapshot_interval` bloques, la foto del estado. Si
+            # falla, la memoria no se toca y el bloque simplemente no entró.
+            height = block.header.index
+            snapshot = (self._make_snapshot(block, states)
+                        if self._snapshot_due(height - 1, height) else None)
+            try:
+                self.store.append_block(block, snapshot)
+            except sqlite3.Error as e:
+                logger.exception("No se pudo guardar el bloque en chain.db")
+                return False, f"Error de almacenamiento: {e}"
             self.chain.append(block)
             self._confirmed_ids.update(tx.get("tx_id") for tx in block.transactions)
             self.contracts.commit(states, block.header.index)
@@ -321,7 +486,6 @@ class Blockchain:
             confirmed_ids = {tx.get("tx_id") for tx in block.transactions}
             self.mempool = self._still_valid(
                 [t for t in self.mempool if t.tx_id not in confirmed_ids])
-            self._save_to_disk()
         logger.info(f"Bloque #{block.header.index} añadido (hash={block.hash[:12]}…)")
         return True, "OK"
 
@@ -471,26 +635,56 @@ class Blockchain:
 
     # ── Consultas de estado ───────────────────────────────────────────────────
 
-    def get_credentials_for(self, address: str) -> List[dict]:
-        credentials = []
-        for block in self.chain:
-            for tx in block.transactions:
-                if (
-                    tx.get("type") == TransactionType.CREDENTIAL_ISSUE
-                    and tx.get("recipient") == address
-                ):
-                    credentials.append({**tx["payload"], "block": block.header.index})
-        return credentials
+    # Búsquedas por índice (P2-4): chain.db dice DÓNDE está (altura, posición)
+    # y el bloque se toma de la lista en memoria. Se comprueba que el bloque de
+    # esa altura sigue conteniendo la TX: si un reorg ocurre entre la consulta
+    # y la lectura, se responde "no encontrada" en vez de un dato mezclado.
+
+    def _tx_at(self, height: int, position: int, tx_id: Optional[str] = None,
+               ) -> Optional[Tuple[Block, dict]]:
+        chain = self.chain
+        if height >= len(chain) or position >= len(chain[height].transactions):
+            return None
+        tx = chain[height].transactions[position]
+        if tx_id is not None and tx.get("tx_id") != tx_id:
+            return None
+        return chain[height], tx
+
+    def locate_transaction(self, tx_id: str) -> Optional[Tuple[Block, int]]:
+        """``(bloque, posición)`` de la TX confirmada ``tx_id`` (para la prueba Merkle)."""
+        loc = self.store.find_tx(tx_id)
+        found = self._tx_at(*loc, tx_id=tx_id) if loc is not None else None
+        if found is None:
+            return None
+        return found[0], loc[1]
 
     def get_transaction(self, tx_id: str) -> Optional[dict]:
-        for block in self.chain:
-            for tx in block.transactions:
-                if tx.get("tx_id") == tx_id:
-                    return {**tx, "block": block.header.index, "confirmed": True}
-        return None
+        found = self.locate_transaction(tx_id)
+        if found is None:
+            return None
+        block, position = found
+        return {**block.transactions[position], "block": block.header.index, "confirmed": True}
+
+    def transactions_of(self, address: str, role: str = "any",
+                        tx_type: Optional[str] = None) -> List[dict]:
+        """TXs confirmadas donde ``address`` es sender y/o recipient, en orden de cadena.
+
+        ``role``: "sender", "recipient" o "any". Cada TX lleva ``block``.
+        """
+        out = []
+        for height, position in self.store.txs_of_address(address, role, tx_type):
+            found = self._tx_at(height, position)
+            if found is not None:
+                out.append({**found[1], "block": height})
+        return out
+
+    def get_credentials_for(self, address: str) -> List[dict]:
+        return [{**tx["payload"], "block": tx["block"]}
+                for tx in self.transactions_of(address, "recipient",
+                                               TransactionType.CREDENTIAL_ISSUE.value)]
 
     def get_stats(self) -> dict:
-        total_tx = sum(len(b.transactions) for b in self.chain)
+        total_tx = self.store.count_txs()
         return {
             "height": self.height,
             "total_blocks": len(self.chain),
@@ -514,12 +708,13 @@ class Blockchain:
     def get_block_by_hash(self, block_hash: str) -> Optional[Block]:
         """Busca un bloque por su hash. Retorna None si no se encuentra.
 
-        Complejidad: O(H) donde H = altura de la cadena.
+        Complejidad: O(log H) por el índice UNIQUE de ``blocks.hash`` (P2-4).
         """
-        for block in self.chain:
-            if block.hash == block_hash:
-                return block
-        return None
+        height = self.store.height_of_hash(block_hash)
+        chain = self.chain
+        if height is None or height >= len(chain) or chain[height].hash != block_hash:
+            return None
+        return chain[height]
 
     def prune_mempool(self, max_age_seconds: int = 3600) -> int:
         """Elimina TXs del mempool cuya antigüedad supera max_age_seconds.
@@ -663,11 +858,22 @@ class Blockchain:
                         continue
             readmit.extend(t for t in self.mempool if t.tx_id not in new_ids)
 
+            # Disco primero (P2-4): borrar alturas > fork e insertar las nuevas
+            # en UNA transacción; si falla, la cadena en memoria y en disco
+            # siguen siendo la vieja. Si el reorg cruza un múltiplo del
+            # intervalo, se guarda una foto en la nueva punta.
+            tip = len(candidate) - 1
+            snapshot = (self._make_snapshot(candidate[-1], states)
+                        if self._snapshot_due(fork, tip) else None)
+            try:
+                self.store.replace_from(fork, added, snapshot)
+            except sqlite3.Error as e:
+                logger.exception("No se pudo guardar la reorganización en chain.db")
+                return False, f"Error de almacenamiento: {e}"
             self.chain = candidate
             self._confirmed_ids = new_ids
             self.mempool = []
-            self.contracts.commit(states, len(candidate) - 1)
-            self._save_to_disk()
+            self.contracts.commit(states, tip)
         # Re-admisión por la puerta normal (fuera del lock): expiración, duplicados
         # y check_transaction de los contratos ya reconstruidos (P1-13).
         for tx in readmit:

@@ -17,6 +17,37 @@ def mine_and_add(bc, transactions=None):
     return bc.add_block(mine_candidate(bc, transactions))
 
 
+def bloques_en_disco(data_dir):
+    """Bloques guardados en ``<data_dir>/chain.db`` como dicts (P2-4)."""
+    import json
+    import sqlite3
+    conn = sqlite3.connect(str(_db(data_dir)))
+    try:
+        return [json.loads(r[0]) for r in
+                conn.execute("SELECT data FROM blocks ORDER BY height")]
+    finally:
+        conn.close()
+
+
+def escribir_bloque_en_disco(data_dir, bloque: dict):
+    """Sobrescribe en chain.db el bloque de altura ``bloque['header']['index']``
+    (simula una manipulación del archivo, P2-4)."""
+    import json
+    import sqlite3
+    conn = sqlite3.connect(str(_db(data_dir)))
+    try:
+        with conn:
+            conn.execute("UPDATE blocks SET data = ?, hash = ? WHERE height = ?",
+                         (json.dumps(bloque), bloque["hash"], bloque["header"]["index"]))
+    finally:
+        conn.close()
+
+
+def _db(data_dir):
+    from pathlib import Path
+    return Path(data_dir) / "chain.db"
+
+
 # ── Apps de prueba (P2-9) ────────────────────────────────────────────────────
 
 def make_settings(tmp_path, nombre="nodo", **valores):

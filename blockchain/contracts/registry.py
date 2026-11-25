@@ -7,6 +7,9 @@ La cadena (``Blockchain``) lo usa en cuatro momentos:
     validar un bloque     ``check_block(block)``  → (ok, motivo, estados_nuevos)
                           sin tocar el estado confirmado; si el bloque entra,
                           ``commit(estados_nuevos, altura)``.
+    arrancar con foto     ``load_states(texto)`` adopta la foto guardada en chain.db
+                          (``dump_states``) y luego se reproducen solo los bloques
+                          posteriores (P2-4).
     cargar / reorg        ``replay(chain)`` reproduce la cadena desde el estado
                           inicial (valida cada bloque) y ``commit`` adopta el resultado.
     admitir al mempool    ``check_transaction(tx, pendientes)`` sobre el estado
@@ -29,6 +32,7 @@ bloque se copia (``deepcopy``) su estado; los contratos que el bloque no toca
 no se copian. Así el estado confirmado nunca se modifica a medias.
 """
 import copy
+import json
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from blockchain.contracts.base import MEMPOOL, Contract, TxContext
@@ -136,6 +140,24 @@ class ContractRegistry:
         if not ok:
             raise ValueError(f"La cadena no es válida para los contratos: {reason}")
         self.commit(states, len(chain) - 1)
+
+    # ── Fotos de estado (P2-4) ────────────────────────────────────────────────
+
+    def dump_states(self, states: States) -> str:
+        """Estados de todos los contratos → texto JSON (para ``snapshots`` en chain.db).
+
+        Sin ``sort_keys``: el orden de inserción de los dicts es parte del
+        estado (es el orden de la cadena) y debe sobrevivir a la foto.
+        """
+        data = {name: c.state_to_json(states[name]) for name, c in self._contracts.items()}
+        return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+    def load_states(self, text: str) -> States:
+        """Inverso de ``dump_states``. Lanza ValueError/KeyError/TypeError si no encaja."""
+        data = json.loads(text)
+        if list(data) != self.names:
+            raise ValueError("La foto no corresponde a estos contratos")
+        return {name: c.state_from_json(data[name]) for name, c in self._contracts.items()}
 
     @staticmethod
     def _mempool_ctx(working: States, timestamp: Optional[float]) -> TxContext:

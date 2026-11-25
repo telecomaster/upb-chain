@@ -67,7 +67,8 @@ logger = logging.getLogger("upb_chain.api")
 
 
 def build_node_state(data_dir: str, node_id: str, authority_address: Optional[str] = None,
-                     initial_difficulty: int = 4) -> Blockchain:
+                     initial_difficulty: int = 4, revalidate_on_start: str = "fast",
+                     snapshot_interval: int = 100) -> Blockchain:
     """Carga la cadena con sus contratos (P1-13): cuentas, credenciales y votación.
 
     El estado de cada contrato se deriva reproduciendo la cadena al arrancar y
@@ -77,7 +78,9 @@ def build_node_state(data_dir: str, node_id: str, authority_address: Optional[st
     """
     return Blockchain(node_id=node_id, data_dir=data_dir,
                       initial_difficulty=initial_difficulty,
-                      authority_address=authority_address)
+                      authority_address=authority_address,
+                      revalidate_on_start=revalidate_on_start,
+                      snapshot_interval=snapshot_interval)
 
 
 def load_authority_wallet(path: str, expected_address: str) -> Optional[Wallet]:
@@ -134,7 +137,9 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
     node_id = settings.node_id
     blockchain = build_node_state(
         settings.data_dir, node_id, authority_address=authority_address,
-        initial_difficulty=settings.mining_difficulty)
+        initial_difficulty=settings.mining_difficulty,
+        revalidate_on_start=settings.revalidate_on_start,
+        snapshot_interval=settings.snapshot_interval)
     authority_wallet = load_authority_wallet(
         settings.authority_key_file, blockchain.contracts.contract("accounts").authority_address)
     tx_anomaly_detector = TransactionAnomalyDetector()
@@ -496,19 +501,22 @@ async def create_transaction(request: TransactionRequest, node: NodeState = Depe
 
 @router.get("/tx/{tx_id}/proof")
 async def get_tx_proof(tx_id: str, node: NodeState = Depends(get_node)):
-    """Prueba de inclusión Merkle de una TX confirmada (P2-2)."""
-    for block in node.blockchain.chain:
-        for i, tx in enumerate(block.transactions):
-            if tx.get("tx_id") == tx_id:
-                hojas = [leaf_hash(t) for t in block.transactions]
-                return {
-                    "tx_id": tx_id,
-                    "block_index": block.header.index,
-                    "block_hash": block.hash,
-                    "merkle_root": block.header.merkle_root,
-                    "leaf": hojas[i],
-                    "proof": build_proof(hojas, i),
-                }
+    """Prueba de inclusión Merkle de una TX confirmada (P2-2).
+
+    El índice de chain.db (P2-4) da el bloque y la posición sin recorrer la cadena.
+    """
+    found = node.blockchain.locate_transaction(tx_id)
+    if found is not None:
+        block, i = found
+        hojas = [leaf_hash(t) for t in block.transactions]
+        return {
+            "tx_id": tx_id,
+            "block_index": block.header.index,
+            "block_hash": block.hash,
+            "merkle_root": block.header.merkle_root,
+            "leaf": hojas[i],
+            "proof": build_proof(hojas, i),
+        }
     if any(t.tx_id == tx_id for t in node.blockchain.mempool):
         raise HTTPException(404, "Transacción pendiente: aún no está en un bloque, sin prueba")
     raise HTTPException(404, "Transacción no encontrada")
