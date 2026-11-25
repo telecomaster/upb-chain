@@ -152,7 +152,7 @@ Flujos de trabajo y orden de dependencias:
 - [x] **P2-4** Índice de bloques y estado en SQLite (fin de recorridos O(altura) y reescrituras completas).
 - [x] **P2-5** Dificultad por bits y elección de cadena por trabajo acumulado.
 - [ ] **P2-6** Conexiones persistentes con TLS mutuo y lista blanca de nodos.
-- [ ] **P2-7** Dashboard en vivo por WebSocket/SSE con progreso de minado (`mine_async_friendly`).
+- [x] **P2-7** Dashboard en vivo por WebSocket/SSE con progreso de minado (`mine_async_friendly`).
 - [x] **P2-8** Docker Compose con 4 nodos y CI en GitHub Actions.
 - [x] **P2-9** Configuración tipada (`pydantic-settings`) y app factory en lugar de globales (desbloquea P0-8).
 - [ ] **P2-10** Métricas Prometheus y tablero Grafana.

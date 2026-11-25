@@ -26,7 +26,7 @@ from typing import List, Optional
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, BackgroundTasks, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from config import Settings, load_settings, configure_logging
@@ -57,6 +57,7 @@ from blockchain.network.node import P2PNode
 from ai.anomaly.detector import TransactionAnomalyDetector, BlockAnomalyDetector
 from ai.analytics.chain_stats import ChainAnalytics
 from security.monitor import SecurityMonitor
+from api.events import EventBus, sse_stream
 from security.rate_limiter import TxRateLimiter
 from security.attacks.simulator import full_security_analysis
 from security.attacks.eclipse import EclipseAttack
@@ -124,12 +125,30 @@ class NodeState:
     tx_rate_limiter: TxRateLimiter
     pbft_node: PBFTNode
     p2p: P2PNode
+    events: EventBus                   # P2-7: bus de eventos para GET /events
+
+    def announce_block(self, block: dict) -> None:
+        """Bloque nuevo (propio o de un par): monitor + evento ``block``."""
+        self.security_monitor.on_block(block)
+        header = block.get("header", {})
+        self.events.publish("block", {
+            "index": header.get("index"), "hash": block.get("hash"),
+            "tx_count": len(block.get("transactions", [])),
+            "pending": len(self.blockchain.mempool)})
+
+    def announce_tx(self, tx: dict) -> None:
+        """TX admitida al mempool: monitor + evento ``tx``."""
+        self.security_monitor.on_transaction(tx)
+        self.events.publish("tx", {"tx_id": tx.get("tx_id"),
+                                   "pending": len(self.blockchain.mempool)})
 
     def on_chain_reorg(self, fork_height: int, dropped: list, added: list) -> None:
         """Reorganización -> alerta (profundidad = bloques propios descartados) y bloques nuevos."""
         self.security_monitor.on_chain_reorg(len(dropped))
+        self.events.publish("reorg", {"fork_height": fork_height, "dropped": len(dropped),
+                                      "added": len(added)})
         for block in added:
-            self.security_monitor.on_block(block.to_dict())
+            self.announce_block(block.to_dict())
 
 
 def build_node(settings: Settings, authority_address: Optional[str] = None) -> NodeState:
@@ -146,7 +165,8 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
     anomaly_model_path = Path(settings.data_dir) / "models" / "tx_iforest.joblib"
     if tx_anomaly_detector.load(anomaly_model_path):
         logger.info("Modelo de anomalías cargado de %s", anomaly_model_path)
-    security_monitor = SecurityMonitor()
+    events = EventBus()
+    security_monitor = SecurityMonitor(alert_callback=lambda a: events.publish("alert", a.to_dict()))
     security_monitor.TX_RATE_LIMIT = settings.tx_rate_limit   # atributo de instancia
     # P1-5: límite de admisión al mempool (política local, nunca regla de consenso).
     tx_rate_limiter = TxRateLimiter(limit=settings.tx_rate_limit,
@@ -163,7 +183,7 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
         blockchain=blockchain,
         on_pbft_message=lambda m: logger.info(f"PBFT msg recibido: {m}"),
         # P1-5: bloques recibidos y aceptados, bloques inválidos y pares fuera de PEERS.
-        on_new_block=security_monitor.on_block,
+        on_new_block=lambda b: node.announce_block(b),
         on_invalid_block=security_monitor.on_invalid_block,
         on_unknown_peer=security_monitor.on_unknown_peer,
         known_peers=settings.peers,
@@ -184,6 +204,7 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
         tx_rate_limiter=tx_rate_limiter,
         pbft_node=pbft_node,
         p2p=p2p,
+        events=events,
     )
     blockchain.add_reorg_listener(node.on_chain_reorg)
     return node
@@ -407,6 +428,34 @@ async def get_block(index: int, node: NodeState = Depends(get_node)):
     return {**block.to_dict(), "anomaly": report.to_dict()}
 
 
+def _progress_publisher(node: NodeState, difficulty: int, max_per_s: float = 2.0):
+    """Callback de progreso del PoW (corre en el hilo de minado): ≤ 2 eventos por segundo."""
+    ultimo = [0.0]
+
+    def cb(nonce: int, elapsed: float) -> None:
+        ahora = time.monotonic()
+        if ahora - ultimo[0] < 1.0 / max_per_s:
+            return
+        ultimo[0] = ahora
+        node.events.publish("mining_progress", {
+            "attempts": nonce, "elapsed_s": round(elapsed, 3), "difficulty": difficulty,
+            "hash_rate": round(nonce / elapsed) if elapsed > 0 else 0,
+            "expected_attempts": 2 ** difficulty})
+    return cb
+
+
+@router.get("/events")
+async def events_stream(request: Request, node: NodeState = Depends(get_node)):
+    """Flujo SSE de eventos del nodo (P2-7): block, tx, alert, reorg, mining_progress, mining_done.
+
+    SSE y no WebSocket: el flujo es solo servidor -> navegador, EventSource reconecta solo y
+    no hace falta protocolo ni dependencia extra."""
+    return StreamingResponse(
+        sse_stream(node.events, is_disconnected=request.is_disconnected),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @router.post("/blocks/mine", dependencies=[Depends(require_admin)])
 async def mine_block(request: MineRequest, background_tasks: BackgroundTasks, node: NodeState = Depends(get_node)):
     if node.mining_lock.locked():
@@ -418,8 +467,13 @@ async def mine_block(request: MineRequest, background_tasks: BackgroundTasks, no
         difficulty = candidate.header.difficulty
         # El PoW corre en un thread para no bloquear el event loop.
         result = await asyncio.to_thread(
-            node.pow_engine.mine, candidate, difficulty=difficulty, stop_event=node.mining_stop
+            node.pow_engine.mine, candidate, difficulty=difficulty, stop_event=node.mining_stop,
+            on_progress=_progress_publisher(node, difficulty)
         )
+        node.events.publish("mining_done", {
+            "ok": result is not None, "difficulty": difficulty,
+            **({"attempts": result.attempts, "time_s": result.time_elapsed,
+                "hash_rate": result.hash_rate} if result else {})})
         if not result:
             raise HTTPException(500, "Mining falló, timeout o abortado")
         ok, reason = node.blockchain.add_block(result.block)
@@ -427,7 +481,7 @@ async def mine_block(request: MineRequest, background_tasks: BackgroundTasks, no
             # Típico: llegó un bloque de un peer y la punta cambió durante el minado.
             node.security_monitor.on_invalid_block(reason, node.settings.node_id)
             raise HTTPException(409, f"Bloque minado ya no es válido: {reason}")
-        node.security_monitor.on_block(result.block.to_dict())
+        node.announce_block(result.block.to_dict())
     # Difusión a los pares (E/S de red bloqueante) fuera del event loop (P0-5).
     await asyncio.to_thread(node.p2p.broadcast_block, result.block.to_dict())
     return {
@@ -488,6 +542,7 @@ async def create_transaction(request: TransactionRequest, node: NodeState = Depe
     ok, reason = node.blockchain.add_transaction(tx)
     if not ok:
         raise HTTPException(400, reason)
+    node.events.publish("tx", {"tx_id": tx.tx_id, "pending": len(node.blockchain.mempool)})
 
     _screen_admitted_tx(node, tx, anomaly)
     node.p2p.broadcast_transaction(tx.to_dict())
@@ -802,7 +857,7 @@ def _submit_contract_tx(node: NodeState, tx: Transaction) -> None:
     ok, reason = node.blockchain.add_transaction(tx)
     if not ok:
         raise HTTPException(400, reason)
-    node.security_monitor.on_transaction(tx.to_dict())
+    node.announce_tx(tx.to_dict())
     _screen_admitted_tx(node, tx)
     node.p2p.broadcast_transaction(tx.to_dict())
 

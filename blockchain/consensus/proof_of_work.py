@@ -41,11 +41,14 @@ class ProofOfWork:
         timeout: Optional[float] = 120.0,
         difficulty: Optional[int] = None,
         stop_event: Optional[threading.Event] = None,
+        on_progress: Optional[Callable[[int, float], None]] = None,
     ) -> Optional[MiningResult]:
         """Mina `block`. `difficulty` es la que dicta la regla de la cadena
         (`Blockchain._calculate_difficulty()`); si se omite se usa la del
         constructor (sólo uso autónomo: demos y benchmarks). No se muta el
-        estado del motor. Si `stop_event` se activa, el minado aborta (None)."""
+        estado del motor. Si `stop_event` se activa, el minado aborta (None).
+        `on_progress(nonce, segundos)` (opcional, P2-7) se invoca cada 4096 intentos; no
+        altera el resultado."""
         start = time.perf_counter()
         diff = self.difficulty if difficulty is None else difficulty
         target = target_for_bits(diff)
@@ -57,6 +60,8 @@ class ProofOfWork:
             if stop_event is not None and nonce % 256 == 0 and stop_event.is_set():
                 logger.info("Minado abortado por stop_event")
                 return None
+            if on_progress is not None and nonce & 0xFFF == 0 and nonce > 0:
+                on_progress(nonce, time.perf_counter() - start)
             if timeout and (time.perf_counter() - start) > timeout:
                 logger.warning("Mining timeout alcanzado")
                 return None

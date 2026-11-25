@@ -345,6 +345,10 @@
       <div class="metric-label">Pendientes</div>
       <div id="pending-tx" class="metric-value" style="color:#fbbf24; margin-top:8px;">—</div>
       <div style="font-size:10px; color:var(--upb-muted); margin-top:6px;">en mempool</div>
+      <div id="mining-progress" style="display:none; margin-top:8px;">
+        <div style="height:6px; background:rgba(255,255,255,.12); border-radius:3px; overflow:hidden;"><div id="mining-bar" style="height:100%; width:0%; background:var(--upb-gold);"></div></div>
+        <div id="mining-text" style="font-size:10px; color:var(--upb-muted); margin-top:4px;"></div>
+      </div>
     </div>
 
     <div class="card card-gold-border" style="padding:20px;">
@@ -908,6 +912,7 @@ async function mineBlock() {
 }
 
 // ── Chart TX ──────────────────────────────────────────────
+let sseVivo = false;   // true mientras EventSource está conectado (P2-7); si no, rige el sondeo
 let txChart = null;
 async function loadAnalytics() {
   const { ok, data } = await fetchJSON('/ai/analytics');
@@ -1639,7 +1644,7 @@ loadConsensusMetrics();
 
 setInterval(loadNetwork,              15000);
 setInterval(loadBlockTimeline,        15000);
-setInterval(loadPendingTransactions,   5000);
+setInterval(() => { if (!sseVivo) loadPendingTransactions(); }, 5000);
 setInterval(loadConsensusMetrics,     15000);
 
 // ── Alertas de seguridad en vivo (P1-5; SSE queda para P2-7) ──
@@ -1660,7 +1665,7 @@ async function loadLiveAlerts() {
   }
 }
 loadLiveAlerts();
-setInterval(loadLiveAlerts, 5000);
+setInterval(() => { if (!sseVivo) loadLiveAlerts(); }, 5000);
 
 // ── Ciclo de actualización ────────────────────────────────
 async function refresh() {
@@ -1670,8 +1675,48 @@ async function refresh() {
 loadAnalytics();
 loadAttackSim();
 refresh();
-setInterval(refresh, 10000);
+setInterval(() => { if (!sseVivo) refresh(); }, 10000);
 setInterval(loadAnalytics, 30000);
+
+// ── Tiempo real por SSE (P2-7) ────────────────────────────
+// EventSource reconecta solo. Mientras está conectado se pausa el sondeo; si falla, vuelve.
+(function conectarEventos() {
+  if (typeof EventSource === 'undefined') return;
+  const es = new EventSource(API + '/events');
+  let pendiente = null;
+  const refrescar = () => {   // agrupa ráfagas de eventos en una sola recarga
+    if (pendiente) return;
+    pendiente = setTimeout(() => { pendiente = null; refresh(); loadPendingTransactions(); }, 300);
+  };
+  const datos = e => { try { return JSON.parse(e.data); } catch (_) { return {}; } };
+  es.onopen = () => { sseVivo = true; };
+  es.onerror = () => { sseVivo = false; };   // el sondeo retoma hasta que reconecte
+  es.addEventListener('block', refrescar);
+  es.addEventListener('reorg', refrescar);
+  es.addEventListener('tx', e => {
+    const el = document.getElementById('pending-tx');
+    const d = datos(e);
+    if (el && d.pending != null) el.textContent = d.pending;
+  });
+  es.addEventListener('alert', () => { loadLiveAlerts(); loadStats(); });
+  es.addEventListener('mining_progress', e => {
+    const d = datos(e);
+    const caja = document.getElementById('mining-progress');
+    if (!caja) return;
+    caja.style.display = 'block';
+    // Se espera 2^bits intentos (estimación); la barra se satura en 95 % porque el PoW es aleatorio.
+    const pct = Math.min(95, 100 * d.attempts / Math.max(d.expected_attempts, 1));
+    document.getElementById('mining-bar').style.width = pct.toFixed(0) + '%';
+    document.getElementById('mining-text').textContent =
+      `Minando… ${d.attempts.toLocaleString()} intentos · ${d.hash_rate.toLocaleString()} H/s · ${d.elapsed_s}s`;
+  });
+  es.addEventListener('mining_done', () => {
+    const caja = document.getElementById('mining-progress');
+    if (!caja) return;
+    document.getElementById('mining-bar').style.width = '100%';
+    setTimeout(() => { caja.style.display = 'none'; }, 1500);
+  });
+})();
 </script>
 </body>
 </html>
