@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, Tuple
 
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, Response
@@ -39,6 +39,8 @@ from ai.anomaly.detector import TransactionAnomalyDetector, BlockAnomalyDetector
 from ai.analytics.chain_stats import ChainAnalytics
 from security.monitor import SecurityMonitor
 from security.attacks.simulator import full_security_analysis
+from security.attacks.eclipse import EclipseAttack
+from security.hardening import HardeningAuditor
 from security.crypto_utils import generate_keypair, benchmark_crypto
 
 settings = load_settings()
@@ -646,6 +648,27 @@ async def attack_simulation():
 @app.get("/security/crypto-benchmark")
 async def crypto_benchmark():
     return benchmark_crypto(iterations=5000)
+
+
+@app.get("/security/hardening")
+async def hardening_checklist():
+    """Checklist de hardening en solo lectura (inspección de código, sin shell)."""
+    return HardeningAuditor().run_audit()
+
+
+@app.post("/security/eclipse-simulation")
+async def eclipse_simulation(max_connections: int = Query(32, ge=1, le=256),
+                             attacker_nodes: int = Query(10, ge=0, le=1000),
+                             network_size: int = Query(50, ge=2, le=1000)):
+    """Simulación académica de eclipse; solo cálculo, no toca la red.
+
+    Parámetros acotados para que una petición no bloquee el nodo.
+    """
+    return EclipseAttack().simulate(
+        max_connections=max_connections,
+        attacker_nodes=attacker_nodes,
+        network_size=network_size,
+    ).__dict__
 
 
 # ── Endpoints: wallet ─────────────────────────────────────────────────────────

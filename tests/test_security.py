@@ -1,6 +1,7 @@
 """Tests de módulos de seguridad: criptografía, ataques y monitoreo."""
 import os
 import pytest
+import pytest_asyncio
 
 from security.crypto_utils import (
     generate_keypair, sign_data, verify_signature,
@@ -225,3 +226,34 @@ class TestTransactionAuthentication:
         tx = self._tx(w)
         tx.sign(w.private_key_hex)
         assert Transaction.from_dict(tx.to_dict()).is_valid()[0]
+
+
+# ── P1-7: endpoints de hardening y eclipse ───────────────────────────────────
+
+class TestSecurityEndpoints:
+    """Endpoints expuestos por la API vía ASGI (sin lifespan, así no arranca el P2P)."""
+
+    @pytest_asyncio.fixture
+    async def client(self):
+        from httpx import AsyncClient, ASGITransport
+        from api.app import app
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            yield ac
+
+    @pytest.mark.asyncio
+    async def test_hardening_checklist_200(self, client):
+        resp = await client.get("/security/hardening")
+        assert resp.status_code == 200
+        body = resp.json()
+        for clave in ("score", "passed", "failed", "manual", "total", "items"):
+            assert clave in body
+        assert body["total"] == len(body["items"])
+
+    @pytest.mark.asyncio
+    async def test_eclipse_simulation_200(self, client):
+        resp = await client.post("/security/eclipse-simulation")
+        assert resp.status_code == 200
+        body = resp.json()
+        for clave in ("attack_type", "success", "duration_s", "description", "metrics", "recommendations"):
+            assert clave in body
+        assert "eclipse_probability" in body["metrics"]

@@ -41,11 +41,12 @@ overstate what works).
 - `config.py` settings from env/.env
 - `blockchain/core` block, chain (persistence, fork resolution), transaction, wallet (ECDSA secp256k1),
   state (`ReplayState`: estado = reproducción de las TXs confirmadas; base para contratos y cuentas)
-- `blockchain/consensus` proof_of_work, pbft · `blockchain/network` P2P node (`sync.py`, `discovery.py` are unwired)
+- `blockchain/consensus` proof_of_work, pbft · `blockchain/network` P2P node (sincronización y peers en `node.py`)
 - `blockchain/contracts/credential.py` credential issue/verify/revoke, derived from the chain (P0-6);
   issuers registered by `ISSUER_REGISTER` TXs signed by the genesis authority (key in `data/keys/authority.json`, never committed)
 - `ai/anomaly/detector.py`, `ai/analytics/chain_stats.py`
-- `security/` crypto_utils, monitor, hardening (unwired), `attacks/` simulator, eclipse (unwired)
+- `security/` crypto_utils, monitor, hardening (checklist de solo lectura en `GET /security/hardening`),
+  `attacks/` simulator, eclipse (usado por el simulador y `POST /security/eclipse-simulation`)
 - `api/app.py` FastAPI app (module-level globals) · `dashboard/templates/index.html`
 
 ## Rules

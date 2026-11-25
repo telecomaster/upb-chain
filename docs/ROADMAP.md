@@ -97,7 +97,7 @@ Flujos de trabajo y orden de dependencias:
   ataques etiquetados; reportar precisión/recall/F1/AUC vs heurística; persistir el modelo (joblib);
   corregir la regla `hour > 23` (nunca se cumple); quitar el efecto colateral de `GET /blocks/{i}`;
   anomalías → alertas del monitor.
-- [ ] **P1-7 Módulos muertos.** Integrar lo útil de `sync.py` en P0-5 y borrarlo; exponer
+- [x] **P1-7 Módulos muertos.** Integrar lo útil de `sync.py` en P0-5 y borrarlo; exponer
   `hardening.py` y `eclipse.py` en `/security/*` o eliminarlos.
 - [x] **P1-8 Almacenamiento a prueba de cortes.** Escritura atómica de `chain.json` (temporal +
   fsync + rename) y respaldo (riesgo R-2, microSD).
