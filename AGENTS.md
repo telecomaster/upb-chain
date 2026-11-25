@@ -25,18 +25,24 @@ overstate what works).
   `requirements.txt`.
 - Config: copy `.env.example` to `.env`; all env vars are read in one place, `config.py` (`load_settings()`,
   environment variables win over `.env`). Each node needs its own `DATA_DIR` and ports.
+  `.env.example` documents every variable (`MINING_DIFFICULTY` in bits, default 16; `CONSENSUS=pow|pbft`; `P2P_TLS`;
+  `ADMIN_API_KEY`: set = `X-API-Key` required, empty = loopback only; `METRICS_PUBLIC`; `TX_RATE_LIMIT`;
+  `PUBLIC_BASE_URL`; `DID_WEB_DOMAIN`; `REVALIDATE_ON_START`; `SNAPSHOT_INTERVAL`).
 
 ## Commands
 
-- Tests: `venv\Scripts\python.exe -m pytest tests -q` (must stay fully green; baseline count changes as jobs land)
+- Tests: `venv\Scripts\python.exe -m pytest tests -q` (must stay fully green; currently 580 passed + 1 xfailed, ~2.5 min)
 - Run a node (from repo root, paths are relative):
   `venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8000`
   Dashboard `/`, Swagger `/docs`, health `/health`. P2P listens on 8001. No auto-reload unless `--reload`.
   Second local node (PowerShell):
   `$env:NODE_ID="node_2"; $env:DATA_DIR="data/node_2"; $env:NODE_PORT="8011"; $env:PEERS="127.0.0.1:8001"; venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8010`
 - Demo without server: `venv\Scripts\python.exe scripts\demo.py`
-- PoW vs PBFT race (4 in-process nodes, writes `docs/experimentos/`):
-  `venv\Scripts\python.exe scripts\experiments\carrera_consensos.py`
+- 4-node network: `ADMIN_API_KEY=... docker compose up --build -d` (key is mandatory; ports 8000/8010/8020/8030 on 127.0.0.1)
+- Paper experiments (fixed seeds; `--rapido` for a seconds-long run): `venv\Scripts\python.exe scripts\experiments\run_all.py`;
+  PoW vs PBFT race alone: `scripts\experiments\carrera_consensos.py`. Live attack lab: `scripts\laboratorio_ataques.py --escenario ...`
+- Consensus rules changed (difficulty in bits, nonces, SQLite): a node with an older `DATA_DIR` must wipe it (e.g. `data/chain`) and resync.
+  Collaborators with an old clone (history was rewritten): `git fetch && git reset --hard origin/main`.
 
 ## Layout
 

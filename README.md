@@ -13,7 +13,9 @@ UPB-Chain es una red blockchain permisionada implementada sobre dos nodos **Rasp
 - **Smart contracts** para certificación y verificación de credenciales académicas
 - Capa de **Inteligencia Artificial**: detección de anomalías (Isolation Forest) y analítica de cadena
 - Módulo de **ciberseguridad**: simulación de ataques (51 %, Sybil, doble gasto) y monitoreo en tiempo real
-- **Dashboard web** interactivo con API REST completa
+- **Dashboard web** interactivo con API REST completa, billetera en el navegador y kiosco verificador
+- Cuentas con saldo y nonce, tokens PUPB, insignias, votación y una **máquina virtual** para contratos de estudiantes
+- Credenciales verificables (W3C VC con `did:web`), pruebas Merkle y almacenamiento SQLite (`chain.db`)
 
 ---
 
@@ -55,114 +57,192 @@ UPB-Chain es una red blockchain permisionada implementada sobre dos nodos **Rasp
 
 ---
 
+
+---
+
+## Inicio rápido
+
+Requisitos: Python 3.12. En Windows usar siempre `venv\Scripts\python.exe` (el `python` del sistema
+suele ser el alias de la Store); en Linux/RPi, `venv/bin/python`.
+
+```powershell
+python -m venv venv
+venv\Scripts\python.exe -m pip install -r requirements.txt
+copy .env.example .env      # Linux: cp .env.example .env
+```
+
+### Un nodo
+
+```powershell
+venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8000
+```
+
+Dashboard en `http://127.0.0.1:8000/`, Swagger en `/docs`, estado en `/health`; el P2P escucha en
+8001. No hay recarga automática (agregar `--reload` solo al desarrollar). Los endpoints de
+administración (minar, pares, emisores, entrenar IA) aceptan solo peticiones desde la propia
+máquina, o la cabecera `X-API-Key` si se define `ADMIN_API_KEY`.
+
+```powershell
+curl -X POST http://127.0.0.1:8000/blocks/mine      # mina un bloque (PoW)
+curl http://127.0.0.1:8000/health
+```
+
+Demo sin servidor: `venv\Scripts\python.exe scripts\demo.py`.
+
+### Dos nodos locales
+
+Cada nodo necesita su propio `DATA_DIR` y puertos. El segundo nodo (PowerShell), con el primero
+ya en marcha:
+
+```powershell
+$env:NODE_ID="node_2"; $env:DATA_DIR="data/node_2"; $env:NODE_PORT="8011"; $env:PEERS="127.0.0.1:8001"
+venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8010
+```
+
+Mine un bloque en uno y compruebe con `GET /blocks` que el otro lo recibe (`GET /network` muestra
+los pares). Solo un proceso puede ocupar los puertos 8000/8001 a la vez.
+
+### Red de 4 nodos con Docker Compose
+
+```bash
+export ADMIN_API_KEY=cambiame            # PowerShell: $env:ADMIN_API_KEY="cambiame"
+docker compose up --build -d
+for p in 8000 8010 8020 8030; do curl http://127.0.0.1:$p/health; echo; done
+docker compose down                      # conserva las cadenas; con -v las borra
+```
+
+Detalles (llave de la autoridad, métricas, Grafana) en [Docker y CI](#docker-y-ci).
+
+### Actualizar un nodo existente
+
+Las reglas de consenso cambiaron (dificultad en bits, nonces por cuenta, almacenamiento SQLite), así
+que una cadena creada antes **no es compatible**: en cada nodo, detenerlo, borrar su `DATA_DIR`
+(p. ej. `data/chain`) y volver a arrancarlo; se resincroniza desde los pares o empieza desde el
+génesis. Un `chain.json` antiguo se importa una vez a `chain.db` solo si su contenido sigue siendo
+válido con las reglas actuales. Además, el historial de git de este repositorio se reescribió:
+quien tenga un clon previo debe ejecutar `git fetch && git reset --hard origin/main` (cuidado: descarta
+cambios locales no guardados).
+
+---
+
+## Mapa de funciones
+
+| Tema | Qué incluye | Documentación |
+|---|---|---|
+| Consenso y red | PoW con dificultad en bits y reajuste; PBFT firmado (`CONSENSUS=pow\|pbft`); P2P con TLS mutuo opcional | [`docs/arquitectura.md`](docs/arquitectura.md) |
+| Credenciales | Emisión, verificación, revocación, historial, QR y página `/verify/{id}`, kiosco `/kiosco`, prueba Merkle de una TX (`/tx/{id}/proof`), divulgación selectiva | [`docs/arquitectura.md`](docs/arquitectura.md) §3 |
+| Credenciales verificables | Exportación W3C VC con `did:web` y verificador independiente `scripts/verificar_vc.py` | [`docs/credenciales_vc.md`](docs/credenciales_vc.md) |
+| Cuentas, tokens y votación | Saldo y nonce por cuenta, tokens PUPB, insignias, catálogo y canjes, elecciones | [`docs/contratos.md`](docs/contratos.md) |
+| Contratos de estudiantes | Máquina virtual de pila con ensamblador `.upbasm` (`scripts/upbasm.py`) y gas en PUPB | [`docs/vm.md`](docs/vm.md) |
+| IA | Isolation Forest + heurísticas, alertas explicables, analítica de cadena | [`docs/evaluacion_anomalias.md`](docs/evaluacion_anomalias.md) |
+| Seguridad | Monitor con alertas, simulador de ataques, laboratorio de ataques en vivo con nodos reales | [`docs/laboratorio_ataques.md`](docs/laboratorio_ataques.md) |
+| Experimentos del paper | Arnés reproducible `scripts/experiments/run_all.py` (tablas CSV y figuras) | [`docs/experimentos/README.md`](docs/experimentos/README.md) |
+| Hardware | Benchmark para la Raspberry Pi 5 (`scripts/bench_rpi.py`) | [`docs/benchmark_hardware.md`](docs/benchmark_hardware.md) |
+| Billetera | Firma en el navegador en `/billetera` (la llave no sale del cliente) | Dashboard |
+| Operación | Métricas Prometheus `/metrics`, Docker Compose, CI | [Docker y CI](#docker-y-ci) |
+| Estado del trabajo | Trabajos, prioridades y criterios de aceptación | [`docs/ROADMAP.md`](docs/ROADMAP.md) |
+
+Las cifras de rendimiento (hash rate, TPS, latencias, AUC) están únicamente en esos documentos, con su
+etiqueta de si fueron medidas (y en qué máquina) o estimadas; las de Raspberry Pi solo las aporta
+quien ejecuta `scripts/bench_rpi.py` en las Pi.
+
+---
+
+## Notas de seguridad
+
+- **Solo para una red de confianza (LAN).** No exponer la API a Internet: el endpoint
+  `POST /wallet/generate` devuelve la llave privada por diseño didáctico.
+- Los endpoints que reciben `private_key_hex` (emitir, revocar, transferir, etc.) firman en el servidor;
+  es solo educativo y está **en desuso**. La firma real va en el navegador (`/billetera`).
+- Los endpoints de administración exigen `ADMIN_API_KEY` (cabecera `X-API-Key`; 401 si falta o es
+  incorrecta). Sin llave solo aceptan loopback (403 desde otra IP). Con Docker la llave es obligatoria.
+- `/metrics` sigue la misma regla salvo con `METRICS_PUBLIC=true` (solo red interna).
+- **Nunca versionar** `data/`, `.env`, `venv/`, wallets ni llaves (`authority.json`, llaves de réplica
+  PBFT, `ca.key`).
+
+---
+
 ## Estructura del Proyecto
 
 ```
-blockchain_upb_ia/
+upb-chain/
+├── config.py                  # Settings (pydantic-settings): todas las variables de entorno
 ├── blockchain/
-│   ├── core/
-│   │   ├── block.py          # Estructura de bloque + Merkle Tree
-│   │   ├── chain.py          # Cadena principal + persistencia + fork resolution
-│   │   ├── transaction.py    # Modelo de TX + tipos + constructores
-│   │   └── wallet.py         # ECDSA secp256k1 + derivación de direcciones
-│   ├── consensus/
-│   │   ├── proof_of_work.py  # PoW adaptativo + benchmark RPi5
-│   │   └── pbft.py           # PBFT firmado: caso normal, cambio de vista, certificados (P1-1)
-│   ├── network/
-│   │   └── node.py           # P2P TCP + gossip + heartbeat
-│   └── contracts/
-│       └── credential.py     # Smart contract de credenciales académicas
+│   ├── core/                  # block, chain, transaction, wallet, state, storage (SQLite)
+│   ├── consensus/             # proof_of_work.py, pbft.py
+│   ├── network/               # node.py (P2P, sincronización), tls.py
+│   ├── contracts/             # accounts, credential, tokens, badges, voting, programs (vm), registry
+│   └── vm/                    # máquina de pila y ensamblador .upbasm
 ├── ai/
-│   ├── anomaly/
-│   │   └── detector.py       # Isolation Forest + heurísticas
-│   └── analytics/
-│       └── chain_stats.py    # TPS, distribución TX, salud de red
-├── security/
-│   ├── crypto_utils.py       # ECDSA, AES-GCM, PBKDF2, benchmark
-│   ├── monitor.py            # Monitor en tiempo real + alertas
-│   └── attacks/
-│       └── simulator.py      # 51%, Sybil, Doble Gasto (educativo)
-├── api/
-│   └── app.py                # FastAPI: 20+ endpoints REST
-├── dashboard/
-│   └── templates/
-│       └── index.html        # Dashboard responsive (Tailwind + Chart.js)
-├── tests/
-│   ├── test_blockchain.py    # 15+ tests unitarios de core
-│   ├── test_consensus.py     # Tests PoW
-│   ├── test_pbft.py          # PBFT en memoria (reloj falso)
-│   ├── test_pbft_red.py      # PBFT con 4 apps reales por P2P
-│   └── test_security.py      # Tests crypto + ataques + monitor
-└── scripts/
-    ├── setup_rpi.sh          # Instalación automatizada en RPi5
-    └── demo.py               # Demo completo sin servidor
+│   ├── anomaly/detector.py    # Isolation Forest + heurísticas
+│   └── analytics/chain_stats.py
+├── security/                  # crypto_utils, monitor, hardening, pki, attacks/ (simulador, laboratorio, eclipse)
+├── api/app.py                 # fábrica create_app(settings); `app = create_app()` para uvicorn
+├── dashboard/                 # templates/index.html, billetera, kiosco y estáticos
+├── contratos_estudiantes/     # ejemplos .upbasm
+├── monitoring/                # Prometheus y Grafana
+├── scripts/                   # setup_rpi.sh, demo.py, llaves y CA, bench_rpi.py, laboratorio_ataques.py,
+│                              #   evaluar_anomalias.py, exportar_cadena.py, experiments/run_all.py, ...
+├── tests/                     # suite pytest; los nodos de prueba se arman con tests.helpers.make_app
+└── docs/                      # arquitectura, ROADMAP y guías por tema
 ```
 
 ---
 
-## Instalación
-
-### Opción 1: Setup automatizado en Raspberry Pi 5
+## Instalación en Raspberry Pi 5
 
 ```bash
 # En el Nodo 1 (RPi5 #1):
 sudo bash scripts/setup_rpi.sh node_1 8000 8001
 
-# En el Nodo 2 (RPi5 #2), apuntando al Nodo 1:
+# En el Nodo 2 (RPi5 #2):
 sudo bash scripts/setup_rpi.sh node_2 8002 8003
-# Luego agregar peer: PEERS=<IP_NODO1>:8001 en .env
+# Luego agregar el par: PEERS=<IP_NODO1>:8001 en .env y reiniciar el servicio
 ```
 
-### Opción 2: Instalación manual
-
-```bash
-python -m venv venv
-source venv/bin/activate         # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-
-cp .env.example .env
-# Editar .env con NODE_ID, puertos, PEERS
-
-uvicorn api.app:app --host 0.0.0.0 --port 8000 --reload
-```
-
-### Demo rápido (sin servidor)
-
-```bash
-python scripts/demo.py
-```
+El script crea el venv, el `.env`, un servicio systemd (un solo worker por nodo) y reglas de firewall.
+Toda la configuración está en `.env` (ver `.env.example`, comentado variable por variable):
+dificultad en bits (`MINING_DIFFICULTY`, 16 por defecto), `CONSENSUS`, `P2P_TLS`, `ADMIN_API_KEY`,
+`PUBLIC_BASE_URL` (URL de los QR), `DID_WEB_DOMAIN`, `TX_RATE_LIMIT`, `REVALIDATE_ON_START`,
+`SNAPSHOT_INTERVAL`, `METRICS_PUBLIC`, `CORS_ORIGINS`.
 
 ---
 
 ## Uso de la API
 
-### Endpoints principales
+El listado completo y los esquemas están en Swagger (`/docs`). Los principales:
 
 | Método | Endpoint | Descripción |
 |--------|----------|-------------|
-| GET | `/` | Dashboard web |
-| GET | `/health` | Estado del nodo |
-| GET | `/stats` | Estadísticas completas |
-| GET | `/blocks` | Lista de bloques (paginado) |
-| POST | `/blocks/mine` | Minar un bloque (PoW; 409 en modo PBFT) |
-| GET | `/consensus` | Modo de consenso; en PBFT vista, primario y réplicas (P1-1) |
-| POST | `/transactions` | Nueva transacción |
-| POST | `/wallet/generate` | Generar wallet ECDSA |
-| POST | `/credentials/issue` | Emitir credencial académica |
-| GET | `/credentials/verify/{id}` | Verificar credencial |
-| GET | `/ai/analytics` | Análisis estadístico IA |
-| POST | `/ai/train` | Entrenar detector de anomalías |
-| GET | `/security/attack-simulation` | Simulación de ataques |
-| GET | `/security/crypto-benchmark` | Benchmark criptográfico |
-| GET | `/docs` | Documentación interactiva (Swagger) |
+| GET | `/`, `/billetera`, `/kiosco` | Dashboard, billetera en el navegador, kiosco verificador |
+| GET | `/health`, `/stats`, `/network`, `/events` | Estado, estadísticas, pares, eventos en tiempo real |
+| GET | `/blocks`, `/blocks/{index}` | Bloques (paginado) |
+| POST | `/blocks/mine` | Minar un bloque (admin; 409 en modo PBFT) |
+| GET | `/consensus` | Modo de consenso; en PBFT vista, primario y réplicas |
+| POST | `/transactions` | Enviar una TX firmada |
+| GET | `/tx/{tx_id}/proof` | Prueba Merkle de inclusión |
+| GET | `/accounts/{address}` | Saldo y nonce |
+| POST | `/credentials/issuers` | Registrar emisor (admin; requiere la llave de la autoridad) |
+| POST | `/credentials/issue`, `/credentials/revoke` | Emitir y revocar credencial |
+| GET | `/credentials/verify/{id}`, `/verify/{id}`, `/credentials/{id}/qr` | Verificar (JSON o HTML) y QR |
+| GET | `/credentials/{id}/vc`, `/.well-known/did.json` | Credencial verificable W3C y DID del emisor |
+| GET | `/contracts`, `/contracts/vm` | Contratos registrados y programas de la VM |
+| GET | `/ai/analytics`, `/ai/anomaly/stats` | Analítica y estado del detector |
+| POST | `/ai/train` | Entrenar el detector (admin) |
+| GET | `/security/alerts`, `/security/attack-simulation`, `/security/hardening` | Seguridad |
+| GET | `/metrics` | Métricas Prometheus (ver [Docker y CI](#docker-y-ci)) |
 
 ### Ejemplo: Emitir credencial académica
+
+Los ejemplos usan `private_key_hex` por brevedad; ese camino de firma en el servidor es educativo y
+está en desuso (ver Notas de seguridad).
 
 ```bash
 # 1. Generar wallet para la universidad
 curl -X POST http://localhost:8000/wallet/generate
 
-# 2. Registrar emisor
+# 2. Registrar emisor (admin; el nodo necesita data/keys/authority.json,
+#    se crea con scripts/crear_llave_autoridad.py)
 curl -X POST http://localhost:8000/credentials/issuers \
   -H "Content-Type: application/json" \
   -d '{"issuer_address": "UPB...", "institution_code": "UPB"}'
@@ -184,7 +264,8 @@ curl -X POST http://localhost:8000/credentials/issue \
     }
   }'
 
-# 4. Verificar (cualquiera puede verificar con el ID)
+# 4. Minar un bloque (PoW) y verificar (cualquiera puede verificar con el ID)
+curl -X POST http://localhost:8000/blocks/mine
 curl http://localhost:8000/credentials/verify/<credential_id>
 ```
 
@@ -192,11 +273,15 @@ curl http://localhost:8000/credentials/verify/<credential_id>
 
 ## Ejecutar Tests
 
-```bash
-pytest tests/ -v
-pytest tests/test_security.py -v    # Solo seguridad
-pytest tests/test_consensus.py -v  # Solo consenso
+```powershell
+venv\Scripts\python.exe -m pytest tests -q                       # toda la suite
+venv\Scripts\python.exe -m pytest tests\test_security.py -q      # un archivo
 ```
+
+Estado actual: 580 pruebas pasan y 1 está marcada `xfail`, en unos 2,5 minutos (2 min 25 s en un portátil de desarrollo; la cifra cambia al aterrizar trabajos nuevos).
+
+Los tests que necesitan su propio nodo lo arman con `tests.helpers.make_app(tmp_path, ...)`
+(`create_app` + `Settings`), así que varias apps conviven en un mismo proceso.
 
 ---
 
@@ -328,7 +413,7 @@ los archivos el nodo no arranca.
 - TLS 1.3 mutuo y lista blanca de nodos en el P2P (opcional, ver arriba)
 - Simulación educativa de ataques del 51 %, Sybil y doble gasto
 - Monitor en tiempo real con niveles INFO / WARNING / CRITICAL
-- Rate limiting por dirección (100 TX/min)
+- Límite de TX por minuto y emisor al mempool (`TX_RATE_LIMIT`, por defecto 100; 429 y alerta; política local, no de consenso)
 - Detección de reorganizaciones de cadena
 
 ---
@@ -341,7 +426,7 @@ los archivos el nodo no arranca.
 | RAM | 16 GB LPDDR4X |
 | Almacenamiento | 128 GB microSD |
 | Red | Gigabit Ethernet + WiFi 6 |
-| Hash rate SHA-256 (estimado) | ~500,000 – 800,000 H/s |
+| Hash rate SHA-256 (estimado, sin medir) | ~500,000 – 800,000 H/s; resultados de las Pi: pendientes de medir, ver [`docs/benchmark_hardware.md`](docs/benchmark_hardware.md) |
 | Tiempo de bloque | objetivo 10 s; la dificultad en bits se reajusta sola (P2-5) |
 
 ---

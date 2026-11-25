@@ -6,6 +6,20 @@ UPB-Chain es una blockchain permisionada de propósito académico que demuestra,
 
 El sistema está diseñado para ser **demostrable en clase**, **modificable por estudiantes** y **suficientemente completo** para servir de base a investigaciones de posgrado.
 
+### Mapa de módulos
+
+| Capa | Dónde | Qué hace |
+|---|---|---|
+| Configuración | `config.py` | `Settings` inmutable y validado; las variables de entorno ganan al `.env` |
+| API | `api/app.py` | Fábrica `create_app(settings)`; el estado del nodo vive en `NodeState` (`app.state.node`); `app = create_app()` para uvicorn. Dos apps en un proceso son independientes (los tests usan `tests.helpers.make_app`) |
+| Cadena | `blockchain/core/` | Bloques, transacciones firmadas (ECDSA secp256k1, con `nonce` por cuenta), cadena con resolución de bifurcaciones y almacenamiento SQLite `chain.db` (§2.5) |
+| Contratos | `blockchain/contracts/`, `blockchain/vm/` | El estado es la reproducción de las TX confirmadas: cuentas, credenciales, tokens, insignias, votación y programas de la VM (guías en `docs/contratos.md` y `docs/vm.md`) |
+| Consenso | `blockchain/consensus/` | PoW con dificultad en bits o PBFT firmado, elegido con `CONSENSUS=pow\|pbft` para toda la red (§2.4, §4) |
+| Red | `blockchain/network/` | P2P TCP con conexiones persistentes y TLS mutuo opcional `P2P_TLS=on` (§4.8) |
+| IA y seguridad | `ai/`, `security/` | Detector de anomalías, analítica, monitor, simulador y laboratorio de ataques |
+
+La configuración completa, variable por variable, está en `.env.example`.
+
 ---
 
 ## 2. Decisiones de Diseño
@@ -351,8 +365,8 @@ no por mensaje.
 | **Sybil** | Identidades falsas para controlar la votación | Lista blanca de nodos + certificados TLS mutuo |
 | **Doble Gasto** | Enviar la misma TX a dos destinatarios | Requerir 6+ confirmaciones; PBFT da finalidad inmediata |
 | **Eclipse** | Aislar un nodo de la red real | Conexión a múltiples peers independientes |
-| **Replay** | Re-enviar una TX válida anterior | TX ID único basado en hash + timestamp |
-| **Timestamp manipulation** | Alterar timestamp para validar TXs futuras | Ventana de 60 s máximo en el futuro |
+| **Replay** | Re-enviar una TX válida anterior | TX ID único (hash) y `nonce` por cuenta: cada TX firmada debe llevar nonce confirmado + 1 (P0-9), así una TX no puede confirmarse dos veces |
+| **Timestamp manipulation** | Alterar timestamp para validar TXs futuras | La TX con timestamp en el futuro se rechaza (`Timestamp en el futuro`, hasta 60 s de tolerancia; una TX de más de 1 h se rechaza al admitirla al mempool, política local) |
 
 ---
 
