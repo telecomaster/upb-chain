@@ -1826,7 +1826,7 @@ async def threat_summary(node: NodeState = Depends(get_node)):
 @router.get("/security/attack-simulation")
 async def attack_simulation(node: NodeState = Depends(get_node)):
     return full_security_analysis(
-        node_count=len(node.p2p.peers) + 1,
+        node_count=len(node.p2p.peers_snapshot()) + 1,
         honest_hash_rate=70.0,
         attacker_hash_rate=30.0,
     )

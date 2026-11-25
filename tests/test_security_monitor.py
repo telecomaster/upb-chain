@@ -198,7 +198,7 @@ def test_sin_lista_de_peers_no_hay_pares_desconocidos(red):
     vistos = []
     a = red.nodo("a", sync_interval=60, on_unknown_peer=vistos.append)
     b = red.nodo("b", peers=[a], sync_interval=60)
-    assert _esperar(lambda: any(p.is_active for p in a.peers.values()))
+    assert _esperar(lambda: any(p.is_active for p in a.peers_snapshot()))
     assert vistos == []
 
 

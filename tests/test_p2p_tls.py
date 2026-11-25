@@ -43,7 +43,7 @@ def nodos():
 
 
 def _activo(n, otro):
-    return any(p.is_active and p.port == otro.port for p in list(n.peers.values()))
+    return any(p.is_active and p.port == otro.port for p in n.peers_snapshot())
 
 
 def test_dos_nodos_con_mtls_se_conectan_y_usan_tls_13(pki, nodos):

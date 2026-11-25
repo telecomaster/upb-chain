@@ -230,6 +230,11 @@ class P2PNode:
         self.retry_max = retry_max
         self.timeout = timeout
 
+        # ``peers`` lo modifican los hilos que atienden conexiones, el de mantenimiento y los
+        # de sincronización. Toda mutación va bajo ``_peers_lock`` y quien lo RECORRA debe usar
+        # ``peers_snapshot()`` (copia tomada bajo el candado): iterar el dict crudo mientras otro
+        # hilo agrega un par lanza "dictionary changed size during iteration". El candado nunca
+        # se mantiene durante E/S de red (volvería el bloqueo mutuo entre nodos).
         self.peers: Dict[str, Peer] = {}
         self._peers_lock = threading.Lock()
         self._seen_messages: Set[str] = set()
@@ -468,7 +473,8 @@ class P2PNode:
                         raise
 
     def _cn_de(self, host: str, port: int) -> Optional[str]:
-        link = self._links.get((host, port, "ctl"))
+        with self._links_lock:
+            link = self._links.get((host, port, "ctl"))
         return link.cn if link is not None else None
 
     # ── Estado local ──────────────────────────────────────────────────────────
@@ -476,8 +482,7 @@ class P2PNode:
     def _status(self) -> dict:
         """Estado que se anuncia en HANDSHAKE y SYNC_RESPONSE."""
         bc = self.blockchain
-        with self._peers_lock:
-            known = [p.address for p in self.peers.values() if p.is_active]
+        known = [p.address for p in self.active_peers()]
         return {
             "node_id": self.node_id,
             "host": self.advertise_host,
@@ -553,8 +558,7 @@ class P2PNode:
         elif msg_type == MSG_SYNC_REQUEST:
             self._send_framed(conn, {"type": MSG_SYNC_RESPONSE, **self._status()})
         elif msg_type == MSG_GET_PEERS:
-            with self._peers_lock:
-                peer_list = [p.to_dict() for p in self.peers.values() if p.is_active]
+            peer_list = [p.to_dict() for p in self.active_peers()]
             self._send_framed(conn, {"type": MSG_PEERS, "data": peer_list})
         elif msg_type == MSG_PING:
             self._send_framed(conn, {"type": MSG_PONG, "node_id": self.node_id})
@@ -583,9 +587,7 @@ class P2PNode:
             self._send_framed(conn, {"type": MSG_HANDSHAKE, **self._status()})
             return
         if self.on_unknown_peer and self.known_peers and f"{host}:{port}" not in self.known_peers:
-            with self._peers_lock:
-                nuevo = f"{host}:{port}" not in self.peers
-            if nuevo:
+            if self.get_peer(f"{host}:{port}") is None:
                 self._notify(self.on_unknown_peer, f"{host}:{port}")
         # Se registra al par ANTES de responder: si no, el cliente recibe el HANDSHAKE y
         # puede observar que este nodo aún no lo conoce (carrera intermitente).
@@ -693,7 +695,8 @@ class P2PNode:
 
     # ── Pares ─────────────────────────────────────────────────────────────────
 
-    def _register_peer(self, host: str, port: int, status: dict) -> Peer:
+    def _register_peer(self, host: str, port: int, status: dict,
+                       latency_ms: Optional[float] = None) -> Peer:
         """Marca un par como activo con el estado recibido en HANDSHAKE/SYNC_RESPONSE."""
         address = f"{host}:{port}"
         now = time.time()
@@ -710,7 +713,32 @@ class P2PNode:
             peer.failed_attempts = 0
             peer.last_seen = now
             peer.next_status = now + self.sync_interval
+            if latency_ms is not None:
+                peer.latency_ms = latency_ms
         return peer
+
+    def peers_snapshot(self) -> List[Peer]:
+        """Copia de la lista de pares tomada bajo el candado: se puede recorrer sin carreras.
+
+        Los objetos ``Peer`` son los mismos (sus campos pueden cambiar después), pero la lista
+        no: otro hilo puede agregar o quitar pares mientras se recorre.
+        """
+        with self._peers_lock:
+            return list(self.peers.values())
+
+    def active_peers(self) -> List[Peer]:
+        """Pares activos (HANDSHAKE exitoso) según una copia tomada bajo el candado."""
+        return [p for p in self.peers_snapshot() if p.is_active]
+
+    def get_peer(self, address: str) -> Optional[Peer]:
+        """Par registrado en ``"host:port"`` o None."""
+        with self._peers_lock:
+            return self.peers.get(address)
+
+    def remove_peer(self, address: str) -> None:
+        """Olvida al par ``"host:port"`` (rechazado o el propio nodo)."""
+        with self._peers_lock:
+            self.peers.pop(address, None)
 
     def add_peer(self, host: str, port: int) -> None:
         """Agrega un par conocido (p. ej. de PEERS); el hilo de mantenimiento lo conecta."""
@@ -741,7 +769,7 @@ class P2PNode:
     def connect_to_peer(self, host: str, port: int) -> bool:
         """HANDSHAKE con un par; si tiene más trabajo, se sincroniza. False si falla o se rechaza."""
         self.add_peer(host, port)
-        peer = self.peers.get(f"{host}:{port}")
+        peer = self.get_peer(f"{host}:{port}")
         try:
             start = time.perf_counter()
             reply = self._request(host, port, {"type": MSG_HANDSHAKE, **self._status()})
@@ -758,15 +786,13 @@ class P2PNode:
         if reply.get("type") != MSG_HANDSHAKE or self._incompatible(reply):
             motivo = reply.get("reason") or self._incompatible(reply) or "respuesta inválida"
             logger.warning(f"Par {host}:{port} rechazado: {motivo}")
-            with self._peers_lock:
-                self.peers.pop(f"{host}:{port}", None)
+            self.remove_peer(f"{host}:{port}")
             return False
         if self._is_self(host, port, reply.get("node_id", "")):
-            with self._peers_lock:
-                self.peers.pop(f"{host}:{port}", None)
+            self.remove_peer(f"{host}:{port}")
             return False
-        peer = self._register_peer(host, port, reply)
-        peer.latency_ms = (time.perf_counter() - start) * 1000
+        peer = self._register_peer(host, port, reply,
+                                   latency_ms=(time.perf_counter() - start) * 1000)
         self._learn_peers(reply.get("peers", []))
         if peer.work > self._local_work():
             self.sync_with(peer.address)
@@ -811,8 +837,7 @@ class P2PNode:
 
     def sync_with_peers(self) -> int:
         """Sincroniza con todos los pares activos; devuelve cuántas veces se adoptó cadena."""
-        with self._peers_lock:
-            active = [p.address for p in self.peers.values() if p.is_active]
+        active = [p.address for p in self.active_peers()]
         return sum(1 for address in active if self.sync_with(address))
 
     def _check_status(self, peer: Peer) -> None:
@@ -826,8 +851,8 @@ class P2PNode:
         if reply.get("type") != MSG_SYNC_RESPONSE or self._incompatible(reply):
             self._mark_failed(peer)
             return
-        self._register_peer(peer.host, peer.port, reply)
-        peer.latency_ms = (time.perf_counter() - start) * 1000
+        peer = self._register_peer(peer.host, peer.port, reply,
+                                   latency_ms=(time.perf_counter() - start) * 1000)
         if peer.work > self._local_work():
             self.sync_with(peer.address)
 
@@ -836,9 +861,7 @@ class P2PNode:
         tick = max(0.05, min(0.5, self.retry_base, self.sync_interval))
         while not self._stop_event.is_set():
             now = time.time()
-            with self._peers_lock:
-                peers = list(self.peers.values())
-            for peer in peers:
+            for peer in self.peers_snapshot():
                 if self._stop_event.is_set():
                     break
                 if not peer.is_active and now >= peer.next_retry:
@@ -880,9 +903,7 @@ class P2PNode:
         # `origin`: a quién pedir la cadena si el bloque no extiende la punta del receptor.
         message = {**message, "origin": {"host": self.advertise_host, "port": self.port}}
         sent = 0
-        with self._peers_lock:
-            active = [p for p in self.peers.values() if p.is_active]
-        for peer in active:
+        for peer in self.active_peers():
             try:
                 self._request(peer.host, peer.port, message, expect_reply=False)
                 sent += 1
@@ -895,11 +916,10 @@ class P2PNode:
         Envía *message* únicamente a los *max_peers* peers con menor latencia.
         Retorna el número de peers a los que se envió exitosamente.
         """
-        with self._peers_lock:
-            active = sorted(
-                [p for p in self.peers.values() if p.is_active],
-                key=lambda p: p.latency_ms if p.latency_ms > 0 else float("inf"),
-            )
+        active = sorted(
+            self.active_peers(),
+            key=lambda p: p.latency_ms if p.latency_ms > 0 else float("inf"),
+        )
         sent = 0
         for peer in active[:max_peers]:
             try:
@@ -917,8 +937,7 @@ class P2PNode:
     # ── Estadísticas ──────────────────────────────────────────────────────────
 
     def get_network_stats(self) -> dict:
-        with self._peers_lock:
-            peers = list(self.peers.values())
+        peers = self.peers_snapshot()
         active = [p for p in peers if p.is_active]
         latencies = [p.latency_ms for p in active if p.latency_ms > 0]
         with self._stats_lock:

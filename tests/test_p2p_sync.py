@@ -124,8 +124,8 @@ def test_bloque_minado_en_b_se_propaga_a_a(red):
     # sync_interval largo: sólo la propagación (push) puede explicar la llegada.
     a = red.nodo("a", sync_interval=60)
     b = red.nodo("b", peers=[a], sync_interval=60)
-    assert _esperar(lambda: any(p.is_active for p in a.peers.values()))
-    assert _esperar(lambda: any(p.is_active for p in b.peers.values()))
+    assert _esperar(lambda: any(p.is_active for p in a.peers_snapshot()))
+    assert _esperar(lambda: any(p.is_active for p in b.peers_snapshot()))
 
     _minar(b, 1)
     assert _esperar(_alcanzo(a, b))
@@ -137,7 +137,7 @@ def test_bloque_minado_en_b_se_propaga_a_a(red):
 def test_bloque_que_no_extiende_la_punta_dispara_sincronizacion(red):
     a = red.nodo("a", sync_interval=60)
     b = red.nodo("b", peers=[a], sync_interval=60)
-    assert _esperar(lambda: any(p.is_active for p in a.peers.values()))
+    assert _esperar(lambda: any(p.is_active for p in a.peers_snapshot()))
     # A mina 3 bloques SIN anunciarlos; luego anuncia sólo el último.
     for _ in range(3):
         a.blockchain.add_block(mine_candidate(a.blockchain))
@@ -148,7 +148,7 @@ def test_bloque_que_no_extiende_la_punta_dispara_sincronizacion(red):
 def test_bloque_invalido_se_ignora(red):
     a = red.nodo("a", sync_interval=60)
     b = red.nodo("b", peers=[a], sync_interval=60)
-    assert _esperar(lambda: any(p.is_active for p in a.peers.values()))
+    assert _esperar(lambda: any(p.is_active for p in a.peers_snapshot()))
     falso = mine_candidate(a.blockchain)
     falso.header.difficulty = 0
     falso.hash = falso.compute_hash()
@@ -162,7 +162,7 @@ def test_bloque_invalido_se_ignora(red):
 def test_tx_se_propaga_al_mempool_del_par(red):
     a = red.nodo("a", sync_interval=60)
     b = red.nodo("b", peers=[a], sync_interval=60)
-    assert _esperar(lambda: any(p.is_active for p in a.peers.values()))
+    assert _esperar(lambda: any(p.is_active for p in a.peers_snapshot()))
     w = Wallet.generate()
     tx = Transaction(type=TransactionType.DATA_RECORD, sender=w.address,
                      recipient="DEST", payload={"x": 1}, nonce=1)
@@ -180,7 +180,7 @@ def test_par_con_otro_genesis_es_rechazado(red):
     c.genesis_hash = "f" * 64          # simula una red distinta
     assert c.connect_to_peer(HOST, a.port) is False
     assert f"{HOST}:{a.port}" not in c.peers
-    assert not any(p.node_id == "c" for p in a.peers.values())
+    assert not any(p.node_id == "c" for p in a.peers_snapshot())
     assert c.blockchain.height == 0
     # Y A tampoco acepta a C cuando es A quien marca.
     assert a.connect_to_peer(HOST, c.port) is False
@@ -214,7 +214,7 @@ def test_par_que_anuncia_0000_se_registra_con_su_ip_real(red):
     red.nodos.append(x)
     assert x.connect_to_peer(HOST, a.port)
     assert f"{HOST}:{x.port}" in a.peers
-    assert not any(p.host == "0.0.0.0" for p in a.peers.values())
+    assert not any(p.host == "0.0.0.0" for p in a.peers_snapshot())
 
 
 def test_handshake_registra_al_par_antes_de_responder(red):
@@ -252,7 +252,7 @@ def test_bloques_competidores_simultaneos_no_se_bloquean_mutuamente(red):
     b = red.nodo("b", sync_interval=60, timeout=10.0)
     a.add_peer(HOST, b.port)
     b.add_peer(HOST, a.port)
-    assert _esperar(lambda: all(p.is_active for n in (a, b) for p in n.peers.values()))
+    assert _esperar(lambda: all(p.is_active for n in (a, b) for p in n.peers_snapshot()))
     # Cadenas divergentes (se mina tras conectar, sin sync previo); B con más trabajo.
     _minar_local(a, 2)
     _minar_local(b, 3)
@@ -296,3 +296,54 @@ def test_rafaga_de_bloques_no_lanza_hilos_de_sync_sin_limite(red, monkeypatch):
     # Lo coalescido produce, como mucho, una pasada adicional.
     assert _esperar(lambda: not a._sync_bg)
     assert len(lanzados) <= 2
+
+
+def test_recorrer_pares_mientras_otro_hilo_los_modifica_no_falla():
+    """Regresión (CI intermitente): ``dictionary changed size during iteration``.
+
+    Los hilos de conexión agregan y quitan pares de ``node.peers`` mientras otros hilos
+    (tests, API, métricas) los recorren. Un hilo alterna altas y bajas por la API del nodo y
+    otro lee con los accesores públicos, que nunca deben fallar. (Con esta carga, recorrer el
+    dict crudo falla miles de veces por segundo en un portátil; no se afirma aquí porque
+    depende del planificador de hilos y volvería intermitente el test.)
+    """
+    import sys
+    import threading
+
+    previo = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)          # cambios de hilo muy frecuentes: la carrera aflora
+    nodo = P2PNode("a", HOST, 0)         # sin start(): sólo la estructura de pares
+    alto = threading.Event()
+
+    def agitar():
+        i = 0
+        while not alto.is_set():
+            i += 1
+            host = f"10.0.{(i // 250) % 250}.{i % 250}"
+            nodo._register_peer(host, 9000, {"node_id": host})
+            if i % 2 == 0:
+                nodo.remove_peer(f"10.0.{((i - 40) // 250) % 250}.{(i - 40) % 250}:9000")
+
+    def contar_errores(leer, segundos):
+        errores, limite = 0, time.perf_counter() + segundos
+        while time.perf_counter() < limite:
+            try:
+                leer()
+            except RuntimeError:
+                errores += 1
+        return errores
+
+    hilo = threading.Thread(target=agitar, daemon=True)
+    hilo.start()
+    try:
+        seguros = contar_errores(lambda: (
+            any(p.is_active and False for p in nodo.peers_snapshot()),
+            nodo.active_peers(),
+            nodo.get_network_stats(),
+            nodo._status(),
+        ), 0.7)
+    finally:
+        alto.set()
+        hilo.join(2)
+        sys.setswitchinterval(previo)
+    assert seguros == 0

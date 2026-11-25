@@ -319,7 +319,7 @@ def _conectar(p2p_a: P2PNode, p2p_b: P2PNode) -> bool:
     if not p2p_a.connect_to_peer(HOST, p2p_b.port):
         return False
     return _esperar(lambda: any(p.is_active and p.port == p2p_a.port
-                                for p in list(p2p_b.peers.values())), 5)
+                                for p in p2p_b.peers_snapshot()), 5)
 
 
 # ── 1. Doble gasto ────────────────────────────────────────────────────────────
@@ -695,10 +695,10 @@ def _sybil_ronda(consenso: str, n: int, tls: bool) -> dict:
             intentos.append((vecino, "cert. de 'atacante' haciéndose pasar por un nodo permitido",
                              impostor.connect_to_peer(HOST, objetivo.p2p.port)))
         honestos_ids = set(ids)
-        _esperar(lambda: sum(1 for p in list(objetivo.p2p.peers.values())
+        _esperar(lambda: sum(1 for p in objetivo.p2p.peers_snapshot()
                              if p.is_active and p.node_id not in honestos_ids) >= sum(
                                  1 for x in intentos if x[2]), 3)
-        aceptados = sorted(p.node_id for p in list(objetivo.p2p.peers.values())
+        aceptados = sorted(p.node_id for p in objetivo.p2p.peers_snapshot()
                            if p.is_active and p.node_id not in honestos_ids)
         alertas = _alertas(objetivo, ("UNKNOWN_PEER",))
         narr.append(f"[{etiqueta}] nodo objetivo {objetivo_id} (lista blanca: {', '.join(lista)}): "
