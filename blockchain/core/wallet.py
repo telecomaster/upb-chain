@@ -13,6 +13,28 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.backends import default_backend
 
 
+def derive_address(public_key_hex: str) -> str:
+    """Deriva la dirección UPB a partir de la llave pública (DER en hex)."""
+    pub_bytes = bytes.fromhex(public_key_hex)
+    sha256_hash = hashlib.sha256(pub_bytes).digest()
+    ripemd160 = hashlib.new("ripemd160")
+    ripemd160.update(sha256_hash)
+    raw = ripemd160.digest()
+    checksum = hashlib.sha256(hashlib.sha256(raw).digest()).digest()[:4]
+    return "UPB" + (raw + checksum).hex().upper()[:32]
+
+
+def public_key_from_private(private_key_hex: str) -> str:
+    """Obtiene la llave pública (DER SubjectPublicKeyInfo, hex) desde la privada."""
+    key = serialization.load_der_private_key(
+        bytes.fromhex(private_key_hex), password=None, backend=default_backend()
+    )
+    return key.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).hex()
+
+
 @dataclass
 class Wallet:
     private_key_hex: str
@@ -39,13 +61,7 @@ class Wallet:
 
     @staticmethod
     def _derive_address(public_key_hex: str) -> str:
-        pub_bytes = bytes.fromhex(public_key_hex)
-        sha256_hash = hashlib.sha256(pub_bytes).digest()
-        ripemd160 = hashlib.new("ripemd160")
-        ripemd160.update(sha256_hash)
-        raw = ripemd160.digest()
-        checksum = hashlib.sha256(hashlib.sha256(raw).digest()).digest()[:4]
-        return "UPB" + (raw + checksum).hex().upper()[:32]
+        return derive_address(public_key_hex)
 
     def to_dict(self) -> dict:
         return {

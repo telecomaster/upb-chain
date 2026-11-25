@@ -44,7 +44,7 @@ Flujos de trabajo y orden de dependencias:
 - [x] **P0-1 Génesis determinista.** `block.py:create_genesis` usa `time.time()`. Génesis fijo
   (constante o `genesis.json` versionado, con la llave de autoridad UPB); rechazar peers con otro génesis.
   *Listo cuando:* dos nodos nuevos tienen el mismo hash de bloque 0.
-- [ ] **P0-2 Autenticación de TXs.** `transaction.py:is_valid` no verifica firmas y la TX no lleva
+- [x] **P0-2 Autenticación de TXs.** `transaction.py:is_valid` no verifica firmas y la TX no lleva
   llave pública. Agregar `public_key`, comprobar `address == derive(public_key)` y la firma ECDSA,
   rechazar TXs sin firma, incluir `fee` en el mensaje firmado.
   *Listo cuando:* una TX falsificada o sin firma recibe 400.

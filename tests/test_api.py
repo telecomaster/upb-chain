@@ -121,6 +121,7 @@ async def test_post_transaction_valid_returns_tx_id_and_pending(client):
         "recipient": "UPB_INTEGRATION_DEST",
         "payload": {"data": f"integration_test_{time.time_ns()}"},
         "fee": 0.0,
+        "private_key_hex": wallet["private_key"],
     }
     response = await client.post("/transactions", json=payload)
     assert response.status_code == 200
@@ -262,3 +263,81 @@ async def test_get_security_attack_simulation_returns_results(client):
     assert "51_percent" in body, "Falta resultado del ataque 51% en simulación"
     assert "sybil_no_mitigation" in body, "Falta resultado Sybil en simulación"
     assert "double_spend_6conf" in body, "Falta resultado Double-Spend en simulación"
+
+
+# ---------------------------------------------------------------------------
+# P0-2: autenticación de transacciones (firma + llave pública)
+# ---------------------------------------------------------------------------
+
+def _signed_tx(wallet, sender=None, **kw):
+    from blockchain.core.transaction import Transaction, TransactionType
+    tx = Transaction(
+        type=TransactionType.DATA_RECORD,
+        sender=sender or wallet.address,
+        recipient="UPB_AUTH_DEST",
+        payload={"data": f"auth_{time.time_ns()}"},
+        **kw,
+    )
+    tx.sign(wallet.private_key_hex)
+    return tx
+
+
+def _post_body(tx):
+    return {
+        "type": tx.type.value, "sender": tx.sender, "recipient": tx.recipient,
+        "payload": tx.payload, "fee": tx.fee, "timestamp": tx.timestamp,
+        "signature": tx.signature, "public_key": tx.public_key,
+    }
+
+
+@pytest.mark.asyncio
+async def test_post_transaction_client_signed_accepted(client):
+    from blockchain.core.wallet import Wallet
+    tx = _signed_tx(Wallet.generate(), fee=0.5)
+    r = await client.post("/transactions", json=_post_body(tx))
+    assert r.status_code == 200, r.text
+    assert r.json()["tx_id"] == tx.tx_id
+
+
+@pytest.mark.asyncio
+async def test_post_transaction_unsigned_rejected(client):
+    from blockchain.core.wallet import Wallet
+    w = Wallet.generate()
+    r = await client.post("/transactions", json={
+        "type": "DATA_RECORD", "sender": w.address, "recipient": "X",
+        "payload": {"data": f"unsigned_{time.time_ns()}"},
+    })
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_post_transaction_system_sender_rejected(client):
+    r = await client.post("/transactions", json={
+        "type": "TOKEN_TRANSFER", "sender": "SYSTEM", "recipient": "X",
+        "payload": {"amount": 1000},
+    })
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_post_transaction_forged_sender_rejected(client):
+    """Firmada con la llave de A pero declarando el sender B."""
+    from blockchain.core.wallet import Wallet
+    a, b = Wallet.generate(), Wallet.generate()
+    r = await client.post("/transactions", json={
+        "type": "DATA_RECORD", "sender": b.address, "recipient": "X",
+        "payload": {"data": f"forged_{time.time_ns()}"},
+        "private_key_hex": a.private_key_hex,
+    })
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_post_transaction_tampered_fee_or_amount_rejected(client):
+    from blockchain.core.wallet import Wallet
+    tx = _signed_tx(Wallet.generate(), fee=0.1)
+    body = _post_body(tx)
+    r = await client.post("/transactions", json={**body, "fee": 99.0})
+    assert r.status_code == 400
+    r = await client.post("/transactions", json={**body, "payload": {**tx.payload, "amount": 5}})
+    assert r.status_code == 400

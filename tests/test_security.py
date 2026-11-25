@@ -178,3 +178,50 @@ class TestSecurityMonitor:
         assert "threat_level" in summary
         assert "total_alerts" in summary
         assert "chain_reorgs" in summary
+
+
+# ── P0-2: Transaction.is_valid verifica autenticación ────────────────────────
+
+class TestTransactionAuthentication:
+    def _tx(self, w, **kw):
+        from blockchain.core.transaction import Transaction, TransactionType
+        return Transaction(type=TransactionType.DATA_RECORD, sender=kw.pop("sender", w.address),
+                           recipient="DEST", payload={"d": 1}, **kw)
+
+    def test_signed_valid(self):
+        from blockchain.core.wallet import Wallet
+        w = Wallet.generate()
+        tx = self._tx(w, fee=1.0)
+        tx.sign(w.private_key_hex)
+        assert tx.is_valid() == (True, "OK")
+
+    def test_unsigned_invalid(self):
+        from blockchain.core.wallet import Wallet
+        assert not self._tx(Wallet.generate()).is_valid()[0]
+
+    def test_forged_sender_invalid(self):
+        from blockchain.core.wallet import Wallet
+        a, b = Wallet.generate(), Wallet.generate()
+        tx = self._tx(a, sender=b.address)
+        tx.sign(a.private_key_hex)
+        assert not tx.is_valid()[0]
+
+    def test_tampered_fee_and_payload_invalid(self):
+        from blockchain.core.wallet import Wallet
+        w = Wallet.generate()
+        tx = self._tx(w, fee=1.0)
+        tx.sign(w.private_key_hex)
+        tx.fee = 0.0
+        assert not tx.is_valid()[0]
+        tx.fee = 1.0
+        assert tx.is_valid()[0]
+        tx.payload = {"d": 2}
+        assert not tx.is_valid()[0]
+
+    def test_roundtrip_dict_keeps_validity(self):
+        from blockchain.core.transaction import Transaction
+        from blockchain.core.wallet import Wallet
+        w = Wallet.generate()
+        tx = self._tx(w)
+        tx.sign(w.private_key_hex)
+        assert Transaction.from_dict(tx.to_dict()).is_valid()[0]

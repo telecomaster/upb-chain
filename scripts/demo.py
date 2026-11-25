@@ -110,6 +110,8 @@ def demo():
         recipient="REGISTRY",
         payload={"record": "Acta de grado 2025-11"},
     )
+    tx_vote.sign(student_wallet.private_key_hex)
+    tx_data.sign(university_wallet.private_key_hex)
     for tx in [tx_cred, tx_vote, tx_data]:
         ok, _ = chain.add_transaction(tx)
         print(f"✓ TX {tx.type:<22} id={tx.tx_id[:16]}…  {'en mempool' if ok else 'rechazada'}")

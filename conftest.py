@@ -50,6 +50,7 @@ def funded_chain(tmp_path):
                     "value": block_idx * 10 + tx_idx,
                 },
             )
+            tx.sign(w.private_key_hex)
             bc.add_transaction(tx)
         candidate = bc.create_candidate_block()
         bc.add_block(candidate)

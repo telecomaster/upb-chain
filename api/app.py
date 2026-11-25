@@ -105,6 +105,10 @@ class TransactionRequest(BaseModel):
     payload: dict
     private_key_hex: Optional[str] = None
     fee: float = 0.0
+    # Alternativa a private_key_hex: TX firmada por el cliente.
+    signature: Optional[str] = None
+    public_key: Optional[str] = None
+    timestamp: Optional[float] = None
 
 
 class CredentialRequest(BaseModel):
@@ -238,8 +242,18 @@ async def create_transaction(request: TransactionRequest):
         payload=request.payload,
         fee=request.fee,
     )
-    if request.private_key_hex:
-        tx.sign(request.private_key_hex)
+    if request.signature:
+        # TX firmada por el cliente: el servidor sólo verifica.
+        if request.timestamp is not None:
+            tx.timestamp = request.timestamp
+            tx.tx_id = tx._compute_id()
+        tx.signature = request.signature
+        tx.public_key = request.public_key or ""
+    elif request.private_key_hex:
+        try:
+            tx.sign(request.private_key_hex)
+        except Exception:
+            raise HTTPException(400, "Llave privada inválida")
 
     anomaly = tx_anomaly_detector.predict(tx.to_dict())
     security_monitor.on_transaction(tx.to_dict())
@@ -306,6 +320,23 @@ async def register_issuer(request: RegisterIssuerRequest):
 
 @app.post("/credentials/issue")
 async def issue_credential(request: CredentialRequest):
+    # La TX se firma y valida ANTES de mutar el contrato, para que una llave
+    # que no corresponde al emisor no deje una credencial huérfana.
+    try:
+        tx = create_credential_transaction(
+            issuer_address=request.issuer_address,
+            student_address=request.student_address,
+            credential_data=request.credential_data,
+            private_key_hex=request.private_key_hex,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception:
+        raise HTTPException(400, "Llave privada inválida")
+    tx_ok, tx_reason = tx.is_valid()
+    if not tx_ok:
+        raise HTTPException(400, tx_reason)
+
     ok, reason, credential = credential_contract.issue_credential(
         request.issuer_address,
         request.student_address,
@@ -314,12 +345,6 @@ async def issue_credential(request: CredentialRequest):
     if not ok:
         raise HTTPException(400, reason)
 
-    tx = create_credential_transaction(
-        issuer_address=request.issuer_address,
-        student_address=request.student_address,
-        credential_data=request.credential_data,
-        private_key_hex=request.private_key_hex,
-    )
     blockchain.add_transaction(tx)
     p2p.broadcast_transaction(tx.to_dict())
 

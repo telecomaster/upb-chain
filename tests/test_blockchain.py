@@ -63,6 +63,7 @@ class TestBlockchain:
             recipient="DEST",
             payload={"data": "test"},
         )
+        tx.sign(wallet.private_key_hex)
         ok, reason = chain.add_transaction(tx)
         assert ok, reason
         assert len(chain.mempool) == 1
@@ -74,6 +75,7 @@ class TestBlockchain:
             recipient="DEST",
             payload={"data": "test"},
         )
+        tx.sign(wallet.private_key_hex)
         chain.add_transaction(tx)
         ok, reason = chain.add_transaction(tx)
         assert not ok
@@ -86,6 +88,7 @@ class TestBlockchain:
             recipient="DEST",
             payload={"data": "test"},
         )
+        tx.sign(wallet.private_key_hex)
         chain.add_transaction(tx)
         candidate = chain.create_candidate_block()
         assert candidate.header.index == 1
@@ -103,6 +106,7 @@ class TestBlockchain:
             recipient="DEST",
             payload={"data": "test"},
         )
+        tx.sign(wallet.private_key_hex)
         chain.add_transaction(tx)
         candidate = chain.create_candidate_block()
         chain.add_block(candidate)
@@ -150,8 +154,11 @@ class TestBlockchain:
             fee=1.0,
         )
         # Insertamos en orden: bajo → alto → medio
+        low_fee_tx.sign(wallet.private_key_hex)
         chain.add_transaction(low_fee_tx)
+        high_fee_tx.sign(wallet.private_key_hex)
         chain.add_transaction(high_fee_tx)
+        med_fee_tx.sign(wallet.private_key_hex)
         chain.add_transaction(med_fee_tx)
 
         candidate = chain.create_candidate_block()
@@ -175,6 +182,7 @@ class TestBlockchain:
             recipient="DEST",
             payload={"data": "persistence_test"},
         )
+        tx.sign(w.private_key_hex)
         bc1.add_transaction(tx)
         candidate = bc1.create_candidate_block()
         ok, reason = bc1.add_block(candidate)

@@ -81,6 +81,7 @@ def test_validate_chain_50_blocks_under_2_seconds(tmp_path, _shared_wallet):
             recipient="DEST",
             payload={"i": i, "data": "perf_block"},
         )
+        tx.sign(wallet.private_key_hex)
         bc.add_transaction(tx)
         candidate = bc.create_candidate_block()
         bc.add_block(candidate)

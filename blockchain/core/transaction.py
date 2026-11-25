@@ -31,6 +31,7 @@ class Transaction:
     signature: str = ""
     tx_id: str = ""
     fee: float = 0.0
+    public_key: str = ""
 
     def __post_init__(self):
         if not self.tx_id:
@@ -43,11 +44,15 @@ class Transaction:
             "recipient": self.recipient,
             "payload": self.payload,
             "timestamp": self.timestamp,
+            "fee": self.fee,
         }, sort_keys=True)
         return hashlib.sha256(content.encode()).hexdigest()
 
     def sign(self, private_key_hex: str) -> None:
+        """Firma la TX: adjunta la llave pública derivada de la privada y firma el payload canónico."""
         from security.crypto_utils import sign_data
+        from blockchain.core.wallet import public_key_from_private
+        self.public_key = public_key_from_private(private_key_hex)
         message = self._get_signing_message()
         self.signature = sign_data(message, private_key_hex)
 
@@ -64,6 +69,8 @@ class Transaction:
             "recipient": self.recipient,
             "payload": self.payload,
             "timestamp": self.timestamp,
+            "fee": self.fee,
+            "public_key": self.public_key,
         }, sort_keys=True)
 
     def to_dict(self) -> dict:
@@ -76,6 +83,7 @@ class Transaction:
             "timestamp": self.timestamp,
             "signature": self.signature,
             "fee": self.fee,
+            "public_key": self.public_key,
         }
 
     @classmethod
@@ -88,6 +96,7 @@ class Transaction:
             timestamp=data["timestamp"],
             signature=data.get("signature", ""),
             fee=data.get("fee", 0.0),
+            public_key=data.get("public_key", ""),
         )
         tx.tx_id = data["tx_id"]
         return tx
@@ -107,6 +116,32 @@ class Transaction:
             return False, "Timestamp en el futuro"
         if self.age_seconds() > 3600:
             return False, "Transacción expirada (antigüedad > 3600 s)"
+        return self._check_authentication()
+
+    def _check_authentication(self) -> tuple[bool, str]:
+        """Autenticación: firma presente, sender == dirección de la llave y firma ECDSA válida.
+
+        No hay excepción para remitentes "SYSTEM": ninguna TX sin firma entra por
+        el mempool/API. Las recompensas de minado (hoy inexistentes) deberán ir
+        como campo del bloque, no como Transaction.
+        """
+        from blockchain.core.wallet import derive_address
+        if not self.signature:
+            return False, "Transacción sin firma"
+        if not self.public_key:
+            return False, "Transacción sin llave pública"
+        try:
+            if derive_address(self.public_key) != self.sender:
+                return False, "El sender no corresponde a la llave pública"
+        except ValueError:
+            return False, "Llave pública malformada"
+        if self.tx_id != self._compute_id():
+            return False, "tx_id no coincide con el contenido"
+        try:
+            if not self.verify_signature(self.public_key):
+                return False, "Firma inválida"
+        except Exception:
+            return False, "Firma inválida"
         return True, "OK"
 
 
