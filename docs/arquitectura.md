@@ -34,6 +34,19 @@ La configuración completa, variable por variable, está en `.env.example`.
 
 La dificultad del PoW se mide en bits (§2.4) y se reajusta sola hacia 10 s por bloque, un ritmo que permite visualizar el proceso en clase sin esperas frustrantes.
 
+### 2.2 ¿Por qué ECDSA secp256k1 y no RSA?
+
+- Llaves 32 veces más pequeñas con la misma seguridad (256 bits vs 3072 bits RSA)
+- Estándar en Bitcoin y Ethereum: validado por millones de implementaciones
+- Operaciones de firma ~10× más rápidas en ARM Cortex-A76 (RPi5)
+
+### 2.3 ¿Por qué Isolation Forest para anomalías?
+
+- **No supervisado**: no requiere etiquetas previas (datos de ataque)
+- **O(n log n)** de entrenamiento: escala bien a miles de TXs por día
+- **Interpretable**: se puede explicar qué características activaron la alarma
+- **Liviano**: corre cómodamente en RPi5 con 16 GB RAM
+
 ### 2.4 Dificultad en bits y trabajo acumulado (P2-5)
 
 **Unidad.** `header.difficulty` es el número de bits iniciales en cero que debe tener el hash
@@ -139,19 +152,6 @@ otra dificultad, y fotos dañadas (se ignoran y se reproduce desde la anterior).
 validación completa y el archivo se renombra a `chain.json.migrated` (no se borra). Para ver la
 cadena como JSON: `venv\Scripts\python.exe scripts\exportar_cadena.py [DATA_DIR] [-o salida.json]`
 (abre la base en solo lectura; sirve con el nodo encendido).
-
-### 2.2 ¿Por qué ECDSA secp256k1 y no RSA?
-
-- Llaves 32 veces más pequeñas con la misma seguridad (256 bits vs 3072 bits RSA)
-- Estándar en Bitcoin y Ethereum: validado por millones de implementaciones
-- Operaciones de firma ~10× más rápidas en ARM Cortex-A76 (RPi5)
-
-### 2.3 ¿Por qué Isolation Forest para anomalías?
-
-- **No supervisado**: no requiere etiquetas previas (datos de ataque)
-- **O(n log n)** de entrenamiento: escala bien a miles de TXs por día
-- **Interpretable**: se puede explicar qué características activaron la alarma
-- **Liviano**: corre cómodamente en RPi5 con 16 GB RAM
 
 ---
 
