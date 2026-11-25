@@ -111,6 +111,31 @@ def test_conexion_persistente_se_reutiliza(pki, nodos):
     assert len(b._inbound) == 1                              # una sola conexión para 5 mensajes
 
 
+def test_mensajes_sin_respuesta_reutilizan_la_conexion_tls_sin_perderse(pki, nodos):
+    """Regresión: el canal "pbft" nunca lee del socket. Los tickets de sesión TLS 1.3 que el
+    servidor envía tras el apretón de manos dejaban el socket "legible", ``viva()`` lo daba por
+    muerto y se reabría la conexión; cerrar un socket con datos sin leer manda RST y el par
+    descartaba los mensajes que aún no había leído (PBFT perdía PREPARE/COMMIT sin error)."""
+    import time
+    recibidos = []
+
+    def lento(m):                       # receptor ocupado: los mensajes esperan en su búfer
+        recibidos.append(m["i"])
+        time.sleep(0.01)
+
+    a, b = _nodo(pki, "a"), _nodo(pki, "b", on_pbft_message=lento)
+    nodos += [a, b]
+    a.send_pbft(HOST, b.port, {"i": 0})
+    assert esperar(lambda: recibidos == [0], 5)
+    enlace = a._links[(HOST, b.port, "pbft")]
+    sock = enlace.sock
+    assert enlace.viva()                 # el par no cerró ni habló: la conexión sigue útil
+    for i in range(1, 30):
+        a.send_pbft(HOST, b.port, {"i": i})
+    assert esperar(lambda: len(recibidos) == 30, 10), f"perdidos: {set(range(30)) - set(recibidos)}"
+    assert recibidos == list(range(30)) and enlace.sock is sock
+
+
 def test_reconexion_tras_reinicio_del_par(pki, nodos):
     a, b = _nodo(pki, "a"), _nodo(pki, "b")
     nodos += [a, b]

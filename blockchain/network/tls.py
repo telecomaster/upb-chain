@@ -22,6 +22,12 @@ def crear_contextos(ca: str, cert: str, key: str) -> Tuple[ssl.SSLContext, ssl.S
         ctx.load_cert_chain(cert, key)
         ctx.load_verify_locations(cafile=ca)
     cliente.check_hostname = False     # ver el docstring del módulo
+    # Sin tickets de sesión TLS 1.3: el servidor los envía DESPUÉS del apretón de manos y, en
+    # los canales donde el cliente nunca lee (PBFT, difusiones sin respuesta), dejaban el socket
+    # "legible"; ``_Link.viva()`` lo daba por cerrado y se reabría la conexión. Cerrar un socket
+    # con datos sin leer manda RST y el par descartaba los mensajes que aún no había leído
+    # (pérdida silenciosa de PREPARE/COMMIT). No se usa reanudación de sesión: no hacen falta.
+    servidor.num_tickets = 0
     return servidor, cliente
 
 
