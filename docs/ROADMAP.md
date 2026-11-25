@@ -99,7 +99,7 @@ Flujos de trabajo y orden de dependencias:
   anomalías → alertas del monitor.
 - [ ] **P1-7 Módulos muertos.** Integrar lo útil de `sync.py` en P0-5 y borrarlo; exponer
   `hardening.py` y `eclipse.py` en `/security/*` o eliminarlos.
-- [ ] **P1-8 Almacenamiento a prueba de cortes.** Escritura atómica de `chain.json` (temporal +
+- [x] **P1-8 Almacenamiento a prueba de cortes.** Escritura atómica de `chain.json` (temporal +
   fsync + rename) y respaldo (riesgo R-2, microSD).
 - [ ] **P1-9 Endpoints de administración protegidos.** API key o solo-local para minar, peers,
   emisores y poda; CORS restringido.

@@ -36,6 +36,7 @@ Thread safety:
 import json
 import logging
 import os
+import shutil
 import time
 from pathlib import Path
 from threading import Lock
@@ -88,18 +89,41 @@ class Blockchain:
 
     def _load_or_init(self) -> None:
         chain_file = self.data_dir / "chain.json"
-        if chain_file.exists():
-            self._load_from_disk(chain_file)
-            logger.info(f"Cadena cargada: {len(self.chain)} bloques")
-        else:
+        bak_file = self.data_dir / "chain.json.bak"
+        if not chain_file.exists() and not bak_file.exists():
             genesis = Block.create_genesis(self.node_id)
             self.chain.append(genesis)
             self._save_to_disk()
             logger.info("Génesis creado")
+            return
+        try:
+            data = self._read_json(chain_file)
+        except (OSError, ValueError) as e:
+            # Archivo ausente o JSON truncado (corte de energía): usar el respaldo.
+            if not bak_file.exists():
+                raise ValueError(f"{chain_file}: no se pudo leer: {e}") from e
+            logger.warning(
+                f"chain.json no legible ({e}); cargando respaldo chain.json.bak"
+            )
+            data = self._read_json(bak_file)
+            self._install_chain(data, bak_file)
+            # Reescribir chain.json sano; el corrupto no debe pisar el respaldo.
+            if chain_file.exists():
+                chain_file.unlink()
+            self._save_to_disk()
+            logger.info(f"Cadena restaurada desde respaldo: {len(self.chain)} bloques")
+            return
+        self._install_chain(data, chain_file)
+        logger.info(f"Cadena cargada: {len(self.chain)} bloques")
 
-    def _load_from_disk(self, path: Path) -> None:
+    @staticmethod
+    def _read_json(path: Path) -> list:
+        """Lee y decodifica el JSON de la cadena. Lanza OSError o ValueError."""
         with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+            return json.load(f)
+
+    def _install_chain(self, data: list, path: Path) -> None:
+        """Valida `data` (lista de bloques serializados) y la adopta como cadena."""
         chain = [Block.from_dict(b) for b in data]
         ok, reason = self._check_genesis(chain)
         if not ok:
@@ -125,9 +149,27 @@ class Blockchain:
         return True, "OK"
 
     def _save_to_disk(self) -> None:
+        """Escritura atómica (P1-8): temporal + fsync + respaldo + reemplazo.
+
+        Si el proceso se corta antes de `os.replace`, chain.json queda intacto.
+        Antes del reemplazo, la versión anterior se copia a chain.json.bak.
+        """
         chain_file = self.data_dir / "chain.json"
-        with open(chain_file, "w", encoding="utf-8") as f:
-            json.dump([b.to_dict() for b in self.chain], f, indent=2)
+        tmp_file = self.data_dir / "chain.json.tmp"
+        bak_file = self.data_dir / "chain.json.bak"
+        try:
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump([b.to_dict() for b in self.chain], f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            if chain_file.exists():
+                shutil.copy2(chain_file, bak_file)
+            os.replace(tmp_file, chain_file)
+        except BaseException:
+            # No dejar un temporal a medio escribir; chain.json sigue como estaba.
+            if tmp_file.exists():
+                tmp_file.unlink()
+            raise
 
     # ── Propiedades ───────────────────────────────────────────────────────────
 
