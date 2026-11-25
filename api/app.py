@@ -1472,6 +1472,27 @@ async def verify_page(credential_id: str, node: NodeState = Depends(get_node)):
     return HTMLResponse(body, status_code=404 if st["status"] == "NOT_FOUND" else 200)
 
 
+# ── Kiosco verificador (idea 4) ───────────────────────────────────────────────
+
+@router.get("/kiosco", response_class=HTMLResponse)
+@router.get("/kiosco/{credential_id}", response_class=HTMLResponse)
+async def kiosco(credential_id: str = ""):
+    """Página de pantalla completa para un kiosco: la prueba Merkle se verifica en el navegador."""
+    with open("dashboard/templates/kiosco.html", encoding="utf-8") as f:
+        return f.read().replace("__ID__", html.escape(credential_id, quote=True))
+
+
+@router.get("/blocks/{index}/certificate")
+async def block_certificate(index: int, node: NodeState = Depends(get_node)):
+    """Resumen del certificado PBFT del bloque: cantidad de firmantes distintos."""
+    cert = node.blockchain.certificates.get(index)
+    if cert is None:
+        raise HTTPException(404, "Sin certificado para ese bloque")
+    commits = cert.get("commits") or []
+    return {"index": index, "view": cert.get("view"), "digest": cert.get("digest"),
+            "signers": len({m.get("replica") for m in commits})}
+
+
 @router.get("/credentials/issuer/{address}")
 async def get_issuer_credentials(address: str, node: NodeState = Depends(get_node)):
     """Credenciales de un emisor (confirmadas y pendientes), solo resumen público."""

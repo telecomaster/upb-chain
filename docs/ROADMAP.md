@@ -176,6 +176,7 @@ Flujos de trabajo y orden de dependencias:
    *Arnés hecho en P1-1 (`scripts/experiments/carrera_consensos.py`, medido en un portátil); falta correrlo en las RPi.*
 3. **Anclaje público:** sellar el hash de la cabeza en Bitcoin con OpenTimestamps cada N bloques.
 4. **Kiosco verificador:** QR impreso en el diploma → página móvil con estado, prueba Merkle y anclaje.
+   *Hecho: `GET /kiosco` y `/kiosco/{id}` (`dashboard/static/kiosco.js`): escaneo con BarcodeDetector o ID manual, veredicto, prueba Merkle recalculada en el navegador con WebCrypto, firmantes del certificado PBFT y divulgación selectiva opcional; paridad JS/Python probada con Node. Falta el anclaje público (idea 3).*
 5. **RPi consciente de temperatura:** controlador que ajusta la dificultad según la temperatura.
 6. **Detección federada de anomalías** entre nodos.
 7. **Alertas explicables** con contribución por característica.

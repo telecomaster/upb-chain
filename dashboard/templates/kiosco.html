@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kiosco verificador UPB-Chain</title>
+<link rel="stylesheet" href="/static/kiosco.css"></head>
+<body data-id="__ID__"><main>
+<div class="card">
+<h1>UPB-Chain · Kiosco verificador</h1>
+<button id="btn-escanear" type="button">Escanear QR del diploma</button>
+<video id="video" playsinline muted hidden></video>
+<p id="aviso-cam"></p>
+<form id="form-id"><input id="id" placeholder="o escriba el ID de la credencial" autocomplete="off">
+<button type="submit">Verificar</button></form>
+</div>
+<div class="card" id="resultado" hidden>
+<p id="veredicto" class="veredicto"></p><p id="motivo"></p>
+<dl id="detalle"></dl>
+<p id="prueba" class="prueba"></p><p id="pbft"></p>
+<label>Paquete de divulgación selectiva (JSON, opcional)<input id="archivo" type="file" accept="application/json"></label>
+<ul id="divulgacion-res"></ul>
+</div>
+</main>
+<script type="module" src="/static/kiosco.js"></script>
+</body></html>
