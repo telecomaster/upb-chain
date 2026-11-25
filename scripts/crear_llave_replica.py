@@ -37,19 +37,28 @@ def main() -> None:
                         help="lista de réplicas a actualizar (se crea si no existe)")
     args = parser.parse_args()
 
-    llave = Path(args.llave or f"data/keys/pbft_{args.id}.json")
+    crear_llave_replica(args.id, args.address,
+                        Path(args.llave or f"data/keys/pbft_{args.id}.json"), Path(args.lista))
+
+
+def crear_llave_replica(replica_id: str, address: str, llave: Path, lista: Path) -> None:
+    """Crea la llave de ``replica_id`` en ``llave`` y la añade a ``lista``.
+
+    Termina con ``SystemExit`` (mensaje en español) si la llave ya existe, la réplica ya
+    figura en la lista o la lista resultante es inválida; no escribe nada en esos casos.
+    También la usa ``scripts/preparar_pbft_compose.py``.
+    """
     if llave.exists():
         sys.exit(f"{llave} ya existe; no se sobrescribe una llave de réplica.")
-    lista = Path(args.lista)
     replicas = []
     if lista.exists():
         with open(lista, encoding="utf-8") as f:
             replicas = json.load(f).get("replicas", [])
-        if any(r.get("id") == args.id for r in replicas):
-            sys.exit(f"{args.id} ya figura en {lista}; quitarla a mano antes de regenerar su llave.")
+        if any(r.get("id") == replica_id for r in replicas):
+            sys.exit(f"{replica_id} ya figura en {lista}; quitarla a mano antes de regenerar su llave.")
 
     wallet = Wallet.generate()
-    replicas.append({"id": args.id, "address": args.address, "public_key": wallet.public_key_hex})
+    replicas.append({"id": replica_id, "address": address, "public_key": wallet.public_key_hex})
     try:
         rs = ReplicaSet.from_list(replicas)       # valida antes de escribir nada
     except PBFTConfigError as e:
@@ -60,7 +69,7 @@ def main() -> None:
     with open(lista, "w", encoding="utf-8") as f:
         json.dump({"replicas": rs.to_list()}, f, indent=2)
         f.write("\n")
-    print(f"Llave privada de {args.id} guardada en {llave} (NO versionar).")
+    print(f"Llave privada de {replica_id} guardada en {llave} (NO versionar).")
     print(f"{lista}: {rs.n} réplica(s), f = {rs.f}"
           + ("" if rs.f else " (hacen falta 4 réplicas para tolerar 1 falla)"))
 

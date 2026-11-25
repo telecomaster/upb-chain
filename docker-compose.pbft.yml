@@ -1,0 +1,47 @@
+# P1-1: perfil PBFT (4 réplicas, f = 1) como override de docker-compose.yml.
+# Preparar llaves una vez:  venv\Scripts\python.exe scripts\preparar_pbft_compose.py
+# (crea ./data/pbft/, ignorado por git). Levantar:
+#   ADMIN_API_KEY=cambiame docker compose -f docker-compose.yml -f docker-compose.pbft.yml up --build -d
+# Cada nodo ve su llave privada en /pbft/replica.json y la lista común en /pbft/replicas.json
+# (ambas de solo lectura).
+# Opcional (P2-6, TLS mutuo): generar certificados con scripts/crear_ca.py y
+# scripts/emitir_cert_nodo.py, y descomentar P2P_TLS, P2P_TLS_DIR y el montaje de cada nodo.
+x-pbft: &pbft
+  CONSENSUS: pbft
+  PBFT_REPLICAS_FILE: /pbft/replicas.json
+  PBFT_KEY_FILE: /pbft/replica.json
+  # P2P_TLS: "on"
+  # P2P_TLS_DIR: /tls
+
+services:
+  node_1:
+    environment:
+      <<: *pbft
+    volumes:
+      - ./data/pbft/pbft_replicas.json:/pbft/replicas.json:ro
+      - ./data/pbft/pbft_node_1.json:/pbft/replica.json:ro
+      # - ./data/tls/node_1:/tls:ro
+
+  node_2:
+    environment:
+      <<: *pbft
+    volumes:
+      - ./data/pbft/pbft_replicas.json:/pbft/replicas.json:ro
+      - ./data/pbft/pbft_node_2.json:/pbft/replica.json:ro
+      # - ./data/tls/node_2:/tls:ro
+
+  node_3:
+    environment:
+      <<: *pbft
+    volumes:
+      - ./data/pbft/pbft_replicas.json:/pbft/replicas.json:ro
+      - ./data/pbft/pbft_node_3.json:/pbft/replica.json:ro
+      # - ./data/tls/node_3:/tls:ro
+
+  node_4:
+    environment:
+      <<: *pbft
+    volumes:
+      - ./data/pbft/pbft_replicas.json:/pbft/replicas.json:ro
+      - ./data/pbft/pbft_node_4.json:/pbft/replica.json:ro
+      # - ./data/tls/node_4:/tls:ro

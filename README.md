@@ -298,6 +298,25 @@ for p in 8000 8010 8020 8030; do curl http://127.0.0.1:$p/health; echo; done
 docker compose down          # conserva las cadenas (volúmenes); con -v las borra
 ```
 
+### Docker Compose con PBFT (4 réplicas)
+
+`docker-compose.yml` corre PoW. Para PBFT (4 réplicas, tolera 1 falla) se añade el override
+`docker-compose.pbft.yml`, que fija `CONSENSUS=pbft`, `PBFT_REPLICAS_FILE` y la
+`PBFT_KEY_FILE` de cada nodo (montadas en solo lectura desde `./data/pbft/`, que git ignora):
+
+```bash
+venv\Scripts\python.exe scripts\preparar_pbft_compose.py        # una vez: llaves + lista en data/pbft/
+export ADMIN_API_KEY=cambiame                                   # PowerShell: $env:ADMIN_API_KEY="cambiame"
+docker compose -f docker-compose.yml -f docker-compose.pbft.yml up --build -d
+docker compose -f docker-compose.yml -f docker-compose.pbft.yml down
+```
+
+El script no sobrescribe llaves existentes (para regenerarlas, borrar `data/pbft/`; si los
+volúmenes ya tienen una cadena PoW, usar `down -v`). Para TLS mutuo, generar certificados
+(ver [TLS mutuo](#tls-mutuo-y-lista-blanca-de-nodos-p2-6)) y descomentar en el override
+`P2P_TLS`, `P2P_TLS_DIR` y los montajes `./data/tls/<nodo>:/tls:ro`. Nota: el archivo se valida
+en las pruebas (YAML y llaves), pero `docker compose` no se ha ejecutado con él.
+
 Para registrar emisores, descomentar en `node_1` el montaje de `./data/keys/authority.json`
 (solo lectura). Sin esa llave, el registro de emisores responde 503.
 
