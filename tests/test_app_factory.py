@@ -2,7 +2,7 @@
 import time
 
 import pytest
-from fastapi.testclient import TestClient
+from tests.cliente_asgi import ClienteASGI
 
 from api.app import NodeState, app as app_global
 from config import ConfigError, build_settings
@@ -25,7 +25,7 @@ def test_dos_apps_en_el_mismo_proceso_son_independientes(tmp_path):
     for campo in ("blockchain", "p2p", "security_monitor", "tx_rate_limiter", "mining_lock",
                   "mining_stop", "tx_anomaly_detector", "block_anomaly_detector", "events"):
         assert getattr(na, campo) is not getattr(nb, campo), campo
-    with TestClient(a) as ca, TestClient(b) as cb:
+    with ClienteASGI(a) as ca, ClienteASGI(b) as cb:
         assert ca.post("/blocks/mine", json={"miner_address": "M"}).status_code == 200
         assert ca.get("/health").json()["height"] == 1
         assert ca.get("/health").json()["node_id"] == "nodo_a"
@@ -40,7 +40,7 @@ def test_dos_apps_en_el_mismo_proceso_son_independientes(tmp_path):
 
 def test_dos_apps_se_conectan_y_sincronizan_en_proceso(tmp_path):
     a, b = make_app(tmp_path, "nodo_a"), make_app(tmp_path, "nodo_b")
-    with TestClient(a) as ca, TestClient(b) as cb:
+    with ClienteASGI(a) as ca, ClienteASGI(b) as cb:
         for _ in range(2):
             assert ca.post("/blocks/mine", json={"miner_address": "M"}).status_code == 200
         assert cb.get("/health").json()["height"] == 0

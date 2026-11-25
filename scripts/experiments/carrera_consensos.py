@@ -148,7 +148,7 @@ def _minero(node, fin):
 def correr(modo, n_tx=40, tasa=10.0, semilla=7, bits=14, limite=180.0, convergencia=10.0,
            conexion=20.0):
     """Ejecuta un modo y devuelve ``(resumen, filas)``."""
-    from fastapi.testclient import TestClient
+    from tests.cliente_asgi import ClienteASGI
     plan = _carga(n_tx, tasa, semilla)
     with tempfile.TemporaryDirectory(prefix=f"carrera-{modo}-",
                                      ignore_cleanup_errors=True) as tmp, \
@@ -157,7 +157,7 @@ def correr(modo, n_tx=40, tasa=10.0, semilla=7, bits=14, limite=180.0, convergen
         # Al salir: cerrar chain.db de cada nodo (Windows no borra archivos abiertos).
         pila.callback(lambda: [a.state.node.blockchain.close() for a in apps])
         for app in apps:
-            pila.enter_context(TestClient(app))
+            pila.enter_context(ClienteASGI(app))
         nodos = [a.state.node for a in apps]
         if not _esperar(lambda: all(n.p2p.get_network_stats()["active_peers"] >= N_NODOS - 1
                                     for n in nodos), conexion):

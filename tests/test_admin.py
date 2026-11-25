@@ -1,6 +1,6 @@
 """P1-9: endpoints de administración protegidos y CORS restringido."""
 import pytest
-from fastapi.testclient import TestClient
+from tests.cliente_asgi import ClienteASGI
 
 from tests.helpers import make_app
 
@@ -18,7 +18,7 @@ def _con_llave(app, llave):
 
 
 def _remoto(app):
-    return TestClient(app, client=REMOTO)
+    return ClienteASGI(app, client=REMOTO)
 
 
 def test_llave_ausente_o_incorrecta_401(api_app):
@@ -37,7 +37,7 @@ def test_llave_correcta_200(api_app):
 
 def test_llave_exigida_incluso_en_loopback(api_app):
     _con_llave(api_app, "secreta")
-    assert TestClient(api_app).post("/mempool/prune", json={}).status_code == 401
+    assert ClienteASGI(api_app).post("/mempool/prune", json={}).status_code == 401
 
 
 def test_sin_llave_remoto_403(api_app):
@@ -50,8 +50,8 @@ def test_sin_llave_remoto_403(api_app):
 
 def test_sin_llave_loopback_permitido(api_app):
     _con_llave(api_app, "")
-    assert TestClient(api_app).post("/mempool/prune", json={}).status_code == 200
-    assert TestClient(api_app, client=("127.0.0.1", 1)).post(
+    assert ClienteASGI(api_app).post("/mempool/prune", json={}).status_code == 200
+    assert ClienteASGI(api_app, client=("127.0.0.1", 1)).post(
         "/mempool/prune", json={}).status_code == 200
 
 
@@ -66,7 +66,7 @@ def test_endpoints_publicos_no_afectados(api_app):
 
 
 def test_cors_solo_origenes_permitidos(api_app):
-    c = TestClient(api_app)
+    c = ClienteASGI(api_app)
     propio = f"http://localhost:{api_app.state.node.settings.api_port}"
     ok = c.get("/health", headers={"Origin": propio})
     assert ok.headers.get("access-control-allow-origin") == propio

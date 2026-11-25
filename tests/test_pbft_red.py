@@ -1,6 +1,6 @@
 """P1-1: PBFT con 4 apps reales en el mismo proceso (app factory + P2P en loopback).
 
-Cada prueba arranca las réplicas que necesita con ``TestClient`` (lifespan: P2P,
+Cada prueba arranca las réplicas que necesita con ``ClienteASGI`` (lifespan: P2P,
 transporte PBFT y temporizadores). Toda espera está acotada (``esperar``).
 """
 import contextlib
@@ -9,7 +9,7 @@ import socket
 import time
 
 import pytest
-from fastapi.testclient import TestClient
+from tests.cliente_asgi import ClienteASGI
 
 from blockchain.consensus.pbft import PRE_PREPARE, sign_message
 from blockchain.core.block import Block, BlockHeader
@@ -69,7 +69,7 @@ class RedPBFT:
 
     def iniciar(self, *ids):
         for rid in ids:
-            self.clientes[rid] = self._pila.enter_context(TestClient(self.apps[rid]))
+            self.clientes[rid] = self._pila.enter_context(ClienteASGI(self.apps[rid]))
         for rid in ids:   # pares activos: el gossip de TXs llega a todos los vivos
             vivos = len(self.clientes) - 1
             assert esperar(lambda r=rid, v=vivos: self.nodo(r).p2p.get_network_stats()
@@ -196,7 +196,7 @@ def test_modo_de_consenso_distinto_rechaza_el_handshake(red, tmp_path):
     red.iniciar("r0")
     pow_app = make_app(tmp_path, "pow_nodo", node_host="127.0.0.1",
                        node_advertise_host="127.0.0.1")
-    with TestClient(pow_app) as c:
+    with ClienteASGI(pow_app) as c:
         r = c.post("/network/peers", params={"host": "127.0.0.1", "port": red.puertos[0]})
         assert r.json()["connected"] is False
         assert c.get("/consensus").json()["mode"] == "pow"
