@@ -131,6 +131,16 @@ class ContextoTx:
         self._recientes.append((ahora, sender, _hash_payload(tx.get("payload", {}))))
 
 
+def resumen_explicacion(explicacion: List[dict], is_anomaly: bool) -> str:
+    """Frase corta en español con las 3 contribuciones principales (compartida por TX y bloques)."""
+    top = [e for e in explicacion if e["contribucion"] > 0][:3]
+    if not top:
+        return "Sin características que empujen hacia lo anómalo."
+    partes = ", ".join(f"{e['caracteristica']}={e['valor']:g} (ref. {e['referencia']:g}, +{e['contribucion']:.3f})"
+                       for e in top)
+    return ("Anómala por: " if is_anomaly else "Mayor influencia: ") + partes
+
+
 class TransactionAnomalyDetector:
     """
     Isolation Forest para detección de transacciones anómalas.
@@ -358,13 +368,7 @@ class TransactionAnomalyDetector:
 
     @staticmethod
     def _resumen(explicacion: List[dict], is_anomaly: bool) -> str:
-        """Frase corta en español con las 3 contribuciones principales."""
-        top = [e for e in explicacion if e["contribucion"] > 0][:3]
-        if not top:
-            return "Sin características que empujen hacia lo anómalo."
-        partes = ", ".join(f"{e['caracteristica']}={e['valor']:g} (ref. {e['referencia']:g}, +{e['contribucion']:.3f})"
-                           for e in top)
-        return ("Anómala por: " if is_anomaly else "Mayor influencia: ") + partes
+        return resumen_explicacion(explicacion, is_anomaly)
 
     @staticmethod
     def _heuristic_score(features: List[float]) -> float:
@@ -438,8 +442,10 @@ class BlockAnomalyDetector:
             sizes.pop(0)
 
         score, explanation = self._evaluate(timestamp, n_tx, difficulty, times)
+        explicacion = self._explicacion_reglas(timestamp, n_tx, times)
 
         return AnomalyReport(
+            explicacion=explicacion, resumen=resumen_explicacion(explicacion, score > 0.7),
             entity_id=block.get("hash", "")[:16],
             entity_type="block",
             score=score,
@@ -479,3 +485,22 @@ class BlockAnomalyDetector:
             explanation.append("Bloque dentro de parámetros normales")
 
         return min(score, 1.0), explanation
+
+    @staticmethod
+    def _explicacion_reglas(ts: float, n_tx: int, times: List[float]) -> List[dict]:
+        """Detector heurístico: cada regla con valor observado, umbral y puntos que suma (mismo formato que TX)."""
+        desvio, umbral, activa_int = 0.0, 0.0, False
+        if len(times) >= 3:
+            intervalos = [times[i] - times[i - 1] for i in range(1, len(times))]
+            media, desv = float(np.mean(intervalos)), float(np.std(intervalos))
+            desvio = abs((ts - times[-2]) - media)
+            umbral = 3 * desv
+            activa_int = desv > 0 and desvio > umbral
+        reglas = [("desvio_intervalo", desvio, umbral, activa_int, 0.5, "|intervalo - media| > 3·desv"),
+                  ("bloque_vacio", float(n_tx == 0), 1.0, n_tx == 0, 0.2, "n_transactions == 0"),
+                  ("n_transactions", float(n_tx), 200.0, n_tx > 200, 0.3, "n_transactions > 200")]
+        out = [{"caracteristica": n, "valor": round(float(v), 4), "referencia": round(float(u), 4),
+                "contribucion": pts if activa else 0.0, "regla": r}
+               for n, v, u, activa, pts, r in reglas]
+        out.sort(key=lambda e: (-e["contribucion"], e["caracteristica"]))
+        return out

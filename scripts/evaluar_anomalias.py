@@ -172,6 +172,12 @@ def _seccion_explicaciones(ex: dict, seed: int, dias: int, frac_train: float) ->
          "del escalador.", "",
          "**Sin modelo entrenado (heurística).** `explicacion` lista cada regla: `{caracteristica, valor, "
          "referencia = umbral, contribucion = puntos que suma, regla}`.", "",
+         "**Anomalías de bloque y demás alertas del monitor.** `BlockAnomalyDetector` es heurístico: su "
+         "`explicacion` usa el mismo formato por regla (`desvio_intervalo`, `bloque_vacio`, `n_transactions`) y el "
+         "mismo `resumen`. Las alertas del `SecurityMonitor` que no son `ANOMALY` (tasa de TX, salto de "
+         "dificultad, reorg, huérfano, comisión alta, bloque inválido, par desconocido, PBFT) llevan en "
+         "`metadata` `explicacion = [{regla, valor, umbral, operador, cumple}]` y un `resumen`; los campos y el "
+         "mensaje previos no cambian.", "",
          f"**Evaluación sintética (semilla {seed}, {dias} días, entrenamiento {int(frac_train * 100)} %, tramo de "
          f"prueba).** Fracción de TX de ataque en que la característica inyectada queda primera / en el top-3 "
          f"({n} TX; `odd_hour` se omite):", "",

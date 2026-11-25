@@ -172,7 +172,7 @@ def test_cambio_de_dificultad_mayor_de_50_por_ciento_alerta(mon):
     alerta = mon.get_alerts(limit=1)[0]
     assert alerta["event_type"] == "DIFFICULTY_SPIKE"
     assert alerta["level"] == AlertLevel.WARNING
-    assert alerta["metadata"] == {"previous": 10, "current": 16}
+    assert _base(alerta["metadata"]) == {"previous": 10, "current": 16}
 
 
 def test_dos_bloques_no_bastan_para_detectar_salto(mon):
@@ -210,7 +210,7 @@ def test_reorganizacion_de_tres_bloques_es_critica(mon):
     assert mon.get_alerts(limit=1)[0]["level"] == AlertLevel.WARNING
     mon.on_chain_reorg(depth=3)
     assert mon.get_alerts(limit=1)[0]["level"] == AlertLevel.CRITICAL
-    assert mon.get_alerts(limit=1)[0]["metadata"] == {"depth": 3, "total_reorgs": 2}
+    assert _base(mon.get_alerts(limit=1)[0]["metadata"]) == {"depth": 3, "total_reorgs": 2}
     assert mon.get_threat_summary()["chain_reorgs"] == 2
 
 
@@ -218,7 +218,7 @@ def test_bloque_invalido_y_par_desconocido(mon):
     mon.on_invalid_block("firma rota", "nodo_7")
     alerta = mon.get_alerts(limit=1)[0]
     assert (alerta["event_type"], alerta["level"]) == ("INVALID_BLOCK", AlertLevel.WARNING)
-    assert alerta["metadata"] == {"node_id": "nodo_7", "reason": "firma rota"}
+    assert _base(alerta["metadata"]) == {"node_id": "nodo_7", "reason": "firma rota"}
     mon.on_unknown_peer("10.0.0.9:8001")
     alerta = mon.get_alerts(limit=1)[0]
     assert (alerta["event_type"], alerta["level"]) == ("UNKNOWN_PEER", AlertLevel.INFO)
@@ -264,7 +264,7 @@ def test_conflicto_certificado_es_critico(mon):
     alerta = mon.get_alerts(limit=1)[0]
     assert alerta["event_type"] == "PBFT_CONFLICT"
     assert alerta["level"] == AlertLevel.CRITICAL
-    assert alerta["metadata"] == {"height": 5, "ours": "a" * 64, "theirs": "b" * 64}
+    assert _base(alerta["metadata"]) == {"height": 5, "ours": "a" * 64, "theirs": "b" * 64}
 
 
 # ── Consultas de alertas y resumen ───────────────────────────────────────────
@@ -413,3 +413,8 @@ def test_error_en_callback_no_impide_registrar_la_alerta(reloj):
     mon = SecurityMonitor(alert_callback=roto)
     mon.on_invalid_block("x", "n1")  # no debe propagar la excepción
     assert _tipos(mon) == ["INVALID_BLOCK"]
+
+
+def _base(meta: dict) -> dict:
+    """Metadata sin los campos de explicación (Idea 7), que se prueban en test_explicaciones_monitor."""
+    return {k: v for k, v in meta.items() if k not in ("explicacion", "resumen")}

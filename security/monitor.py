@@ -38,6 +38,21 @@ class SecurityAlert:
         }
 
 
+def _regla(regla: str, valor, umbral, op: str = ">") -> dict:
+    """Un elemento de `explicacion` de alerta de regla: {regla, valor, umbral, operador, cumple}."""
+    num = isinstance(valor, (int, float)) and isinstance(umbral, (int, float))
+    cmp = {">": lambda a, b: a > b, ">=": lambda a, b: a >= b, "==": lambda a, b: a == b, "!=": lambda a, b: a != b}[op]
+    return {"regla": regla, "valor": valor, "umbral": umbral, "operador": op,
+            "cumple": bool(cmp(valor, umbral)) if num else (op == "==" and valor == umbral) or (op == "!=" and valor != umbral)}
+
+
+def _con_explicacion(metadata: dict, reglas: List[dict], resumen: str) -> dict:
+    """Agrega `explicacion` y `resumen` a la metadata sin tocar los campos existentes."""
+    metadata["explicacion"] = reglas
+    metadata["resumen"] = resumen
+    return metadata
+
+
 class SecurityMonitor:
     TX_RATE_WINDOW   = 60    # segundos para ventana de tasa de TX
     TX_RATE_LIMIT    = 100   # TX por ventana por dirección
@@ -109,7 +124,10 @@ class SecurityMonitor:
                 level=AlertLevel.WARNING if self._suspicious_addresses[sender] < 5 else AlertLevel.CRITICAL,
                 event_type="TX_RATE_LIMIT",
                 message=f"Dirección {sender[:16]}… enviando {len(recent)} TX en {self.TX_RATE_WINDOW}s",
-                metadata={"sender": sender, "tx_count": len(recent), "offenses": self._suspicious_addresses[sender]},
+                metadata=_con_explicacion(
+                    {"sender": sender, "tx_count": len(recent), "offenses": self._suspicious_addresses[sender]},
+                    [_regla("tx_por_ventana", len(recent), self.TX_RATE_LIMIT)],
+                    f"{len(recent)} TX en {self.TX_RATE_WINDOW}s superan el límite de {self.TX_RATE_LIMIT}."),
             ))
 
     def on_tx_rate_limited(self, sender: str, count: int, limit: int) -> None:
@@ -121,7 +139,10 @@ class SecurityMonitor:
             level=AlertLevel.WARNING if offenses < 5 else AlertLevel.CRITICAL,
             event_type="TX_RATE_LIMIT",
             message=f"Dirección {sender[:16]}… superó {limit} TX por {self.TX_RATE_WINDOW}s (rechazada)",
-            metadata={"sender": sender, "tx_count": count, "limit": limit, "offenses": offenses},
+            metadata=_con_explicacion(
+                {"sender": sender, "tx_count": count, "limit": limit, "offenses": offenses},
+                [_regla("tx_por_ventana", count, limit)],
+                f"{count} TX en {self.TX_RATE_WINDOW}s superan el límite de {limit}."),
         ))
 
     def on_anomalous_transaction(self, tx: dict, report: dict) -> None:
@@ -153,7 +174,12 @@ class SecurityMonitor:
                     level=AlertLevel.WARNING,
                     event_type="DIFFICULTY_SPIKE",
                     message=f"Cambio brusco de dificultad: {prev_diff} → {difficulty}",
-                    metadata={"previous": prev_diff, "current": difficulty},
+                    metadata=_con_explicacion(
+                        {"previous": prev_diff, "current": difficulty},
+                        [_regla("cambio_dificultad_pct", round(abs(difficulty - prev_diff) / prev_diff * 100, 2),
+                                self.DIFF_DELTA_PCT)],
+                        f"La dificultad cambió {abs(difficulty - prev_diff) / prev_diff * 100:.0f} % "
+                        f"(umbral {self.DIFF_DELTA_PCT} %)."),
                 ))
 
     def on_chain_reorg(self, depth: int) -> None:
@@ -163,7 +189,10 @@ class SecurityMonitor:
             level=level,
             event_type="CHAIN_REORG",
             message=f"Reorganización de cadena detectada: profundidad={depth} bloques",
-            metadata={"depth": depth, "total_reorgs": self._reorg_count},
+            metadata=_con_explicacion(
+                {"depth": depth, "total_reorgs": self._reorg_count},
+                [_regla("profundidad_reorg", depth, self.REORG_THRESHOLD, ">=")],
+                f"Reorganización de {depth} bloques (crítica desde {self.REORG_THRESHOLD})."),
         ))
 
     def on_invalid_block(self, reason: str, node_id: str) -> None:
@@ -171,7 +200,10 @@ class SecurityMonitor:
             level=AlertLevel.WARNING,
             event_type="INVALID_BLOCK",
             message=f"Bloque inválido recibido de {node_id}: {reason}",
-            metadata={"node_id": node_id, "reason": reason},
+            metadata=_con_explicacion(
+                {"node_id": node_id, "reason": reason},
+                [_regla("validacion_bloque", reason, "bloque válido", "!=")],
+                f"El bloque falló la validación: {reason}."),
         ))
 
     def on_unknown_peer(self, peer_address: str) -> None:
@@ -179,7 +211,10 @@ class SecurityMonitor:
             level=AlertLevel.INFO,
             event_type="UNKNOWN_PEER",
             message=f"Nuevo par no registrado intenta conectarse: {peer_address}",
-            metadata={"peer": peer_address},
+            metadata=_con_explicacion(
+                {"peer": peer_address},
+                [{"regla": "par_registrado", "valor": False, "umbral": True, "operador": "==", "cumple": True}],
+                "El par que se conecta no figura en la lista de pares registrados."),
         ))
 
     def on_pbft_equivocation(self, replica: str, view, seq, kind: str, digests: list) -> None:
@@ -189,8 +224,11 @@ class SecurityMonitor:
             event_type="PBFT_EQUIVOCATION",
             message=(f"Equivocación PBFT de {replica}: dos {kind} distintos en la vista {view}, "
                      f"altura {seq}"),
-            metadata={"replica": replica, "view": view, "seq": seq, "kind": kind,
-                      "digests": [str(d)[:16] for d in digests]},
+            metadata=_con_explicacion(
+                {"replica": replica, "view": view, "seq": seq, "kind": kind,
+                 "digests": [str(d)[:16] for d in digests]},
+                [_regla("mensajes_distintos", len(set(map(str, digests))), 1)],
+                f"La réplica firmó {len(set(map(str, digests)))} {kind} distintos en la misma vista y altura."),
         ))
 
     def on_certified_conflict(self, height: int, ours: str, theirs: str) -> None:
@@ -200,7 +238,10 @@ class SecurityMonitor:
             event_type="PBFT_CONFLICT",
             message=(f"Dos bloques certificados distintos en la altura {height}: "
                      f"{ours[:12]}… y {theirs[:12]}… (más de f réplicas bizantinas)"),
-            metadata={"height": height, "ours": ours, "theirs": theirs},
+            metadata=_con_explicacion(
+                {"height": height, "ours": ours, "theirs": theirs},
+                [_regla("bloques_certificados", 2 if ours != theirs else 1, 1)],
+                f"Dos bloques distintos con certificado en la altura {height}."),
         ))
 
     # ── Consultas ─────────────────────────────────────────────────────────────
@@ -262,11 +303,14 @@ class SecurityMonitor:
                 f"Bloque huérfano detectado (#{self._orphan_count}): "
                 f"{block_hash[:16]}… — {reason}"
             ),
-            metadata={
-                "block_hash":    block_hash,
-                "reason":        reason,
-                "total_orphans": self._orphan_count,
-            },
+            metadata=_con_explicacion(
+                {
+                    "block_hash":    block_hash,
+                    "reason":        reason,
+                    "total_orphans": self._orphan_count,
+                },
+                [_regla("huerfanos_acumulados", self._orphan_count, 0), _regla("huerfanos_criticos", self._orphan_count, 3, ">=")],
+                f"{self._orphan_count} bloques huérfanos acumulados (crítico desde 3): {reason}."),
         ))
 
     def on_high_fee_transaction(self, tx: dict, percentile_95: float) -> None:
@@ -301,12 +345,15 @@ class SecurityMonitor:
                 f"({ratio:.1f}× el percentil 95 = {percentile_95}). "
                 f"Emisor: {sender[:16]}…"
             ),
-            metadata={
-                "sender":        sender,
-                "fee":           fee,
-                "percentile_95": percentile_95,
-                "fee_ratio":     round(ratio, 2),
-            },
+            metadata=_con_explicacion(
+                {
+                    "sender":        sender,
+                    "fee":           fee,
+                    "percentile_95": percentile_95,
+                    "fee_ratio":     round(ratio, 2),
+                },
+                [_regla("fee", fee, percentile_95), _regla("fee_ratio", round(ratio, 2), 5.0, ">=")],
+                f"Fee {fee} es {ratio:.1f}× el percentil 95 ({percentile_95}); crítica desde 5×."),
         ))
 
     def compute_fee_percentile(self, percentile: float = 95.0) -> float:
