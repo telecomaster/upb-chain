@@ -72,13 +72,13 @@ class Blockchain:
             logger.info("Génesis creado")
 
     def _load_from_disk(self, path: Path) -> None:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         self.chain = [Block.from_dict(b) for b in data]
 
     def _save_to_disk(self) -> None:
         chain_file = self.data_dir / "chain.json"
-        with open(chain_file, "w") as f:
+        with open(chain_file, "w", encoding="utf-8") as f:
             json.dump([b.to_dict() for b in self.chain], f, indent=2)
 
     # ── Propiedades ───────────────────────────────────────────────────────────

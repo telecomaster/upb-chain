@@ -83,14 +83,12 @@ class FiftyOnePercentAttack:
     def _can_reorg(attacker_share: float, depth: int) -> bool:
         if attacker_share >= 1.0:
             return True
-        # Probabilidad de éxito en reorganización (Nakamoto 2008)
+        # Probabilidad de que el atacante alcance a la cadena honesta desde
+        # `depth` bloques atrás (Nakamoto 2008, gambler's ruin): (q/p)^depth si q < p
         q = attacker_share
         p = 1 - q
-        prob = 1 - sum(
-            (pow(q / p, k) * pow(p, depth - k) * pow(q, k))
-            for k in range(depth)
-        )
-        return random.random() < max(0, min(1, prob))
+        prob = 1.0 if q >= p else pow(q / p, depth)
+        return random.random() < max(0.0, min(1.0, prob))
 
 
 # ── Ataque Sybil ─────────────────────────────────────────────────────────────

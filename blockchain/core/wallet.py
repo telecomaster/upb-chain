@@ -59,12 +59,12 @@ class Wallet:
             "public_key": self.public_key_hex,
             "private_key": self.private_key_hex,
         }
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
     @classmethod
     def load(cls, path: str) -> "Wallet":
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         return cls(
             private_key_hex=data["private_key"],

@@ -132,7 +132,7 @@ class PruneMempoolRequest(BaseModel):
 @app.get("/", response_class=HTMLResponse)
 async def root():
     try:
-        with open("dashboard/templates/index.html") as f:
+        with open("dashboard/templates/index.html", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
         return "<h1>UPB-Chain API — <a href='/docs'>Documentación</a></h1>"
