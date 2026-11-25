@@ -100,7 +100,7 @@ Flujos de trabajo y orden de dependencias:
 - [x] **P1-5 Monitor de seguridad conectado.** Llamar `on_block`, `on_invalid_block`,
   `on_chain_reorg`, `on_unknown_peer`; aplicar (no solo alertar) el límite de 100 TX/min; alertas en
   vivo en el dashboard.
-- [ ] **P1-6 Detección de anomalías medible (OE-4, AUC > 0,85).** Generador de carga con semilla y
+- [x] **P1-6 Detección de anomalías medible (OE-4, AUC > 0,85).** *(AUC global IF 0,964 vs heurística 0,624; sintético, semilla 7, ver `docs/evaluacion_anomalias.md`)* Generador de carga con semilla y
   ataques etiquetados; reportar precisión/recall/F1/AUC vs heurística; persistir el modelo (joblib);
   corregir la regla `hour > 23` (nunca se cumple); quitar el efecto colateral de `GET /blocks/{i}`;
   anomalías → alertas del monitor.

@@ -50,6 +50,7 @@ class SecurityMonitor:
         "UNKNOWN_PEER":   "network",
         "TX_RATE_LIMIT":  "application",
         "HIGH_FEE":       "application",
+        "ANOMALY":        "application",
         "DIFFICULTY_SPIKE": "consensus",
         "ORPHAN_BLOCK":   "consensus",
     }
@@ -118,6 +119,20 @@ class SecurityMonitor:
             event_type="TX_RATE_LIMIT",
             message=f"Dirección {sender[:16]}… superó {limit} TX por {self.TX_RATE_WINDOW}s (rechazada)",
             metadata={"sender": sender, "tx_count": count, "limit": limit, "offenses": offenses},
+        ))
+
+    def on_anomalous_transaction(self, tx: dict, report: dict) -> None:
+        """Alerta `ANOMALY` cuando el detector ML/heurístico marca una TX admitida (P1-6)."""
+        sender = tx.get("sender", "")
+        score = report.get("score", 0.0)
+        reasons = report.get("explanation", [])
+        self._suspicious_addresses[sender] += 1
+        self._fire(SecurityAlert(
+            level=AlertLevel.CRITICAL if score >= 0.8 else AlertLevel.WARNING,
+            event_type="ANOMALY",
+            message=f"TX anómala de {sender[:16]}… (score {score}): " + "; ".join(reasons),
+            metadata={"sender": sender, "tx_id": tx.get("tx_id", ""), "tx_type": str(tx.get("type", "")),
+                      "score": score, "explanation": reasons},
         ))
 
     def on_block(self, block: dict) -> None:

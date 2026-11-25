@@ -107,12 +107,24 @@ pow_engine      = ProofOfWork()
 mining_lock     = asyncio.Lock()        # un solo minado a la vez (409 si ya hay uno)
 mining_stop     = threading.Event()     # se activa al apagar el nodo para abortar el PoW
 tx_anomaly_detector = TransactionAnomalyDetector()
+anomaly_model_path = Path(settings.data_dir) / "models" / "tx_iforest.joblib"
+if tx_anomaly_detector.load(anomaly_model_path):
+    logger.info("Modelo de anomalías cargado de %s", anomaly_model_path)
 block_anomaly_detector = BlockAnomalyDetector()
 chain_analytics = ChainAnalytics()
 security_monitor = SecurityMonitor()
 security_monitor.TX_RATE_LIMIT = settings.tx_rate_limit
 # P1-5: límite de admisión al mempool (política local, nunca regla de consenso).
 tx_rate_limiter = TxRateLimiter(limit=settings.tx_rate_limit, window=security_monitor.TX_RATE_WINDOW)
+
+
+def _screen_admitted_tx(tx: Transaction, report=None) -> None:
+    """Tras admitir una TX: la registra en el contexto del detector y alerta si fue marcada (P1-6)."""
+    if report is None:
+        report = tx_anomaly_detector.predict(tx.to_dict())
+    tx_anomaly_detector.observe(tx.to_dict())
+    if report.is_anomaly:
+        security_monitor.on_anomalous_transaction(tx.to_dict(), report.to_dict())
 
 
 def _enforce_tx_rate_limit(sender: str) -> None:
@@ -340,7 +352,7 @@ async def get_block(index: int):
     if index < 0 or index >= len(blockchain.chain):
         raise HTTPException(404, "Bloque no encontrado")
     block = blockchain.chain[index]
-    report = block_anomaly_detector.record_block(block.to_dict())
+    report = block_anomaly_detector.peek_block(block.to_dict())   # lectura pura: no muta el detector
     return {**block.to_dict(), "anomaly": report.to_dict()}
 
 
@@ -426,6 +438,7 @@ async def create_transaction(request: TransactionRequest):
     if not ok:
         raise HTTPException(400, reason)
 
+    _screen_admitted_tx(tx, anomaly)
     p2p.broadcast_transaction(tx.to_dict())
 
     return {
@@ -541,6 +554,7 @@ def _submit_contract_tx(tx: Transaction) -> None:
     if not ok:
         raise HTTPException(400, reason)
     security_monitor.on_transaction(tx.to_dict())
+    _screen_admitted_tx(tx)
     p2p.broadcast_transaction(tx.to_dict())
 
 
@@ -768,6 +782,9 @@ async def train_anomaly_detector():
     for block in blockchain.chain:
         all_txs.extend(block.transactions)
     result = tx_anomaly_detector.train(all_txs)
+    if result.get("trained"):
+        tx_anomaly_detector.save(anomaly_model_path)
+        result["model_path"] = str(anomaly_model_path)
     return result
 
 
