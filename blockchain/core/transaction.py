@@ -19,7 +19,11 @@ class TransactionType(str, Enum):
     VOTE                = "VOTE"
     DATA_RECORD         = "DATA_RECORD"
     TOKEN_TRANSFER      = "TOKEN_TRANSFER"      # payload {"amount": int}; mueve saldo (P0-9)
-    TOKEN_MINT          = "TOKEN_MINT"          # admin: emisión de tokens, firmada por la autoridad (P0-9)
+    TOKEN_MINT          = "TOKEN_MINT"          # emisión: autoridad (P0-9) o emisor con presupuesto (P1-12)
+    TOKEN_REDEEM        = "TOKEN_REDEEM"        # canje: quema saldo en una dirección de canje (P1-12)
+    ISSUER_BUDGET       = "ISSUER_BUDGET"       # admin: presupuesto semestral de un emisor (P1-12)
+    REDEEM_ADDRESS_REGISTER = "REDEEM_ADDRESS_REGISTER"  # admin: alta de dirección de canje (P1-12)
+    BADGE_AWARD         = "BADGE_AWARD"         # insignia intransferible, la otorga un emisor (P1-12)
     SMART_CONTRACT      = "SMART_CONTRACT"
 
 
@@ -324,16 +328,22 @@ def create_mint_transaction(
     amount: int,
     private_key_hex: str,
     nonce: int = 0,
+    reason: Optional[str] = None,
 ) -> Transaction:
-    """TX TOKEN_MINT (P0-9): crea ``amount`` unidades para ``recipient``.
+    """TX TOKEN_MINT (P0-9, P1-12): crea ``amount`` unidades para ``recipient``.
 
-    Solo es válida si la firma la autoridad del génesis (ver ``AccountContract``).
+    La firma la autoridad del génesis (sin límite) o un emisor registrado
+    dentro de su presupuesto semestral; el emisor debe dar ``reason`` (ver
+    ``TokenContract``). ``authority_address`` es quien firma.
     """
+    payload: dict = {"amount": amount}
+    if reason is not None:
+        payload["reason"] = reason
     tx = Transaction(
         type=TransactionType.TOKEN_MINT,
         sender=authority_address,
         recipient=recipient,
-        payload={"amount": amount},
+        payload=payload,
         nonce=nonce,
     )
     tx.sign(private_key_hex)
@@ -358,6 +368,91 @@ def create_transfer_transaction(
         recipient=recipient,
         payload={"amount": amount},
         fee=fee,
+        nonce=nonce,
+    )
+    tx.sign(private_key_hex)
+    return tx
+
+
+# ── Tokens e insignias para estudiantes (P1-12) ──────────────────────────────
+
+def create_issuer_budget_transaction(
+    authority_address: str,
+    issuer_address: str,
+    semester: str,
+    amount: int,
+    private_key_hex: str,
+    nonce: int = 0,
+) -> Transaction:
+    """TX ISSUER_BUDGET: fija el presupuesto de emisión de un emisor en un semestre."""
+    tx = Transaction(
+        type=TransactionType.ISSUER_BUDGET,
+        sender=authority_address,
+        recipient=issuer_address,
+        payload={"issuer_address": issuer_address, "semester": semester, "amount": amount},
+        nonce=nonce,
+    )
+    tx.sign(private_key_hex)
+    return tx
+
+
+def create_redeem_address_transaction(
+    authority_address: str,
+    redeem_address: str,
+    label: str,
+    private_key_hex: str,
+    nonce: int = 0,
+) -> Transaction:
+    """TX REDEEM_ADDRESS_REGISTER: la autoridad da de alta una dirección de canje."""
+    tx = Transaction(
+        type=TransactionType.REDEEM_ADDRESS_REGISTER,
+        sender=authority_address,
+        recipient=redeem_address,
+        payload={"redeem_address": redeem_address, "label": label},
+        nonce=nonce,
+    )
+    tx.sign(private_key_hex)
+    return tx
+
+
+def create_redeem_transaction(
+    sender: str,
+    redeem_address: str,
+    amount: int,
+    private_key_hex: str,
+    nonce: int = 0,
+    item: str = "",
+) -> Transaction:
+    """TX TOKEN_REDEEM: quema ``amount`` del saldo de ``sender`` en una dirección de canje."""
+    payload: dict = {"amount": amount}
+    if item:
+        payload["item"] = item
+    tx = Transaction(
+        type=TransactionType.TOKEN_REDEEM,
+        sender=sender,
+        recipient=redeem_address,
+        payload=payload,
+        nonce=nonce,
+    )
+    tx.sign(private_key_hex)
+    return tx
+
+
+def create_badge_award_transaction(
+    issuer_address: str,
+    student_address: str,
+    badge_id: str,
+    name: str,
+    reason: str,
+    private_key_hex: str,
+    nonce: int = 0,
+) -> Transaction:
+    """TX BADGE_AWARD: un emisor registrado otorga la insignia ``badge_id`` a un estudiante."""
+    tx = Transaction(
+        type=TransactionType.BADGE_AWARD,
+        sender=issuer_address,
+        recipient=student_address,
+        payload={"badge_id": badge_id, "name": name, "reason": reason},
         nonce=nonce,
     )
     tx.sign(private_key_hex)

@@ -42,8 +42,8 @@ siempre le pasa una COPIA DE TRABAJO, nunca el estado confirmado. Visto desde
 afuera la transición es pura: el estado confirmado solo cambia cuando el
 bloque entero resultó válido (ver ``ContractRegistry.check_block``).
 """
-from dataclasses import dataclass
-from typing import Any, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Mapping, Optional, Tuple
 
 
 def tx_type_of(tx: dict) -> str:
@@ -61,18 +61,33 @@ def is_int(value) -> bool:
 class TxContext:
     """Datos del bloque que contiene la TX (nunca el reloj del nodo).
 
-    En el mempool la TX aún no tiene bloque: todos los campos son ``None``.
+    En el mempool la TX aún no tiene bloque: ``block_index`` y ``block_hash``
+    son ``None`` y ``block_timestamp`` es una ESTIMACIÓN de la hora del próximo
+    bloque que pone el nodo (o ``None`` en ``MEMPOOL``). Solo el bloque decide:
+    una TX admitida con la estimación puede resultar inválida al minarse y el
+    minero la descarta (``filter_valid`` usa la hora del bloque candidato).
     ``block_timestamp`` es el del encabezado del bloque: igual en todos los
     nodos, así que se puede guardar o comparar, pero no hacer aritmética de
-    punto flotante con él en una regla de consenso.
+    punto flotante con él en una regla de consenso (truncarlo con ``int``).
+
+    Lecturas entre contratos (P1-12): ``view(nombre)`` devuelve el estado de
+    otro contrato tal como está JUSTO ANTES de esta TX (confirmado + TXs
+    anteriores del mismo bloque, o + pendientes en el mempool). Es de SOLO
+    LECTURA: un contrato nunca modifica el estado de otro. Devuelve ``None``
+    si ese contrato no está registrado (o sin registro, p. ej. en ``execute``).
     """
     block_index: Optional[int] = None
     block_hash: Optional[str] = None
     block_timestamp: Optional[float] = None
+    views: Optional[Mapping[str, Any]] = field(default=None, compare=False, repr=False)
 
     @classmethod
-    def of_block(cls, block) -> "TxContext":
-        return cls(block.header.index, block.hash, block.header.timestamp)
+    def of_block(cls, block, views: Optional[Mapping[str, Any]] = None) -> "TxContext":
+        return cls(block.header.index, block.hash, block.header.timestamp, views)
+
+    def view(self, name: str) -> Any:
+        """Estado (solo lectura) del contrato ``name``, o ``None`` si no está."""
+        return None if self.views is None else self.views.get(name)
 
 
 # Contexto de las TXs pendientes (admisión al mempool, armado de bloques).

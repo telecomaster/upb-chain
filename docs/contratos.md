@@ -29,7 +29,13 @@ class Contract:
 - `tx` es la TX en dict (`type`, `sender`, `recipient`, `payload`, `nonce`, `fee`, `tx_id`).
   La firma ya la verificó la cadena: `tx["sender"]` es quien firmó.
 - `ctx` (`TxContext`) trae `block_index`, `block_hash` y `block_timestamp` **del bloque**. En el
-  mempool la TX todavía no tiene bloque y los tres valen `None`.
+  mempool la TX todavía no tiene bloque: `block_index` y `block_hash` valen `None` y
+  `block_timestamp` es la hora **estimada** del próximo bloque que pone el nodo (P1-12; `None` en
+  la constante `MEMPOOL`). Al armar un bloque se usa la hora del encabezado del candidato, así el
+  minero filtra con la misma hora que verá la red. La estimación es política local: lo que vale
+  es la hora del bloque.
+- `ctx.view("otro")` (P1-12) devuelve el estado de otro contrato, de **solo lectura** (ver
+  "Lecturas entre contratos").
 - `apply` puede modificar el `state` que recibe y devolverlo: el registro siempre le pasa una
   copia de trabajo. El estado confirmado solo cambia cuando el bloque entero fue válido.
 - `execute(state, tx, ctx)` = `validate` + `apply` en un paso; útil en tests y ejemplos.
@@ -39,6 +45,50 @@ contratos que la manejan, guarda el estado confirmado de cada uno y lo expone a 
 (`blockchain.contract_state("voting")`). Una TX puede interesar a varios contratos: las cuentas
 cobran `nonce` y `fee` a **todas**. El registro valida la TX en todos sus contratos y solo si
 todos aceptan la aplica en todos (la TX es atómica).
+
+## Lecturas entre contratos (P1-12)
+
+Un contrato puede **leer** el estado de otro, nunca escribirlo:
+
+```python
+creds = ctx.view("credentials")            # None si ese contrato no está registrado
+if creds is None or not creds.is_registered_issuer(sender):
+    return False, "Solo un emisor registrado puede otorgar insignias"
+```
+
+El registro pasa en `ctx.views` su copia de trabajo de **todos** los contratos. Lo que se ve es
+el estado justo **antes** de la TX actual: confirmado + TXs anteriores del mismo bloque (o + las
+pendientes, en el mempool). Dentro de una TX todos los contratos validan primero y luego aplican,
+así que el orden de registro no cambia lo que se lee. Es determinista porque solo depende del
+orden de la cadena. Modificar un estado obtenido con `view` está prohibido: rompería la copia al
+escribir y el estado confirmado.
+
+Uso actual: `tokens` y `badges` preguntan a `credentials` si el sender es emisor registrado
+(`ISSUER_REGISTER` sigue siendo la única alta de emisores), y `accounts` deja que `tokens`
+autorice los `TOKEN_MINT` cuando ese contrato está registrado (sin él, solo la autoridad emite).
+
+## Tokens e insignias (P1-12)
+
+Puntos de **circuito cerrado, sin valor monetario** (nombre provisorio `TOKEN_SYMBOL = "PUPB"`,
+"puntos UPB", en `blockchain/contracts/tokens.py`; nombre y visto bueno legal pendientes). Los
+saldos los lleva `accounts`; `tokens` decide quién emite y dónde se canjea; `badges` guarda las
+insignias. No hay recompensa por minado.
+
+| TX | Quién firma | Regla |
+|----|-------------|-------|
+| `ISSUER_BUDGET` | autoridad | `{issuer_address, semester, amount}`: fija el presupuesto del emisor en ese semestre; no por debajo de lo ya emitido |
+| `TOKEN_MINT` | autoridad (sin límite) o emisor | emisor: `reason` obligatorio, no a sí mismo, `amount` ≤ presupuesto restante del semestre **del bloque** |
+| `TOKEN_TRANSFER` | dueño | como en P0-9 |
+| `REDEEM_ADDRESS_REGISTER` | autoridad | `{redeem_address, label}`, una vez |
+| `TOKEN_REDEEM` | dueño | `recipient` = dirección de canje registrada; el monto se **quema** (baja `total_supply`, el destino no recibe saldo) |
+| `BADGE_AWARD` | emisor | `{badge_id, name, reason}`; una misma `badge_id` por dirección una sola vez; no existe TX para moverlas |
+
+**Semestre.** `semester_of(ctx.block_timestamp)`: se trunca a segundos (`int`), se pasa a hora
+de Bolivia (UTC−4, sin horario de verano) y se calcula la fecha con aritmética entera (sin
+`datetime`). Enero–junio = `AAAA-1`, julio–diciembre = `AAAA-2`; el semestre 2 empieza el 1 de
+julio a las 00:00:00 hora de Bolivia. Como la hora del bloque la elige el minero dentro de las
+reglas de P0-3 (mayor que la mediana, a lo sumo 2 h en el futuro), un premio enviado en los
+últimos minutos de un semestre puede caer en el siguiente; el minero lo descarta si ya no cabe.
 
 ## Una sola regla para TXs inválidas
 

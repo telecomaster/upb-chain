@@ -11,9 +11,13 @@ from typing import List, Optional
 
 def default_contracts(authority_address: Optional[str] = None) -> List:
     """Contratos de aplicación de la red. El de cuentas lo agrega la cadena, primero."""
+    from blockchain.contracts.badges import BadgeContract
     from blockchain.contracts.credential import CredentialContract
+    from blockchain.contracts.tokens import TokenContract
     from blockchain.contracts.voting import VotingContract
     return [
         CredentialContract(authority_address),
         VotingContract(),
+        TokenContract(authority_address),   # P1-12: lee emisores de "credentials"
+        BadgeContract(),                    # P1-12: ídem
     ]

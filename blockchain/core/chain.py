@@ -226,12 +226,42 @@ class Blockchain:
                 return False, "Transacción duplicada"
             # Mismas reglas que en un bloque, contra confirmado + pendientes (P1-13).
             valid, reason = self.contracts.check_transaction(
-                tx.to_dict(), [t.to_dict() for t in self.mempool])
+                tx.to_dict(), [t.to_dict() for t in self.mempool],
+                self._next_block_timestamp())
             if not valid:
                 return False, reason
             self.mempool.append(tx)
         logger.debug(f"TX {tx.tx_id[:8]}… añadida al mempool")
         return True, "OK"
+
+    def check_batch(self, txs: List[Transaction]) -> List[Tuple[bool, str]]:
+        """Simula admitir ``txs`` en orden, sin tocar el mempool (P1-12, carga CSV).
+
+        Cada TX se valida contra confirmado + mempool + las TXs anteriores del
+        lote que resultaron válidas. Devuelve ``(ok, motivo)`` por TX.
+        """
+        results: List[Tuple[bool, str]] = []
+        with self._lock:
+            pending = [t.to_dict() for t in self.mempool]
+            timestamp = self._next_block_timestamp()
+            for tx in txs:
+                ok, reason = tx.is_valid()
+                if ok:
+                    ok, reason = self.contracts.check_transaction(
+                        tx.to_dict(), pending, timestamp)
+                if ok:
+                    pending.append(tx.to_dict())
+                results.append((ok, reason))
+        return results
+
+    def _next_block_timestamp(self) -> float:
+        """Hora estimada del próximo bloque (la misma regla que el candidato).
+
+        Política local (no consenso): la usan la admisión al mempool y el
+        armado de bloques para reglas que dependen de la hora del bloque,
+        como el semestre de los presupuestos de tokens (P1-12).
+        """
+        return max(time.time(), self.last_block.header.timestamp + 0.001)
 
     def get_pending_transactions(self, limit: int = 100) -> List[Transaction]:
         return self.mempool[:limit]
@@ -258,10 +288,16 @@ class Blockchain:
         logger.info(f"Bloque #{block.header.index} añadido (hash={block.hash[:12]}…)")
         return True, "OK"
 
-    def _still_valid(self, txs: List[Transaction]) -> List[Transaction]:
-        """Las TXs de ``txs`` (en orden) que todos los contratos aceptarían una tras otra."""
+    def _still_valid(self, txs: List[Transaction],
+                     timestamp: Optional[float] = None) -> List[Transaction]:
+        """Las TXs de ``txs`` (en orden) que todos los contratos aceptarían una tras otra.
+
+        ``timestamp``: hora del bloque que se arma (por defecto, la estimada).
+        """
         dicts = [t.to_dict() for t in txs]
-        keep = {d["tx_id"] for d in self.contracts.filter_valid(dicts)}
+        if timestamp is None:
+            timestamp = self._next_block_timestamp()
+        keep = {d["tx_id"] for d in self.contracts.filter_valid(dicts, timestamp)}
         return [t for t in txs if t.tx_id in keep]
 
     def next_nonce(self, address: str) -> int:
@@ -279,15 +315,18 @@ class Blockchain:
     def create_candidate_block(self, transactions: Optional[List[Transaction]] = None) -> Block:
         # Del mempool solo se toman TXs válidas para los contratos (P0-9, P1-13):
         # si no, una TX caducada (nonce ya usado) haría inválido el bloque entero.
+        # La hora del bloque se fija antes de elegir TXs: reglas como el
+        # presupuesto semestral de tokens (P1-12) dependen de ella.
+        timestamp = self._next_block_timestamp()
         if not transactions:
             with self._lock:   # la red puede estar aplicando un bloque en otro hilo
-                transactions = self._still_valid(list(self.mempool))[:50]
+                transactions = self._still_valid(list(self.mempool), timestamp)[:50]
         txs = transactions
         tx_dicts = [t.to_dict() for t in txs]
         merkle_root = Block.compute_merkle_root(tx_dicts)
         header = BlockHeader(
             index=self.height + 1,
-            timestamp=max(time.time(), self.last_block.header.timestamp + 0.001),
+            timestamp=timestamp,
             previous_hash=self.last_block.hash,
             merkle_root=merkle_root,
             difficulty=self._calculate_difficulty(),

@@ -115,12 +115,22 @@ Flujos de trabajo y orden de dependencias:
   `pytest-cov` > 80 %. Lo ejecuta el dueño de las RPi.
 - [x] **P1-11 Errores del simulador.** Con 50 % el reorg siempre ocurre pero se reporta
   `success=False` (usa `> 0.5`); el génesis infla el tiempo promedio de bloque.
-- [ ] **P1-12 Tokens y insignias para estudiantes.** TXs `TOKEN_MINT` (solo emisores, con `reason`,
+- [x] **P1-12 Tokens y insignias para estudiantes.** TXs `TOKEN_MINT` (solo emisores, con `reason`,
   dentro del presupuesto semestral), `TOKEN_TRANSFER`, `TOKEN_REDEEM` (quema en direcciones de
   canje), `BADGE_AWARD` (intransferible), `ISSUER_BUDGET` (llave de autoridad). Formas de ganar:
   premio del docente (individual o CSV), automático al emitir credencial, código QR de un solo uso en
   eventos, recompensas del laboratorio de ataques. Sin recompensa por minado (los mineros son nodos
   de la UPB). Puntos de circuito cerrado, sin valor monetario: confirmar con el área legal de la UPB.
+  Hecho: contratos `tokens` (`ISSUER_BUDGET`, `TOKEN_MINT` de emisor con `reason` y presupuesto
+  por semestre del bloque, `REDEEM_ADDRESS_REGISTER`, `TOKEN_REDEEM` que quema) y `badges`
+  (`BADGE_AWARD`, intransferible, una por id y dirección); lectura entre contratos con
+  `ctx.view(...)` (solo lectura) y hora estimada del próximo bloque en el mempool. Semestre en hora
+  de Bolivia (UTC−4) con aritmética entera. Premio del docente individual y por CSV (todo o nada).
+  API: `GET /tokens/{address}`, `GET /badges/{address}`, `GET /issuers/{address}/budget`,
+  `GET|POST /tokens/redeem-addresses`, `POST /tokens/budget`, `/tokens/award`, `/tokens/award/csv`,
+  `/tokens/redeem`, `/badges/award`; panel de estudiante y de emisor en el dashboard.
+  Nombre provisorio `PUPB` (decisión abierta). **Pendiente:** premio automático al emitir
+  credencial, códigos QR de un solo uso en eventos y recompensas del laboratorio de ataques.
 - [x] **P1-13 Interfaz única de contratos.** `apply(state, tx) -> state` determinista (sin reloj,
   azar ni floats), reproducida en cada nodo. Credential, Token, Badge y Voting como contratos de
   referencia; los estudiantes agregan nuevos por pull request.

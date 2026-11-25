@@ -18,12 +18,18 @@ Una TX puede interesar a varios contratos (las cuentas cobran nonce y fee a
 TODA TX). Para cada TX se validan primero todos los contratos interesados y
 solo si todos aceptan se aplican: una TX es atómica.
 
+Lecturas entre contratos (P1-12): el ``ctx`` de cada TX lleva ``views`` = la
+copia de trabajo de TODOS los contratos, así ``ctx.view("credentials")`` ve el
+estado de otro contrato tal como quedó tras las TXs anteriores (del bloque o
+del mempool). Es determinista: el orden es el de la cadena y, dentro de una
+TX, todos los contratos validan contra el estado previo a esa TX.
+
 Copia al escribir: antes de que un contrato aplique su primera TX en un
 bloque se copia (``deepcopy``) su estado; los contratos que el bloque no toca
 no se copian. Así el estado confirmado nunca se modifica a medias.
 """
 import copy
-from typing import Any, Dict, Iterable, List, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from blockchain.contracts.base import MEMPOOL, Contract, TxContext
 
@@ -97,7 +103,7 @@ class ContractRegistry:
         cualquier contrato invalida el bloque entero (regla de consenso).
         """
         working, copied = dict(states), set()
-        ctx = TxContext.of_block(block)
+        ctx = TxContext.of_block(block, working)
         for tx in block.transactions:
             ok, reason = self._try_tx(working, copied, tx, ctx)
             if not ok:
@@ -131,29 +137,41 @@ class ContractRegistry:
             raise ValueError(f"La cadena no es válida para los contratos: {reason}")
         self.commit(states, len(chain) - 1)
 
-    def check_transaction(self, tx: dict, pending: Iterable[dict] = ()) -> Tuple[bool, str]:
+    @staticmethod
+    def _mempool_ctx(working: States, timestamp: Optional[float]) -> TxContext:
+        """Contexto sin bloque: ``timestamp`` es la hora ESTIMADA del próximo bloque."""
+        return TxContext(MEMPOOL.block_index, MEMPOOL.block_hash, timestamp, working)
+
+    def check_transaction(self, tx: dict, pending: Iterable[dict] = (),
+                          timestamp: Optional[float] = None) -> Tuple[bool, str]:
         """¿Sería válida ``tx`` minada después de las pendientes? (admisión al mempool)
 
         Mismo ``validate`` que en un bloque, contra el estado especulativo.
         Las pendientes que ya no son válidas se saltan (el minero tampoco las
         incluiría). El estado confirmado no cambia. El motivo es el del contrato,
-        sin prefijo, para que la API lo muestre tal cual.
+        sin prefijo, para que la API lo muestre tal cual. ``timestamp`` es la
+        hora estimada del próximo bloque (la pone la cadena; ver ``TxContext``).
         """
         working, copied = dict(self._states), set()
+        ctx = self._mempool_ctx(working, timestamp)
         for p in pending:
-            self._try_tx(working, copied, p, MEMPOOL)
+            self._try_tx(working, copied, p, ctx)
         for contract in self.handlers(tx):
-            ok, reason = contract.validate(working[contract.NAME], tx, MEMPOOL)
+            ok, reason = contract.validate(working[contract.NAME], tx, ctx)
             if not ok:
                 return False, reason
         return True, "OK"
 
-    def filter_valid(self, txs: Iterable[dict]) -> List[dict]:
+    def filter_valid(self, txs: Iterable[dict],
+                     timestamp: Optional[float] = None) -> List[dict]:
         """Las TXs de ``txs`` que, aplicadas en orden, serían válidas (sin mutar).
 
         Política local del minero/mempool (no consenso): no armar un bloque que
         la red rechazaría por una TX que caducó (nonce usado, credencial ya
-        emitida en otro bloque, voto ya contado, …).
+        emitida en otro bloque, voto ya contado, …). Al armar un bloque,
+        ``timestamp`` es la hora del encabezado del candidato: la misma que
+        verá ``check_block``.
         """
         working, copied = dict(self._states), set()
-        return [tx for tx in txs if self._try_tx(working, copied, tx, MEMPOOL)[0]]
+        ctx = self._mempool_ctx(working, timestamp)
+        return [tx for tx in txs if self._try_tx(working, copied, tx, ctx)[0]]

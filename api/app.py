@@ -3,6 +3,7 @@ API REST de UPB-Chain — FastAPI.
 Expone endpoints para bloques, transacciones, credenciales, análisis y seguridad.
 """
 import asyncio
+import csv
 import hmac
 import html
 import io
@@ -33,11 +34,18 @@ from blockchain.core.transaction import (
     create_mint_transaction,
     create_revoke_transaction,
     create_transfer_transaction,
+    create_issuer_budget_transaction,
+    create_redeem_address_transaction,
+    create_redeem_transaction,
+    create_badge_award_transaction,
 )
 from blockchain.core.wallet import Wallet, derive_address, public_key_from_private
 from blockchain.consensus.proof_of_work import ProofOfWork
 from blockchain.consensus.pbft import PBFTNode
 from blockchain.contracts.credential import CredentialState, credential_id_of_tx
+from blockchain.contracts.tokens import (
+    MAX_REASON, TOKEN_NAME, TOKEN_SYMBOL, is_semester, semester_of,
+)
 from blockchain.network.node import P2PNode
 from ai.anomaly.detector import TransactionAnomalyDetector, BlockAnomalyDetector
 from ai.analytics.chain_stats import ChainAnalytics
@@ -278,6 +286,48 @@ class TransferRequest(BaseModel):
     amount: int = Field(gt=0)
     private_key_hex: str
     fee: int = Field(0, ge=0)
+
+
+class BudgetRequest(BaseModel):
+    issuer_address: str
+    amount: int = Field(ge=0)
+    semester: Optional[str] = None      # "AAAA-1" | "AAAA-2"; por defecto, el actual
+
+
+class RedeemAddressRequest(BaseModel):
+    redeem_address: str
+    label: str
+
+
+class AwardRequest(BaseModel):
+    issuer_address: str
+    private_key_hex: str               # llave del EMISOR (no la de la autoridad)
+    recipient: str
+    amount: int = Field(gt=0)
+    reason: str
+
+
+class AwardCsvRequest(BaseModel):
+    issuer_address: str
+    private_key_hex: str
+    csv: str                           # encabezado "address,amount,reason"
+
+
+class RedeemRequest(BaseModel):
+    sender: str
+    private_key_hex: str
+    redeem_address: str
+    amount: int = Field(gt=0)
+    item: str = ""
+
+
+class BadgeRequest(BaseModel):
+    issuer_address: str
+    private_key_hex: str
+    recipient: str
+    badge_id: str
+    name: str
+    reason: str
 
 
 class PruneMempoolRequest(BaseModel):
@@ -541,6 +591,196 @@ async def transfer_tokens(request: TransferRequest):
         raise HTTPException(400, "Llave privada inválida")
     _submit_contract_tx(tx)
     return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce}
+
+
+# ── Endpoints: tokens e insignias para estudiantes (P1-12) ───────────────────
+# Puntos de circuito cerrado, sin valor monetario (pendiente visto bueno legal).
+# Las TXs de premio, canje e insignia las firma la llave del propio usuario
+# (emisor o estudiante); las de presupuesto y direcciones de canje, la autoridad.
+
+MAX_CSV_ROWS = 100
+
+
+def _require_authority() -> Wallet:
+    if authority_wallet is None:
+        raise HTTPException(503, "Este nodo no tiene la llave de autoridad configurada")
+    return authority_wallet
+
+
+def _signed(build) -> Transaction:
+    """Construye y firma una TX con la llave del usuario; 400 si la llave no sirve."""
+    try:
+        return build()
+    except Exception:
+        raise HTTPException(400, "Llave privada inválida")
+
+
+@app.post("/tokens/budget", dependencies=[Depends(require_admin)])
+async def set_issuer_budget(request: BudgetRequest):
+    """Fija el presupuesto semestral de un emisor (ISSUER_BUDGET, firma la autoridad)."""
+    authority = _require_authority()
+    semester = request.semester or semester_of(time.time())
+    if not is_semester(semester):
+        raise HTTPException(400, "semester debe tener la forma AAAA-1 o AAAA-2")
+    tx = create_issuer_budget_transaction(
+        authority.address, request.issuer_address, semester, request.amount,
+        authority.private_key_hex, nonce=blockchain.next_nonce(authority.address))
+    _submit_contract_tx(tx)
+    return {"status": "PENDING", "tx_id": tx.tx_id, "semester": semester}
+
+
+@app.get("/tokens/redeem-addresses")
+async def list_redeem_addresses():
+    """Direcciones de canje registradas y lo quemado en cada una."""
+    state = blockchain.contract_state("tokens")
+    return {"redeem_addresses": [
+        {"address": a, "label": label, "redeemed": state.redeemed.get(a, 0)}
+        for a, label in state.redeem_addresses.items()]}
+
+
+@app.post("/tokens/redeem-addresses", dependencies=[Depends(require_admin)])
+async def register_redeem_address(request: RedeemAddressRequest):
+    """Registra una dirección de canje (REDEEM_ADDRESS_REGISTER, firma la autoridad)."""
+    authority = _require_authority()
+    tx = create_redeem_address_transaction(
+        authority.address, request.redeem_address, request.label,
+        authority.private_key_hex, nonce=blockchain.next_nonce(authority.address))
+    _submit_contract_tx(tx)
+    return {"status": "PENDING", "tx_id": tx.tx_id}
+
+
+@app.post("/tokens/award")
+async def award_tokens(request: AwardRequest):
+    """Premio del docente: TOKEN_MINT firmada por el emisor, dentro de su presupuesto."""
+    tx = _signed(lambda: create_mint_transaction(
+        request.issuer_address, request.recipient, request.amount, request.private_key_hex,
+        nonce=blockchain.next_nonce(request.issuer_address), reason=request.reason))
+    _submit_contract_tx(tx)
+    return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce}
+
+
+def _parse_award_csv(text: str):
+    """Filas ``(línea, dirección, monto, motivo)`` y errores ``{"row", "error"}``."""
+    rows, errors = [], []
+    reader = csv.DictReader(io.StringIO(text.strip()))
+    if [f.strip() for f in (reader.fieldnames or [])][:3] != ["address", "amount", "reason"]:
+        return [], [{"row": 1, "error": "el encabezado debe ser address,amount,reason"}]
+    for line, row in enumerate(reader, start=2):
+        address = (row.get("address") or "").strip()
+        amount = (row.get("amount") or "").strip()
+        reason = (row.get("reason") or "").strip()
+        if not address:
+            errors.append({"row": line, "error": "falta address"})
+        elif not (amount.isascii() and amount.isdigit()) or int(amount) <= 0:
+            errors.append({"row": line, "error": "amount debe ser un entero > 0"})
+        elif not reason or len(reason) > MAX_REASON:
+            errors.append({"row": line, "error": f"reason: texto de 1 a {MAX_REASON} caracteres"})
+        else:
+            rows.append((line, address, int(amount), reason))
+    if not rows and not errors:
+        errors.append({"row": 2, "error": "el CSV no tiene filas"})
+    if len(rows) + len(errors) > MAX_CSV_ROWS:
+        errors.append({"row": 0, "error": f"máximo {MAX_CSV_ROWS} filas por carga"})
+    return rows, errors
+
+
+@app.post("/tokens/award/csv")
+async def award_tokens_csv(request: AwardCsvRequest):
+    """Premios en lote: una TOKEN_MINT por fila, firmadas por el emisor.
+
+    TODO O NADA: primero se simula el lote completo (formato, firma, presupuesto,
+    con las filas anteriores ya contadas); si alguna fila falla, responde 400 con
+    los errores por fila y no envía ninguna. Así, corregir el CSV y reenviarlo
+    no duplica premios. Si el límite de TX por minuto (P1-5) corta el envío a
+    mitad, la respuesta 429 lista las TX que sí entraron.
+    """
+    rows, errors = _parse_award_csv(request.csv)
+    if errors:
+        raise HTTPException(400, {"message": "CSV inválido; no se envió ninguna fila",
+                                  "errors": errors})
+    base_nonce = blockchain.next_nonce(request.issuer_address)
+    txs = [_signed(lambda i=i, a=a, m=m, r=r: create_mint_transaction(
+               request.issuer_address, a, m, request.private_key_hex,
+               nonce=base_nonce + i, reason=r))
+           for i, (_, a, m, r) in enumerate(rows)]
+    errors = [{"row": row[0], "error": reason}
+              for row, (ok, reason) in zip(rows, blockchain.check_batch(txs)) if not ok]
+    if errors:
+        raise HTTPException(400, {"message": "Hay filas inválidas; no se envió ninguna",
+                                  "errors": errors})
+    submitted = []
+    for (line, *_), tx in zip(rows, txs):
+        try:
+            _submit_contract_tx(tx)
+        except HTTPException as e:
+            raise HTTPException(e.status_code, {
+                "message": f"Envío interrumpido en la fila {line}: {e.detail}",
+                "submitted": submitted})
+        submitted.append({"row": line, "tx_id": tx.tx_id})
+    return {"status": "PENDING", "count": len(submitted), "submitted": submitted}
+
+
+@app.post("/tokens/redeem")
+async def redeem_tokens(request: RedeemRequest):
+    """Canje: TOKEN_REDEEM firmada por el estudiante; quema el monto en una dirección de canje."""
+    tx = _signed(lambda: create_redeem_transaction(
+        request.sender, request.redeem_address, request.amount, request.private_key_hex,
+        nonce=blockchain.next_nonce(request.sender), item=request.item))
+    _submit_contract_tx(tx)
+    return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce}
+
+
+@app.get("/tokens/{address}")
+async def get_token_balance(address: str):
+    """Saldo de puntos de ``address`` y premios confirmados que recibió."""
+    state = blockchain.contract_state("tokens")
+    return {
+        "address": address,
+        "symbol": TOKEN_SYMBOL,
+        "name": TOKEN_NAME,
+        "balance": blockchain.get_balance(address),
+        "awards": state.awards.get(address, []),
+        "height": blockchain.contracts.height,
+    }
+
+
+@app.get("/issuers/{address}/budget")
+async def get_issuer_budget(address: str, semester: Optional[str] = None):
+    """Presupuesto de emisión de un emisor: el del semestre pedido (o el actual) y todos."""
+    semester = semester or semester_of(time.time())
+    if not is_semester(semester):
+        raise HTTPException(400, "semester debe tener la forma AAAA-1 o AAAA-2")
+    state = blockchain.contract_state("tokens")
+    return {
+        "address": address,
+        "is_issuer": _credentials().is_registered_issuer(address),
+        "semester": semester,
+        "budget": state.budget_of(address, semester),
+        "minted": state.minted_by(address, semester),
+        "remaining": state.remaining(address, semester),
+        "budgets": state.budgets.get(address, {}),
+        "minted_by_semester": state.minted.get(address, {}),
+        "symbol": TOKEN_SYMBOL,
+    }
+
+
+@app.post("/badges/award")
+async def award_badge(request: BadgeRequest):
+    """Otorga una insignia intransferible (BADGE_AWARD firmada por el emisor)."""
+    tx = _signed(lambda: create_badge_award_transaction(
+        request.issuer_address, request.recipient, request.badge_id, request.name,
+        request.reason, request.private_key_hex,
+        nonce=blockchain.next_nonce(request.issuer_address)))
+    _submit_contract_tx(tx)
+    return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce}
+
+
+@app.get("/badges/{address}")
+async def get_badges(address: str):
+    """Insignias confirmadas de ``address`` (intransferibles)."""
+    badges = blockchain.contract_state("badges").badges_of(address)
+    return {"address": address, "badges": list(badges.values()),
+            "height": blockchain.contracts.height}
 
 
 # ── Endpoints: credenciales ───────────────────────────────────────────────────

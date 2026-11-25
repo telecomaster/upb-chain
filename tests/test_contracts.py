@@ -19,7 +19,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from blockchain.contracts import accounts, base, registry, voting
+from blockchain.contracts import accounts, badges, base, registry, tokens, voting
 from blockchain.contracts.accounts import AccountContract
 from blockchain.contracts.base import MEMPOOL, Contract, TxContext
 from blockchain.contracts.credential import CredentialContract
@@ -90,7 +90,7 @@ def test_la_cadena_pone_siempre_las_cuentas_primero(tmp_path):
     bc = Blockchain("n", str(tmp_path / "n"), contracts=[VotingContract()])
     assert bc.contracts.names == ["accounts", "voting"]
     assert Blockchain("m", str(tmp_path / "m")).contracts.names == \
-        ["accounts", "credentials", "voting"]
+        ["accounts", "credentials", "voting", "tokens", "badges"]
 
 
 @pytest.mark.unit
@@ -108,7 +108,7 @@ def test_contexto_viene_del_bloque_y_el_mempool_no_tiene_bloque(tmp_path):
 def test_contratos_sin_reloj_ni_azar():
     """Regla de determinismo: las reglas de consenso no leen el reloj ni usan azar."""
     prohibidos = {"time", "random", "uuid", "datetime", "secrets", "os"}
-    fuentes = [inspect.getsource(m) for m in (base, registry, accounts, voting)]
+    fuentes = [inspect.getsource(m) for m in (base, registry, accounts, voting, tokens, badges)]
     fuentes.append(textwrap.dedent(inspect.getsource(CredentialContract)))
     for fuente in fuentes:
         for nodo in ast.walk(ast.parse(fuente)):
@@ -297,6 +297,7 @@ async def test_api_votacion_doble_voto_400_y_recuento(client):
 @pytest.mark.asyncio
 async def test_api_lista_contratos(client):
     r = (await client.get("/contracts")).json()
-    assert [c["name"] for c in r["contracts"]] == ["accounts", "credentials", "voting"]
+    assert [c["name"] for c in r["contracts"]] == ["accounts", "credentials", "voting",
+                                                   "tokens", "badges"]
     assert r["contracts"][0]["handled_types"] is None
     assert r["contracts"][2]["handled_types"] == ["VOTE"]

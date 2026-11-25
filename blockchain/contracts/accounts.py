@@ -19,11 +19,15 @@ Reglas (aplican a TODAS las TXs firmadas, de cualquier tipo: ``HANDLED_TYPES = N
 
 Tipos con efecto sobre saldos:
 
-    TOKEN_MINT      sender = autoridad del génesis; payload {"amount": int > 0}.
-                    Crea ``amount`` unidades para ``recipient``. Es la fuente
-                    de la oferta sin cambiar el génesis (GENESIS_HASH); P1-12
-                    la extenderá con presupuestos por emisor.
+    TOKEN_MINT      payload {"amount": int > 0}. Crea ``amount`` unidades
+                    para ``recipient``. Es la fuente de la oferta sin cambiar
+                    el génesis (GENESIS_HASH). Quién puede emitir lo decide el
+                    contrato ``tokens`` (P1-12: autoridad o emisor dentro de su
+                    presupuesto); sin ese contrato, solo la autoridad.
     TOKEN_TRANSFER  payload {"amount": int > 0}; mueve saldo sender → recipient.
+    TOKEN_REDEEM    payload {"amount": int > 0}; descuenta ``amount`` del sender
+                    y lo QUEMA (sale de la oferta). Que el recipient sea una
+                    dirección de canje registrada lo exige el contrato ``tokens``.
 
 Los demás tipos (credenciales, DATA_RECORD, VOTE, …) solo consumen nonce y fee.
 Este contrato es siempre el primero del registro: lo posee la cadena
@@ -51,7 +55,7 @@ class Accounts:
         return self.nonces.get(address, 0)
 
 
-_MOVES_BALANCE = ("TOKEN_TRANSFER", "TOKEN_MINT")
+_MOVES_BALANCE = ("TOKEN_TRANSFER", "TOKEN_MINT", "TOKEN_REDEEM")
 
 
 class AccountContract(Contract):
@@ -88,7 +92,8 @@ class AccountContract(Contract):
         if tx_type in _MOVES_BALANCE and (not is_int(amount) or amount <= 0):
             return False, "amount debe ser un entero > 0 (unidad mínima)"
         if tx_type == "TOKEN_MINT":
-            if sender != self.authority_address:
+            # Con el contrato de tokens registrado, él autoriza (P1-12).
+            if sender != self.authority_address and ctx.view("tokens") is None:
                 return False, "Solo la autoridad del génesis puede emitir tokens"
             amount = 0  # el monto minado no sale del saldo del sender
         if state.balance_of(sender) < fee + amount:
@@ -109,6 +114,10 @@ class AccountContract(Contract):
             state.total_supply += amount
         elif tx_type == "TOKEN_TRANSFER":
             state.balances[sender] -= amount
+        elif tx_type == "TOKEN_REDEEM":
+            state.balances[sender] -= amount
+            state.total_supply -= amount
+            return state   # quemado: el recipient (dirección de canje) no recibe saldo
         if amount:
             state.balances[recipient] = state.balance_of(recipient) + amount
         return state

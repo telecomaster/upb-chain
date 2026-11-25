@@ -670,6 +670,42 @@
 
   </div>
 
+  <!-- ── Puntos e insignias para estudiantes (P1-12) ───── -->
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px;">
+    <div class="card" style="padding:20px;">
+      <div class="section-title">Mis Puntos e Insignias</div>
+      <p style="font-size:11px; color:var(--upb-muted); margin-bottom:12px; line-height:1.6;">
+        Puntos de circuito cerrado, sin valor monetario. Las insignias no se pueden transferir.
+      </p>
+      <input id="tok-student" class="upb-input" placeholder="Dirección del estudiante (UPB…)"/>
+      <button onclick="loadStudentTokens()" class="btn-primary" style="width:100%; margin-top:8px; padding:9px;">
+        Consultar saldo e insignias
+      </button>
+      <pre id="tok-student-result" style="margin-top:8px; font-size:11px; white-space:pre-wrap; line-height:1.6;"></pre>
+    </div>
+
+    <div class="card" style="padding:20px;">
+      <div class="section-title">Premiar (emisor)</div>
+      <input id="aw-issuer" class="upb-input" placeholder="Dirección del emisor"/>
+      <input id="aw-key" type="password" autocomplete="off" class="upb-input" style="margin-top:6px;" placeholder="Llave privada del emisor"/>
+      <button onclick="loadIssuerBudget()" class="btn-outline" style="width:100%; margin-top:6px; padding:7px;">Ver presupuesto del semestre</button>
+      <input id="aw-recipient" class="upb-input" style="margin-top:6px;" placeholder="Dirección del estudiante"/>
+      <div style="display:flex; gap:6px; margin-top:6px;">
+        <input id="aw-amount" class="upb-input" type="number" min="1" step="1" placeholder="Puntos" style="flex:1;"/>
+        <input id="aw-reason" class="upb-input" placeholder="Motivo" style="flex:2;"/>
+      </div>
+      <button onclick="awardTokens()" class="btn-gold" style="width:100%; margin-top:8px; padding:9px;">Otorgar puntos</button>
+      <div style="display:flex; gap:6px; margin-top:6px;">
+        <input id="bd-id" class="upb-input" placeholder="ID de insignia" style="flex:1;"/>
+        <input id="bd-name" class="upb-input" placeholder="Nombre" style="flex:1;"/>
+      </div>
+      <button onclick="awardBadge()" class="btn-outline" style="width:100%; margin-top:6px; padding:9px;">Otorgar insignia (usa el motivo)</button>
+      <textarea id="aw-csv" class="upb-input" rows="3" style="margin-top:6px; font-family:monospace;" placeholder="CSV: address,amount,reason (una fila por estudiante)"></textarea>
+      <button onclick="awardCsv()" class="btn-outline" style="width:100%; margin-top:6px; padding:9px;">Cargar CSV (todo o nada)</button>
+      <pre id="aw-result" style="margin-top:8px; font-size:11px; white-space:pre-wrap;"></pre>
+    </div>
+  </div>
+
   <!-- ── Panel de Inteligencia Artificial ──────────────── -->
   <div class="gold-divider"></div>
 
@@ -1130,6 +1166,75 @@ async function lookupStudent() {
   el.textContent = data.credentials.map((c, i) =>
     `[${i+1}] ${c.degree} (${c.issue_date})`
   ).join('\n');
+}
+
+// ── Puntos e insignias (P1-12) ────────────────────────────
+function _val(id) { return document.getElementById(id).value.trim(); }
+
+function _show(el, ok, text) {
+  el.style.color = ok ? '#4ade80' : '#f87171';
+  el.textContent = text;
+}
+
+function _detail(data) {
+  const d = data && data.detail;
+  if (!d) return 'Error';
+  if (typeof d === 'string') return d;
+  if (Array.isArray(d)) return d.map(e => `${(e.loc || []).slice(-1)[0]}: ${e.msg}`).join('\n');
+  const rows = (d.errors || []).map(e => `fila ${e.row}: ${e.error}`).join('\n');
+  return [d.message, rows].filter(Boolean).join('\n');
+}
+
+async function loadStudentTokens() {
+  const addr = _val('tok-student');
+  const el = document.getElementById('tok-student-result');
+  if (!addr) return;
+  const a = encodeURIComponent(addr);
+  const [tok, bad] = await Promise.all([fetchJSON(`/tokens/${a}`), fetchJSON(`/badges/${a}`)]);
+  if (!tok.ok || !bad.ok) { _show(el, false, '✗ No se pudo consultar'); return; }
+  const lines = [`Saldo: ${tok.data.balance} ${tok.data.symbol} (${tok.data.name})`];
+  tok.data.awards.forEach(p => lines.push(`  +${p.amount} · ${p.reason || '—'} · bloque ${p.block_index}`));
+  lines.push(`Insignias: ${bad.data.badges.length}`);
+  bad.data.badges.forEach(b => lines.push(`  🏅 ${b.name} (${b.badge_id}) · ${b.reason}`));
+  _show(el, true, lines.join('\n'));
+}
+
+async function loadIssuerBudget() {
+  const el = document.getElementById('aw-result');
+  const addr = _val('aw-issuer');
+  if (!addr) return;
+  const { ok, data } = await fetchJSON(`/issuers/${encodeURIComponent(addr)}/budget`);
+  _show(el, ok, ok
+    ? `Semestre ${data.semester}: presupuesto ${data.budget}, emitido ${data.minted}, ` +
+      `quedan ${data.remaining} ${data.symbol}` + (data.is_issuer ? '' : ' (no es emisor registrado)')
+    : `✗ ${_detail(data)}`);
+}
+
+async function _postIssuer(url, extra) {
+  const el = document.getElementById('aw-result');
+  const body = Object.assign({ issuer_address: _val('aw-issuer'), private_key_hex: _val('aw-key') }, extra);
+  const { ok, data } = await fetchJSON(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  _show(el, ok, ok
+    ? `✓ Enviado${data.count ? ` (${data.count} TX)` : ` (TX ${data.tx_id})`}. Pendiente de minado.`
+    : `✗ ${_detail(data)}`);
+}
+
+function awardTokens() {
+  return _postIssuer('/tokens/award', {
+    recipient: _val('aw-recipient'), amount: parseInt(_val('aw-amount'), 10), reason: _val('aw-reason'),
+  });
+}
+
+function awardBadge() {
+  return _postIssuer('/badges/award', {
+    recipient: _val('aw-recipient'), badge_id: _val('bd-id'), name: _val('bd-name'), reason: _val('aw-reason'),
+  });
+}
+
+function awardCsv() {
+  return _postIssuer('/tokens/award/csv', { csv: document.getElementById('aw-csv').value });
 }
 
 async function trainModel() {
