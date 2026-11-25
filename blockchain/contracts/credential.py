@@ -223,6 +223,10 @@ class CredentialState:
                 ids.append(cid)
         return ids
 
+    def issuers(self) -> Dict[str, str]:
+        """Copia del registro de emisores: dirección → código de institución."""
+        return dict(self._issuer_registry)
+
     def is_registered_issuer(self, address: str) -> bool:
         return address in self._issuer_registry
 

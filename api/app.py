@@ -51,6 +51,7 @@ from blockchain.core.wallet import Wallet, derive_address, public_key_from_priva
 from blockchain.consensus.proof_of_work import ProofOfWork
 from blockchain.consensus.pbft import PBFTNode
 from blockchain.contracts.credential import CredentialState, credential_id_of_tx
+from blockchain.contracts import vc_export
 from blockchain.contracts.tokens import (
     MAX_REASON, TOKEN_NAME, TOKEN_SYMBOL, is_semester, semester_of,
 )
@@ -992,6 +993,72 @@ async def disclose_verify(credential_id: str, request: DiscloseVerifyRequest, no
         "all_verified": bool(resultados) and all(r["verified"] for r in resultados),
         "fields": resultados,
     }
+
+
+# ── Verifiable Credentials y did:web (P2-3) ───────────────────────────────────
+
+def _vc_dominio(node: NodeState, request: Request) -> str:
+    s = node.settings
+    return vc_export.did_domain(s.did_web_domain, s.public_base_url, str(request.base_url))
+
+
+def _vc_base(node: NodeState, request: Request) -> str:
+    return (node.settings.public_base_url or str(request.base_url)).rstrip("/")
+
+
+@router.get("/.well-known/did.json")
+async def did_document(request: Request, node: NodeState = Depends(get_node)):
+    """Documento did:web de la UPB con las llaves de la autoridad y los emisores (P2-3).
+
+    Solo aparecen llaves públicas que la cadena ya conoce (las de TXs firmadas).
+    did:web exige servirlo por HTTPS en el dominio: lo dispone el despliegue.
+    """
+    claves = vc_export.public_keys_from_blocks(node.blockchain.chain)
+    autoridad = node.blockchain.contracts.contract("accounts").authority_address
+    doc = vc_export.build_did_document(_vc_dominio(node, request), claves, autoridad,
+                                       _credentials(node).issuers())
+    return Response(content=json.dumps(doc), media_type="application/did+ld+json")
+
+
+def _vc_ancla(node: NodeState, cred) -> dict:
+    found = node.blockchain.locate_transaction(cred.tx_hash)
+    if found is None:
+        raise HTTPException(404, "Credencial sin ancla en la cadena")
+    block, i = found
+    hojas = [leaf_hash(t) for t in block.transactions]
+    return {"tx_id": cred.tx_hash, "block_index": block.header.index, "block_hash": block.hash,
+            "merkle_root": block.header.merkle_root, "leaf": hojas[i], "proof": build_proof(hojas, i)}
+
+
+def _vc_de(node: NodeState, request: Request, credential_id: str, disclosure=None) -> dict:
+    cred = _credentials(node).get(credential_id)
+    if cred is None:
+        raise HTTPException(404, "Credencial no confirmada en la cadena")
+    return vc_export.build_vc(_vc_dominio(node, request), _vc_base(node, request), cred.to_dict(),
+                              _estado_publico(node, credential_id), _vc_ancla(node, cred),
+                              disclosure=disclosure)
+
+
+@router.get("/credentials/{credential_id}/vc")
+async def credential_vc(credential_id: str, request: Request, node: NodeState = Depends(get_node)):
+    """VC (alineada con VC 2.0 / Open Badges 3.0) sin ``proof`` propio y con el ancla en cadena."""
+    return _vc_de(node, request, credential_id)
+
+
+@router.post("/credentials/{credential_id}/vc/disclose")
+async def credential_vc_disclose(credential_id: str, body: DisclosureRequest, request: Request,
+                                 node: NodeState = Depends(get_node)):
+    """VC con divulgación selectiva: campos privados elegidos con su sal y prueba Merkle."""
+    cred = _credentials(node).get(credential_id)
+    if cred is None:
+        raise HTTPException(404, "Credencial no confirmada en la cadena")
+    try:
+        paquete = commitment.build_disclosure(body.private_record, body.fields)
+    except (ValueError, KeyError, TypeError) as e:
+        raise HTTPException(400, f"Registro privado inválido: {e}")
+    if paquete["fields_root"] != cred.fields_root:
+        raise HTTPException(400, "El registro privado no coincide con el fields_root en cadena")
+    return _vc_de(node, request, credential_id, disclosure=paquete)
 
 
 @router.post("/credentials/revoke")

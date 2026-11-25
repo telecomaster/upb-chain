@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     authority_key_file: str = "data/keys/authority.json"
     # URL pública base para los QR de verificación (P1-3). Vacía = la del request.
     public_base_url: str = ""
+    # Dominio del did:web de la UPB (P2-3), p. ej. "upb.edu.bo". Vacío = el host de
+    # PUBLIC_BASE_URL (o el del request). did:web exige servir /.well-known/did.json por HTTPS
+    # en ese dominio; eso lo debe disponer el despliegue (proxy inverso) en la Pi.
+    did_web_domain: str = ""
     # Llave de los endpoints de administración (P1-9). Vacía = solo peticiones locales.
     admin_api_key: str = ""
     # /metrics (P2-10): False = mismo control que los endpoints de administración;
@@ -117,7 +121,7 @@ class Settings(BaseSettings):
             raise ValueError("no puede estar vacío")
         return v
 
-    @field_validator("public_base_url", "admin_api_key")
+    @field_validator("public_base_url", "admin_api_key", "did_web_domain")
     @classmethod
     def _recortar(cls, v: str) -> str:
         return v.strip()

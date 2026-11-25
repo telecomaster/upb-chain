@@ -148,7 +148,7 @@ Flujos de trabajo y orden de dependencias:
 
 - [ ] **P2-1** Firma en el navegador (`@noble/secp256k1` o Ed25519): las llaves privadas no tocan el servidor; billetera web del estudiante.
 - [x] **P2-2** Pruebas de inclusión Merkle (`GET /tx/{id}/proof`) y verificador liviano.
-- [ ] **P2-3** Credenciales como W3C Verifiable Credentials / Open Badges 3.0 con `did:web` para la UPB.
+- [x] **P2-3** Credenciales como W3C Verifiable Credentials / Open Badges 3.0 con `did:web` para la UPB. Alineado con (no certificado ni validado contra esquemas oficiales); VC sin `proof` propio, ancla en cadena como evidencia; ver `docs/credenciales_vc.md`.
 - [x] **P2-4** Índice de bloques y estado en SQLite (fin de recorridos O(altura) y reescrituras completas).
 - [x] **P2-5** Dificultad por bits y elección de cadena por trabajo acumulado.
 - [ ] **P2-6** Conexiones persistentes con TLS mutuo y lista blanca de nodos.
