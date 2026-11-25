@@ -178,6 +178,38 @@ def _is_int(value) -> bool:
 # Todos reciben ``nonce`` (P0-9): el siguiente nonce del firmante. La API lo
 # obtiene con ``Blockchain.next_nonce(address)`` (confirmadas + mempool).
 
+def create_credential_transaction_with_record(
+    issuer_address: str,
+    student_address: str,
+    credential_data: dict,
+    private_key_hex: str,
+    nonce: int = 0,
+):
+    """TX CREDENTIAL_ISSUE con datos personales fuera de la cadena (P1-2).
+
+    ``credential_data`` trae campos públicos (``commitment.PUBLIC_FIELDS``) y privados
+    (nombre, nota, metadatos...). En la TX solo van los públicos y ``fields_root``.
+    Devuelve ``(tx, registro_privado)``; el registro (campos + sales) no se guarda aquí.
+    """
+    from blockchain.core.commitment import build_private_record, split_credential_data
+    publicos, privados = split_credential_data(credential_data)
+    missing = {"degree", "issue_date"} - set(publicos.keys())
+    if "student_name" not in privados:
+        missing.add("student_name")
+    if missing:
+        raise ValueError(f"Campos faltantes en credential_data: {missing}")
+    registro = build_private_record(privados)
+    tx = Transaction(
+        type=TransactionType.CREDENTIAL_ISSUE,
+        sender=issuer_address,
+        recipient=student_address,
+        payload={**publicos, "fields_root": registro["fields_root"]},
+        nonce=nonce,
+    )
+    tx.sign(private_key_hex)
+    return tx, registro
+
+
 def create_credential_transaction(
     issuer_address: str,
     student_address: str,
@@ -185,24 +217,9 @@ def create_credential_transaction(
     private_key_hex: str,
     nonce: int = 0,
 ) -> Transaction:
-    required = {"student_name", "degree", "issue_date"}
-    missing = required - set(credential_data.keys())
-    if missing:
-        raise ValueError(f"Campos faltantes en credential_data: {missing}")
-
-    tx = Transaction(
-        type=TransactionType.CREDENTIAL_ISSUE,
-        sender=issuer_address,
-        recipient=student_address,
-        payload={
-            **credential_data,
-            "credential_hash": hashlib.sha256(
-                json.dumps(credential_data, sort_keys=True).encode()
-            ).hexdigest(),
-        },
-        nonce=nonce,
-    )
-    tx.sign(private_key_hex)
+    """Como ``create_credential_transaction_with_record`` pero descarta el registro privado."""
+    tx, _ = create_credential_transaction_with_record(
+        issuer_address, student_address, credential_data, private_key_hex, nonce)
     return tx
 
 

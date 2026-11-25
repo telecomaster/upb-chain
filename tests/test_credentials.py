@@ -23,12 +23,11 @@ from blockchain.core.wallet import Wallet
 def _make_data(**overrides) -> dict:
     """Datos mínimos válidos para una emisión, con sobreescrituras opcionales."""
     base = {
-        "student_name": "María Flores",
         "program": "Ingeniería en Sistemas",
         "degree": "Licenciatura en Ingeniería de Sistemas",
         "issue_date": "2025-06-10",
         "credential_type": "DEGREE",
-        "grade": 85.0,
+        "fields_root": "ab" * 32,
     }
     base.update(overrides)
     return base
@@ -118,7 +117,7 @@ class TestCredentialIssuance:
     ):
         """Omitir campos requeridos debe producir un mensaje de error descriptivo."""
         incomplete_data = {
-            "student_name": "Pedro Quispe",
+            "program": "Ingeniería",
             # Faltan: program, degree, issue_date, credential_type
         }
         ok, reason, _, cred = _emitir(credential_contract, credential_state,

@@ -78,6 +78,43 @@ emisiones de ese emisor).
 Si un nodo no arranca por esto, borrar `data/chain` (como con P0-9). Todos los nodos de la red
 deben actualizarse juntos: un nodo viejo aceptaría bloques que uno nuevo rechaza.
 
+### Credenciales: datos personales fuera de la cadena (P1-2, cambio de consenso)
+
+`CREDENTIAL_ISSUE` ya no lleva `student_name`, `grade` ni `metadata`. El payload admitido es solo:
+`program`, `degree`, `issue_date`, `credential_type`, `expiry_date` (opcional) y `fields_root`
+(hex minúsculas de 64 caracteres, obligatorio). Cualquier otra clave, o las tres prohibidas,
+hace que la TX no entre al mempool y que el bloque se rechace. El `credential_id` no cambia
+(emisor + estudiante + título + fecha).
+
+**Compromiso (`blockchain/core/commitment.py`).** Los campos privados (todo lo que el emisor
+envíe en `credential_data` fuera de los públicos: nombre, nota, metadatos, `institution`...) se
+comprometen así, con sha256:
+
+- valor canónico = `json.dumps(valor, sort_keys=True, separators=(",", ":"), ensure_ascii=False)` en UTF-8;
+- sal por campo = 16 bytes aleatorios (`secrets`), en hex (32 caracteres), generada en la API al emitir;
+- hoja = `sha256(bytes(sal) || nombre_campo_utf8 || valor_canonico)` en hex;
+- hojas ordenadas por nombre de campo; árbol de `blockchain/core/merkle.py` (nodo =
+  `sha256(hex_izq + hex_der)`, último nodo duplicado si el nivel es impar);
+- `fields_root` = raíz.
+
+`POST /credentials/issue` devuelve **una sola vez** el `private_record`
+(`{credential_id, fields, salts, fields_root}`). El nodo **no lo guarda** (ni en `data/` ni en la
+cadena): se entrega al estudiante; si se pierde, los datos no se pueden demostrar.
+`POST /credentials/disclosure` (cómputo puro) arma el paquete `{fields_root, revealed:[{name,
+value, salt, proof}]}` para los campos elegidos y `POST /credentials/{id}/disclose-verify` lo
+comprueba contra el `fields_root` confirmado en la cadena. Las páginas y endpoints públicos
+(`/verify/{id}`, `/credentials/verify/{id}`, QR, historial) muestran solo campos públicos y la raíz.
+
+Limitaciones: las hojas no llevan separación de dominio (ver `merkle.py`); el nombre del campo
+entra en el hash, así que un valor no se puede presentar bajo otro campo. `get_stats_by_program`
+ya no da `avg_grade/min_grade/max_grade` (la nota no está en la cadena) y `search_credentials`
+busca solo por título/programa.
+
+**Compatibilidad.** Las cadenas guardadas con credenciales en formato anterior (nombre/nota en
+claro) ya no validan al cargar: borrar `data/chain` y actualizar todos los nodos a la vez. No hay
+modo legado por altura (se prefirió la regla simple). Los datos en claro de cadenas ya publicadas
+siguen en esas copias; este cambio solo evita nuevas filtraciones.
+
 ## Reglas de determinismo
 
 Todos los nodos deben calcular exactamente lo mismo. Dentro de `validate` y `apply`:

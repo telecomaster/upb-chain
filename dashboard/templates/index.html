@@ -596,6 +596,14 @@
         Generar Wallet Institucional y Emitir
       </button>
       <pre id="credential-result" style="margin-top:12px; font-size:11px; color:#4ade80; white-space:pre-wrap; line-height:1.6;"></pre>
+      <div id="private-record-box" style="display:none; margin-top:10px;">
+        <div style="font-size:11px; color:#fbbf24; line-height:1.6;">
+          ⚠ ATENCIÓN: este registro privado (nombre, nota y sales) se muestra UNA sola vez y el nodo no lo guarda.
+          Descárgalo y entrégaselo al estudiante: sin él no podrá demostrar sus datos. En la cadena solo queda la raíz del compromiso.
+        </div>
+        <textarea id="private-record-json" class="upb-input" rows="5" readonly></textarea>
+        <button onclick="downloadPrivateRecord()" class="btn-outline" style="width:100%; margin-top:6px; padding:8px;">Descargar registro privado (.json)</button>
+      </div>
     </div>
 
     <!-- Verificación -->
@@ -613,6 +621,20 @@
       </button>
       <pre id="verify-result" style="margin-top:12px; font-size:11px; white-space:pre-wrap; line-height:1.6;"></pre>
       <div id="verify-qr" style="margin-top:12px; text-align:center;"></div>
+
+      <div class="gold-divider" style="margin:16px 0;"/>
+
+      <div class="section-title">Divulgación selectiva</div>
+      <p style="font-size:11px; color:var(--upb-muted); margin-bottom:8px; line-height:1.6;">
+        <b>Estudiante:</b> pega tu registro privado, indica los campos a revelar (separados por coma, ej. <code>student_name,grade</code>) y genera el paquete.
+        <b>Verificador:</b> pega el paquete y comprueba que los campos pertenecen a la credencial en cadena.
+      </p>
+      <textarea id="disc-record" class="upb-input" rows="3" placeholder="Registro privado (JSON)"></textarea>
+      <input id="disc-fields" class="upb-input" style="margin-top:6px" placeholder="Campos a revelar: student_name,grade"/>
+      <button onclick="buildDisclosure()" class="btn-outline" style="width:100%; margin-top:6px; padding:8px;">Generar paquete de divulgación</button>
+      <textarea id="disc-package" class="upb-input" rows="3" style="margin-top:6px" placeholder="Paquete de divulgación (JSON)"></textarea>
+      <button onclick="verifyDisclosure()" class="btn-primary" style="width:100%; margin-top:6px; padding:8px;">Verificar divulgación contra la cadena</button>
+      <pre id="disc-result" style="margin-top:8px; font-size:11px; white-space:pre-wrap; line-height:1.6;"></pre>
 
       <div class="gold-divider" style="margin:16px 0;"/>
 
@@ -943,7 +965,11 @@ async function generateWalletAndIssue() {
       `TX Hash:    ${issued.tx_id?.slice(0,32)}…\n` +
       `Emisor:     ${wallet.address.slice(0,28)}…\n` +
       `Estado:     Pendiente de minado\n\n` +
+      `Raíz del compromiso: ${issued.fields_root?.slice(0,32)}…\n` +
       `Guarda el ID para verificación posterior.`;
+    document.getElementById('private-record-json').value = JSON.stringify(issued.private_record, null, 2);
+    document.getElementById('private-record-box').style.display = 'block';
+    document.getElementById('disc-record').value = JSON.stringify(issued.private_record);
     document.getElementById('verify-id').value = issued.credential_id;
     showQr(issued.credential_id);
   } else {
@@ -951,6 +977,51 @@ async function generateWalletAndIssue() {
     resultEl.textContent = '✗ Error: ' + (issued?.detail || 'desconocido');
   }
   loadStats();
+}
+
+function downloadPrivateRecord() {
+  const txt = document.getElementById('private-record-json').value;
+  let id = 'credencial';
+  try { id = JSON.parse(txt).credential_id || id; } catch (e) {}
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([txt], { type: 'application/json' }));
+  a.download = `registro-privado-${id}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function buildDisclosure() {
+  const el = document.getElementById('disc-result');
+  let rec;
+  try { rec = JSON.parse(document.getElementById('disc-record').value); }
+  catch (e) { el.style.color = '#f87171'; el.textContent = '✗ El registro privado no es JSON válido'; return; }
+  const fields = document.getElementById('disc-fields').value.split(',').map(s => s.trim()).filter(Boolean);
+  const { ok, data } = await fetchJSON('/credentials/disclosure', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ private_record: rec, fields })
+  });
+  if (!ok) { el.style.color = '#f87171'; el.textContent = '✗ ' + (data?.detail || 'Error'); return; }
+  document.getElementById('disc-package').value = JSON.stringify(data);
+  el.style.color = '#4ade80';
+  el.textContent = '✓ Paquete generado; entrégalo al verificador.';
+}
+
+async function verifyDisclosure() {
+  const el = document.getElementById('disc-result');
+  let pkg;
+  try { pkg = JSON.parse(document.getElementById('disc-package').value); }
+  catch (e) { el.style.color = '#f87171'; el.textContent = '✗ El paquete no es JSON válido'; return; }
+  const id = pkg.credential_id || document.getElementById('verify-id').value.trim();
+  if (!id) { el.style.color = '#f87171'; el.textContent = '✗ Falta el ID de la credencial'; return; }
+  const { ok, data } = await fetchJSON(`/credentials/${encodeURIComponent(id)}/disclose-verify`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ revealed: pkg.revealed || [] })
+  });
+  if (!ok) { el.style.color = '#f87171'; el.textContent = '✗ ' + (data?.detail || 'Error'); return; }
+  el.style.color = data.all_verified ? '#4ade80' : '#f87171';
+  el.textContent = (data.all_verified ? '✓ DIVULGACIÓN VÁLIDA' : '✗ DIVULGACIÓN NO VÁLIDA') +
+    `\nEstado de la credencial: ${data.credential_status}\n` +
+    data.fields.map(f => `${f.verified ? '✓' : '✗'} ${f.name}`).join('\n');
 }
 
 function showQr(id) {
@@ -973,8 +1044,8 @@ async function verifyCredential() {
     const c = data.credential;
     el.textContent =
       `✓ CREDENCIAL VÁLIDA Y ACTIVA\n\n` +
-      `Estudiante:  ${c?.student_name || '—'}\n` +
       `Grado:       ${c?.degree || '—'}\n` +
+      `Raíz datos:  ${(c?.fields_root || '—').slice(0,32)}…\n` +
       `Institución: ${c?.institution || '—'}\n` +
       `Fecha:       ${c?.issue_date || '—'}\n` +
       `Bloque:      #${data.block_index} (${data.confirmations} confirmaciones)` +
@@ -1057,7 +1128,7 @@ async function lookupStudent() {
   }
   el.style.color = '#4ade80';
   el.textContent = data.credentials.map((c, i) =>
-    `[${i+1}] ${c.degree} — ${c.student_name} (${c.issue_date})`
+    `[${i+1}] ${c.degree} (${c.issue_date})`
   ).join('\n');
 }
 

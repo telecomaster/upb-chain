@@ -14,7 +14,7 @@ from blockchain.core.chain import Blockchain
 from blockchain.core.transaction import (
     Transaction,
     TransactionType,
-    create_credential_transaction,
+    create_credential_transaction_with_record,
     create_issuer_register_transaction,
     create_vote_transaction,
 )
@@ -97,7 +97,7 @@ def demo():
             "honors": True,
         },
     }
-    tx_cred = create_credential_transaction(
+    tx_cred, registro_privado = create_credential_transaction_with_record(
         issuer_address=university_wallet.address,
         student_address=student_wallet.address,
         credential_data=credential_data,
@@ -107,9 +107,9 @@ def demo():
     ok, reason, state = contract.execute(state, tx_cred.to_dict())
     credential = state.get(credential_id_of_tx(tx_cred.to_dict()))
     print(f"✓ Credencial emitida: {credential.credential_id}")
-    print(f"  Estudiante: {credential.student_name}")
+    print(f"  En cadena solo la raiz del compromiso: {credential.fields_root[:32]}... (nombre y nota quedan fuera, P1-2)")
     print(f"  Grado: {credential.degree}")
-    print(f"  Nota: {credential.grade}/100 {'(con honores)' if credential_data['metadata']['honors'] else ''}")
+    print(f"  Nota (solo en el registro privado): {registro_privado['fields']['grade']}/100")
 
     ok_v, reason_v, _ = state.verify_credential(credential.credential_id)
     print(f"✓ Verificación:       {'VÁLIDA ✓' if ok_v else 'INVÁLIDA'} — {reason_v}")

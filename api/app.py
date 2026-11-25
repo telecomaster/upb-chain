@@ -13,7 +13,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,10 +24,11 @@ from pydantic import BaseModel, Field
 from config import load_settings, configure_logging
 from blockchain.core.chain import Blockchain
 from blockchain.core.merkle import build_proof, leaf_hash
+from blockchain.core import commitment
 from blockchain.core.transaction import (
     Transaction,
     TransactionType,
-    create_credential_transaction,
+    create_credential_transaction_with_record,
     create_issuer_register_transaction,
     create_mint_transaction,
     create_revoke_transaction,
@@ -588,7 +589,7 @@ async def issue_credential(request: CredentialRequest):
     bloque la incluya. El emisor debe estar registrado (confirmado o pendiente).
     """
     try:
-        tx = create_credential_transaction(
+        tx, registro = create_credential_transaction_with_record(
             issuer_address=request.issuer_address,
             student_address=request.student_address,
             credential_data=request.credential_data,
@@ -603,17 +604,67 @@ async def issue_credential(request: CredentialRequest):
 
     data = request.credential_data
     credential_id = credential_id_of_tx(tx.to_dict())
+    registro["credential_id"] = credential_id
     return {
         "credential_id": credential_id,
         "tx_id": tx.tx_id,
         "status": "PENDING",
+        "fields_root": registro["fields_root"],
+        # Registro privado (campos + sales): se entrega UNA sola vez y el nodo no lo guarda.
+        # Quien lo pierda no puede revelar sus datos; la cadena solo tiene la raíz.
+        "private_record": registro,
         "qr_data": json.dumps({
             "id": credential_id,
-            "student": data.get("student_name"),
             "degree": data.get("degree"),
             "date": data.get("issue_date"),
             "verify_url": f"upbchain://verify/{credential_id}",
         }),
+    }
+
+
+class DisclosureRequest(BaseModel):
+    private_record: dict
+    fields: List[str]
+
+
+class DiscloseVerifyRequest(BaseModel):
+    revealed: List[dict]
+
+
+@app.post("/credentials/disclosure")
+async def build_disclosure(request: DisclosureRequest):
+    """Arma un paquete de divulgación selectiva desde el registro privado (P1-2).
+
+    Cómputo puro: no guarda nada ni toca la cadena. El estudiante entrega el
+    paquete al verificador, que lo comprueba con ``POST /credentials/{id}/disclose-verify``.
+    """
+    rec = request.private_record
+    try:
+        if not isinstance(rec.get("fields"), dict) or not isinstance(rec.get("salts"), dict):
+            raise ValueError("Registro privado inválido: faltan fields/salts")
+        paquete = commitment.build_disclosure(rec, request.fields)
+    except (ValueError, KeyError, TypeError) as e:
+        raise HTTPException(400, str(e))
+    if rec.get("credential_id"):
+        paquete["credential_id"] = rec["credential_id"]
+    return paquete
+
+
+@app.post("/credentials/{credential_id}/disclose-verify")
+async def disclose_verify(credential_id: str, request: DiscloseVerifyRequest):
+    """Comprueba campos revelados (valor, sal, prueba Merkle) contra ``fields_root`` en cadena."""
+    cred = _credentials().get(credential_id)
+    if cred is None:
+        raise HTTPException(404, "Credencial no confirmada en la cadena")
+    resultados = [{"name": it.get("name"),
+                   "verified": commitment.verify_field(cred.fields_root, it)}
+                  for it in request.revealed]
+    return {
+        "credential_id": credential_id,
+        "fields_root": cred.fields_root,
+        "credential_status": _estado_publico(credential_id)["status"],
+        "all_verified": bool(resultados) and all(r["verified"] for r in resultados),
+        "fields": resultados,
     }
 
 
@@ -697,6 +748,7 @@ async def verify_page(credential_id: str):
     campos = [("ID", credential_id), ("Emisor", cred.get("issuer_address")),
               ("Tipo", cred.get("credential_type")), ("Título", cred.get("degree")),
               ("Fecha de emisión", cred.get("issue_date")),
+              ("Raíz del compromiso (datos personales)", cred.get("fields_root")),
               ("Bloque", st.get("block_index")),
               ("Confirmaciones", st.get("confirmations") if cred else None)]
     rows = "".join(f"<dt>{html.escape(k)}</dt><dd>{html.escape(str(v))}</dd>"
@@ -742,7 +794,8 @@ async def get_student_credentials(address: str):
 
 @app.get("/credentials/search")
 async def search_credentials(q: str):
-    """Busca credenciales por nombre de estudiante o grado (case-insensitive, substring).
+    """Busca credenciales por título o programa (case-insensitive, substring).
+    El nombre del estudiante ya no está en la cadena (P1-2).
 
     Query param:
         q: Término de búsqueda (mínimo 1 carácter).

@@ -15,6 +15,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from blockchain.contracts.base import Contract, TxContext, tx_type_of
 from blockchain.core.block import GENESIS_AUTHORITY_ADDRESS
+from blockchain.core.commitment import FORBIDDEN_ONCHAIN, PUBLIC_FIELDS, is_hex64
 from blockchain.core.transaction import TransactionType
 
 logger = logging.getLogger("upb_chain.contracts.credential")
@@ -41,13 +42,11 @@ class AcademicCredential:
     institution: str
     issuer_address: str
     student_address: str
-    student_name: str
     program: str
     degree: str
     issue_date: str
     expiry_date: Optional[str]
-    grade: Optional[float]
-    metadata: dict = field(default_factory=dict)
+    fields_root: str = ""   # compromiso Merkle de los datos personales (P1-2)
     status: CredentialStatus = CredentialStatus.ACTIVE
     revocation_reason: Optional[str] = None
     tx_hash: str = ""
@@ -62,13 +61,11 @@ class AcademicCredential:
             "institution": self.institution,
             "issuer_address": self.issuer_address,
             "student_address": self.student_address,
-            "student_name": self.student_name,
             "program": self.program,
             "degree": self.degree,
             "issue_date": self.issue_date,
             "expiry_date": self.expiry_date,
-            "grade": self.grade,
-            "metadata": self.metadata,
+            "fields_root": self.fields_root,
             "status": self.status,
             "revocation_reason": self.revocation_reason,
             "tx_hash": self.tx_hash,
@@ -78,10 +75,9 @@ class AcademicCredential:
         }
 
     def generate_qr_data(self) -> str:
-        """Datos para código QR de verificación."""
+        """Datos para código QR de verificación (solo campos públicos)."""
         return json.dumps({
             "id": self.credential_id,
-            "student": self.student_name,
             "degree": self.degree,
             "institution": self.institution,
             "date": self.issue_date,
@@ -195,7 +191,7 @@ class CredentialState:
 
     def credential_summary(self, credential_id: str, height: int,
                            pending: Iterable[dict] = ()) -> dict:
-        """Resumen público de una credencial (sin nota, nombre ni metadatos).
+        """Resumen público de una credencial (sin datos personales; con la raíz del compromiso).
 
         Deriva de ``credential_status``: estado, bloque, confirmaciones y, si
         fue revocada, bloque y TX de revocación.
@@ -208,6 +204,7 @@ class CredentialState:
             "issuer_address": cred.get("issuer_address"),
             "student_address": cred.get("student_address"),
             "credential_type": cred.get("credential_type"),
+            "fields_root": cred.get("fields_root"),
             "degree": cred.get("degree"), "issue_date": cred.get("issue_date"),
             "block_index": st["block_index"], "confirmations": st["confirmations"],
             "tx_id": st.get("tx_id"),
@@ -247,41 +244,37 @@ class CredentialState:
     def get_stats_by_program(self, program: str) -> dict:
         """Retorna estadísticas de credenciales para un programa académico específico.
 
-        Incluye conteos por estado y estadísticas de notas (si las credenciales
-        tienen el campo `grade` completo).
+        Solo conteos por estado: desde P1-2 las notas no están en la cadena
+        (``avg_grade``/``min_grade``/``max_grade`` se eliminaron).
 
         Args:
             program: Nombre exacto del programa (ej. "Ingeniería en IA").
 
         Returns:
-            Dict con total, active, revoked, avg_grade, min_grade, max_grade.
+            Dict con program, total, active, revoked.
         """
         program_creds = [
             c for c in self._credentials.values() if c.program == program
         ]
         active  = sum(1 for c in program_creds if c.status == CredentialStatus.ACTIVE)
         revoked = sum(1 for c in program_creds if c.status == CredentialStatus.REVOKED)
-        grades  = [c.grade for c in program_creds if c.grade is not None]
         return {
             "program": program,
             "total": len(program_creds),
             "active": active,
             "revoked": revoked,
-            "avg_grade": round(sum(grades) / len(grades), 2) if grades else None,
-            "min_grade": min(grades) if grades else None,
-            "max_grade": max(grades) if grades else None,
         }
 
     def search_credentials(self, query: str) -> List[dict]:
-        """Busca credenciales por nombre de estudiante o grado (case-insensitive).
+        """Busca credenciales por título o programa (case-insensitive).
 
-        Realiza búsqueda de subcadena en `student_name` y `degree`.
+        Desde P1-2 el nombre del estudiante no está en la cadena: solo `degree` y `program`.
 
         Args:
             query: Cadena de búsqueda. Se normaliza a minúsculas internamente.
 
         Returns:
-            Lista de credenciales que contienen la query en nombre o grado.
+            Lista de credenciales que contienen la query en título o programa.
         """
         if not query:
             return []
@@ -289,7 +282,7 @@ class CredentialState:
         results: List[dict] = []
         for credential in self._credentials.values():
             try:
-                if q in credential.student_name.lower() or q in credential.degree.lower():
+                if q in credential.program.lower() or q in credential.degree.lower():
                     results.append(credential.to_dict())
             except AttributeError:
                 continue
@@ -354,7 +347,11 @@ class CredentialContract(Contract):
         "UMSA": "Universidad Mayor de San Andrés",
     }
 
-    REQUIRED_FIELDS = {"student_name", "program", "degree", "issue_date", "credential_type"}
+    # P1-2: el payload lleva solo campos públicos + ``fields_root``. Cambio de consenso:
+    # las cadenas con credenciales en formato antiguo (student_name/grade/metadata en claro)
+    # ya no validan; hay que borrar data/ y actualizar todos los nodos a la vez.
+    REQUIRED_FIELDS = {"program", "degree", "issue_date", "credential_type", "fields_root"}
+    ALLOWED_FIELDS = frozenset(PUBLIC_FIELDS | {"fields_root"})
 
     def __init__(self, authority_address: Optional[str] = None):
         self.authority_address = authority_address or GENESIS_AUTHORITY_ADDRESS
@@ -402,9 +399,17 @@ class CredentialContract(Contract):
             return False, "Emisor no registrado"
         if not student_address:
             return False, "Falta la dirección del estudiante"
+        prohibidos = FORBIDDEN_ONCHAIN & set(data.keys())
+        if prohibidos:
+            return False, f"Datos personales no permitidos en la cadena: {sorted(prohibidos)}"
+        extra = set(data.keys()) - self.ALLOWED_FIELDS
+        if extra:
+            return False, f"Campos no permitidos en el payload: {sorted(extra)}"
         missing = self.REQUIRED_FIELDS - set(data.keys())
         if missing:
             return False, f"Campos faltantes: {sorted(missing)}"
+        if not is_hex64(data["fields_root"]):
+            return False, "fields_root debe ser hex de 64 caracteres"
         try:
             CredentialType(data["credential_type"])
         except (ValueError, TypeError):
@@ -444,13 +449,11 @@ class CredentialContract(Contract):
                 institution=self.AUTHORIZED_INSTITUTIONS[state._issuer_registry[issuer]],
                 issuer_address=issuer,
                 student_address=student,
-                student_name=payload["student_name"],
                 program=payload["program"],
                 degree=payload["degree"],
                 issue_date=payload["issue_date"],
                 expiry_date=payload.get("expiry_date"),
-                grade=payload.get("grade"),
-                metadata=payload.get("metadata", {}),
+                fields_root=payload["fields_root"],
                 tx_hash=tx_id,
                 block_number=block_number,
             )

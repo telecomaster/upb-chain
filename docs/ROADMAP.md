@@ -90,7 +90,7 @@ Flujos de trabajo y orden de dependencias:
 - [ ] **P1-1 PBFT real.** Switch `CONSENSUS=pow|pbft`, réplicas desde configuración, mensajes
   firmados por nodo, el primario cuenta su PREPARE, VIEW-CHANGE real, commit tras 2f+1. Con 2 nodos
   f=0: usar 4 réplicas (2 por RPi o una PC de laboratorio) para tolerar 1 falla.
-- [ ] **P1-2 Datos personales fuera de la cadena.** Hoy nombre y nota quedan en claro en un registro
+- [x] **P1-2 Datos personales fuera de la cadena.** *(raíz Merkle de campos con sal en `fields_root`; divulgación selectiva; ver `docs/contratos.md`; cambio de consenso: borrar `data/chain`)* Hoy nombre y nota quedan en claro en un registro
   inmutable. En cadena solo hash con sal (o raíz Merkle de campos con sal); el estudiante revela lo
   que quiera. Paso previo a ZKP.
 - [x] **P1-3 Verificación por QR.** `GET /credentials/{id}/qr` (PNG) apuntando a una página pública
