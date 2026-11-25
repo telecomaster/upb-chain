@@ -3,6 +3,7 @@ API REST de UPB-Chain — FastAPI.
 Expone endpoints para bloques, transacciones, credenciales, análisis y seguridad.
 """
 import asyncio
+import hmac
 import html
 import io
 import json
@@ -142,12 +143,36 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS restringido (P1-9): por defecto solo el propio origen del nodo en localhost.
+CORS_ORIGINS = settings.cors_origins or [
+    f"http://localhost:{API_PORT}", f"http://127.0.0.1:{API_PORT}"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o for o in CORS_ORIGINS if o != "*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_HOSTS_LOCALES = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+async def require_admin(request: Request) -> None:
+    """Dependencia para endpoints de administración (P1-9).
+
+    Con ``ADMIN_API_KEY`` definida exige la cabecera ``X-API-Key`` (401 si falta
+    o es incorrecta). Sin llave solo admite peticiones desde loopback (403 si no).
+    Uso: ``@app.post("/ruta", dependencies=[Depends(require_admin)])``.
+    """
+    clave = settings.admin_api_key
+    if clave:
+        recibida = request.headers.get("x-api-key", "")
+        if not hmac.compare_digest(recibida.encode("utf-8"), clave.encode("utf-8")):
+            raise HTTPException(401, "llave de administración ausente o incorrecta")
+        return
+    host = request.client.host if request.client else ""
+    if host not in _HOSTS_LOCALES:
+        raise HTTPException(403, "endpoint de administración: solo local o con ADMIN_API_KEY")
 
 try:
     app.mount("/static", StaticFiles(directory="dashboard/static"), name="static")
@@ -267,7 +292,7 @@ async def get_block(index: int):
     return {**block.to_dict(), "anomaly": report.to_dict()}
 
 
-@app.post("/blocks/mine")
+@app.post("/blocks/mine", dependencies=[Depends(require_admin)])
 async def mine_block(request: MineRequest, background_tasks: BackgroundTasks):
     if mining_lock.locked():
         raise HTTPException(409, "minado en curso")
@@ -373,7 +398,7 @@ async def get_address_balance(address: str):
     }
 
 
-@app.post("/mempool/prune")
+@app.post("/mempool/prune", dependencies=[Depends(require_admin)])
 async def prune_mempool(request: PruneMempoolRequest):
     """Elimina del mempool las transacciones más viejas que max_age_seconds."""
     pruned = blockchain.prune_mempool(request.max_age_seconds)
@@ -394,7 +419,7 @@ def _submit_contract_tx(tx: Transaction) -> None:
     p2p.broadcast_transaction(tx.to_dict())
 
 
-@app.post("/credentials/issuers")
+@app.post("/credentials/issuers", dependencies=[Depends(require_admin)])
 async def register_issuer(request: RegisterIssuerRequest):
     """Registra un emisor con una TX ISSUER_REGISTER firmada por la autoridad (P0-6).
 
@@ -581,7 +606,7 @@ async def get_analytics():
     return report.to_dict()
 
 
-@app.post("/ai/train")
+@app.post("/ai/train", dependencies=[Depends(require_admin)])
 async def train_anomaly_detector():
     all_txs = []
     for block in blockchain.chain:
@@ -643,7 +668,7 @@ async def network_info():
     return p2p.get_network_stats()
 
 
-@app.post("/network/peers")
+@app.post("/network/peers", dependencies=[Depends(require_admin)])
 def add_peer(host: str, port: int):
     # `def` (no async): el handshake es E/S bloqueante y FastAPI lo corre en un hilo.
     ok = p2p.connect_to_peer(host, port)
@@ -655,7 +680,7 @@ async def sync_chain():
     return {"chain": [b.to_dict() for b in blockchain.chain], "height": blockchain.height}
 
 
-@app.post("/network/sync")
+@app.post("/network/sync", dependencies=[Depends(require_admin)])
 def sync_now():
     """Fuerza la sincronización con todos los pares activos (P0-5)."""
     adopted = p2p.sync_with_peers()

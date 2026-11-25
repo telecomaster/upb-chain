@@ -29,6 +29,10 @@ class Settings:
     authority_key_file: str = "data/keys/authority.json"
     # URL pública base para los QR de verificación (P1-3). Vacía = la del request.
     public_base_url: str = ""
+    # Llave de los endpoints de administración (P1-9). Vacía = solo peticiones locales.
+    admin_api_key: str = ""
+    # Orígenes CORS permitidos. Vacía = solo el origen propio del nodo en localhost.
+    cors_origins: List[str] = field(default_factory=list)
 
 
 def load_settings(load_env_file: bool = True) -> Settings:
@@ -37,6 +41,7 @@ def load_settings(load_env_file: bool = True) -> Settings:
         load_dotenv(override=False, encoding="utf-8")
     env = os.environ.get
     peers = [p.strip() for p in env("PEERS", "").split(",") if p.strip()]
+    cors_origins = [o.strip() for o in env("CORS_ORIGINS", "").split(",") if o.strip()]
     return Settings(
         node_id=env("NODE_ID", "node_1"),
         node_host=env("NODE_HOST", "0.0.0.0"),
@@ -49,6 +54,8 @@ def load_settings(load_env_file: bool = True) -> Settings:
         log_level=env("LOG_LEVEL", "INFO").upper(),
         authority_key_file=env("AUTHORITY_KEY_FILE", "data/keys/authority.json"),
         public_base_url=env("PUBLIC_BASE_URL", "").strip(),
+        admin_api_key=env("ADMIN_API_KEY", "").strip(),
+        cors_origins=cors_origins,
     )
 
 

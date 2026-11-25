@@ -690,6 +690,12 @@
       <div>UPB-Chain v1.0.0 &nbsp;·&nbsp; Proyecto Académico Estrella</div>
       <div>Implementado en Raspberry Pi 5 (2× 16 GB RAM / 128 GB NVMe)</div>
       <div id="footer-time" style="color:var(--upb-gold);">—</div>
+      <div style="margin-top:6px;">
+        <label for="admin-key">Llave de administración:</label>
+        <input id="admin-key" type="password" autocomplete="off" placeholder="X-API-Key (opcional)"
+               style="font-size:10px; width:150px;"
+               oninput="try{sessionStorage.setItem('upb_admin_key',this.value)}catch(e){}">
+      </div>
     </div>
 
   </div>
@@ -699,8 +705,20 @@
 <script>
 const API = '';
 
+// Llave de administración (solo sessionStorage; se envía como X-API-Key).
+function adminKey() {
+  try { return sessionStorage.getItem('upb_admin_key') || ''; } catch (e) { return ''; }
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const el = document.getElementById('admin-key');
+  if (el) el.value = adminKey();
+});
+
 async function fetchJSON(url, opts) {
   try {
+    opts = opts || {};
+    const k = adminKey();
+    if (k) opts.headers = Object.assign({}, opts.headers, {'X-API-Key': k});
     const r = await fetch(API + url, opts);
     return { ok: r.ok, data: await r.json(), status: r.status };
   } catch (e) {

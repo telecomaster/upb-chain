@@ -101,7 +101,7 @@ Flujos de trabajo y orden de dependencias:
   `hardening.py` y `eclipse.py` en `/security/*` o eliminarlos.
 - [x] **P1-8 Almacenamiento a prueba de cortes.** Escritura atómica de `chain.json` (temporal +
   fsync + rename) y respaldo (riesgo R-2, microSD).
-- [ ] **P1-9 Endpoints de administración protegidos.** API key o solo-local para minar, peers,
+- [x] **P1-9 Endpoints de administración protegidos.** API key o solo-local para minar, peers,
   emisores y poda; CORS restringido.
 - [ ] **P1-10 Mediciones en RPi.** `scripts/bench_rpi.py` → `docs/benchmark_hardware.md` (hash rate,
   curva dificultad/tiempo, temperatura con `vcgencmd`, RAM, TPS); script de semilla de 50+ bloques;
