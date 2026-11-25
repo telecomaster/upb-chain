@@ -8,9 +8,23 @@ Cada mensaje se transmite como::
 
     [ 4 bytes big-endian uint32 = longitud del payload ][ payload JSON UTF-8 ]
 
-Cada intercambio usa una conexión TCP corta: el cliente abre, envía un mensaje,
-lee (si corresponde) una respuesta y cierra. No hay conexiones persistentes, así
-que "reconectar" significa volver a hacer HANDSHAKE con un par caído.
+Conexiones persistentes (P2-6): hay UNA conexión TCP larga por par y canal ("ctl" para
+HANDSHAKE/sincronización/gossip, "pbft" para los mensajes PBFT, de modo que bajar una cadena
+grande no retrase a PBFT). Por cada conexión el cliente envía un mensaje y, si corresponde, lee su
+respuesta (peticiones serializadas por un candado); el servidor atiende mensajes en bucle hasta
+que el cliente cierre o pase ``idle_timeout`` sin tráfico. Antes de reutilizarla se comprueba que
+siga viva (si el par la cerró, se reabre una vez); los TCP keepalive y la consulta periódica
+``SYNC_REQUEST`` hacen de latido. Si el par cae, ``_mark_failed`` agenda la reconexión con
+backoff exponencial y se vuelve a hacer HANDSHAKE.
+
+TLS mutuo y lista blanca (P2-6)
+-------------------------------
+Con ``tls=`` (rutas ``ca``/``cert``/``key``) ambos extremos envuelven el socket en TLS 1.3 con
+``CERT_REQUIRED``; la identidad del par es el CN de su certificado (ver ``network/tls.py``). Si
+hay ``allowlist`` (node_ids) y el CN no figura, se corta la conexión y se avisa por
+``on_unknown_peer``. El ``node_id`` anunciado en HANDSHAKE debe coincidir con el CN. SIN TLS la
+lista blanca solo es informativa: el ``node_id`` anunciado no está autenticado, así que solo
+sirve para avisar (no rechaza).
 
 Mensajes (P0-5)
 ---------------
@@ -45,7 +59,9 @@ Si el primer byte recibido es ``{`` o ``[`` (inicio de JSON plano),
 import json
 import logging
 import os
+import select
 import socket
+import ssl
 import struct
 import threading
 import time
@@ -55,6 +71,7 @@ from typing import Callable, Dict, List, Optional, Set
 
 from blockchain.core.block import GENESIS_HASH, Block
 from blockchain.core.transaction import Transaction
+from blockchain.network import tls as _tls
 
 logger = logging.getLogger("upb_chain.network")
 
@@ -106,6 +123,59 @@ class Peer:
         }
 
 
+def _cerrar(sock) -> None:
+    """Cierra un socket despertando a quien esté bloqueado leyéndolo en otro hilo."""
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except (OSError, ValueError):
+        pass
+    try:
+        sock.close()
+    except OSError:
+        pass
+
+
+class _Link:
+    """Conexión saliente persistente a un par (un candado serializa petición/respuesta)."""
+
+    def __init__(self, node: "P2PNode", host: str, port: int):
+        self.node, self.host, self.port = node, host, port
+        self.sock: Optional[socket.socket] = None
+        self.cn: Optional[str] = None
+        self.lock = threading.Lock()
+
+    def viva(self) -> bool:
+        """False si el par cerró la conexión o hay datos sin pedir (el par nunca habla primero)."""
+        try:
+            if getattr(self.sock, "pending", lambda: 0)():
+                return False
+            legible, _, _ = select.select([self.sock], [], [], 0)
+            return not legible
+        except (OSError, ValueError):
+            return False
+
+    def abrir(self, timeout: float) -> None:
+        node = self.node
+        sock = socket.create_connection((self.host, self.port), timeout=timeout)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            if node._tls_client is not None:
+                sock = node._tls_client.wrap_socket(sock)
+                self.cn = _tls.cn_del_par(sock)
+                if not node._autorizado(self.cn):
+                    node._alertar(f"{self.cn}@{self.host}")
+                    raise PermissionError(f"par {self.cn!r} fuera de la lista blanca")
+        except BaseException:
+            _cerrar(sock)
+            raise
+        self.sock = sock
+
+    def close(self) -> None:
+        if self.sock is not None:
+            _cerrar(self.sock)
+            self.sock = None
+
+
 class P2PNode:
     BUFFER_SIZE = 65536
     _MAX_PAYLOAD = 10_000_000   # 10 MB — límite de seguridad
@@ -128,6 +198,9 @@ class P2PNode:
         on_unknown_peer: Optional[Callable] = None,
         known_peers: Optional[List[str]] = None,
         consensus: str = "pow",
+        tls: Optional[Dict[str, str]] = None,
+        allowlist: Optional[List[str]] = None,
+        idle_timeout: float = 120.0,
     ):
         """
         - ``blockchain``: si se pasa, el nodo valida y añade bloques/TXs recibidos,
@@ -138,6 +211,9 @@ class P2PNode:
         - ``on_unknown_peer(direccion)`` + ``known_peers``: si ``known_peers`` (PEERS) no
           está vacío, se avisa una vez por cada par entrante que no figure en esa lista.
           Sin lista configurada (red abierta) no hay "desconocidos" y no se avisa.
+        - ``tls``: ``{"ca", "cert", "key"}`` (rutas PEM) activa el TLS mutuo (P2-6).
+        - ``allowlist``: node_ids permitidos (CN del certificado con TLS; informativa sin TLS).
+        - ``idle_timeout``: segundos sin tráfico tras los que el servidor cierra una conexión.
         - ``port=0`` elige un puerto libre (útil en tests); ver ``self.port`` tras ``start()``.
         - ``sync_interval``: cada cuánto se consulta el estado de los pares activos.
         - ``retry_base``/``retry_max``: backoff exponencial de reconexión (segundos).
@@ -171,6 +247,18 @@ class P2PNode:
         # Modo de consenso de la red (P1-1): un par con otro modo se rechaza.
         self.consensus = consensus
 
+        self.allowlist: Set[str] = set(allowlist or [])
+        self.idle_timeout = idle_timeout
+        self._tls_server = self._tls_client = None
+        if tls:
+            self._tls_server, self._tls_client = _tls.crear_contextos(
+                tls["ca"], tls["cert"], tls["key"])
+        self._links: Dict[tuple, "_Link"] = {}      # conexiones salientes por (host, port, canal)
+        self._links_lock = threading.Lock()
+        self._inbound: Set[socket.socket] = set()   # conexiones entrantes abiertas (para stop())
+        self._inbound_lock = threading.Lock()
+        self._local = threading.local()             # CN del par de la conexión que atiende el hilo
+        self._alerted: Set[str] = set()             # identidades ya avisadas (sin spam de alertas)
         self._server: Optional[socket.socket] = None
         self._threads: List[threading.Thread] = []
 
@@ -216,6 +304,14 @@ class P2PNode:
                 self._server.close()
             except OSError:
                 pass
+        with self._links_lock:
+            links, self._links = list(self._links.values()), {}
+        for link in links:
+            link.close()
+        with self._inbound_lock:
+            inbound, self._inbound = list(self._inbound), set()
+        for conn in inbound:
+            _cerrar(conn)
         for t in self._threads:
             if t is not threading.current_thread():
                 t.join(timeout=2)
@@ -235,15 +331,55 @@ class P2PNode:
             t.start()
 
     def _handle_connection(self, conn: socket.socket, addr) -> None:
-        """Recibe un mensaje del socket y lo despacha. Usa _recv_framed."""
+        """Atiende una conexión entrante: TLS (si aplica) y un bucle de mensajes hasta que cierre."""
+        self._local.cn = None
+        with self._inbound_lock:
+            self._inbound.add(conn)
         try:
             conn.settimeout(self.timeout)
-            message = self._recv_framed(conn)
-            self._dispatch(message, conn)
+            if self._tls_server is not None:
+                try:
+                    crudo = conn
+                    conn = self._tls_server.wrap_socket(crudo, server_side=True)
+                    with self._inbound_lock:
+                        self._inbound.discard(crudo)
+                except (ssl.SSLError, OSError) as e:
+                    logger.warning(f"TLS rechazado desde {addr[0]}: {e}")
+                    self._alertar(f"{addr[0]} (certificado inválido)")
+                    return
+                with self._inbound_lock:
+                    self._inbound.add(conn)
+                self._local.cn = _tls.cn_del_par(conn)
+                if not self._autorizado(self._local.cn):
+                    logger.warning(f"Par {self._local.cn!r} ({addr[0]}) fuera de la lista blanca")
+                    self._alertar(f"{self._local.cn}@{addr[0]}")
+                    return
+            conn.settimeout(self.idle_timeout)
+            while self._running:
+                try:
+                    message = self._recv_framed(conn)
+                except (ConnectionError, socket.timeout, ssl.SSLError):
+                    break               # cierre limpio del par, inactividad o error de TLS
+                self._dispatch(message, conn)
         except Exception:
-            logger.exception(f"Error manejando conexión de {addr}")
+            if self._running:
+                logger.exception(f"Error manejando conexión de {addr}")
         finally:
-            conn.close()
+            with self._inbound_lock:
+                self._inbound.discard(conn)
+            _cerrar(conn)
+
+    def _autorizado(self, node_id: Optional[str]) -> bool:
+        """Con TLS: ¿el CN del par está en la lista blanca? (lista vacía = cualquier cert de la CA)."""
+        return bool(node_id) and (not self.allowlist or node_id in self.allowlist)
+
+    def _alertar(self, identidad: str) -> None:
+        """Avisa una vez por identidad a ``on_unknown_peer`` (monitor de seguridad)."""
+        with self._peers_lock:
+            if identidad in self._alerted:
+                return
+            self._alerted.add(identidad)
+        self._notify(self.on_unknown_peer, identidad)
 
     # ── Framing (v2) ──────────────────────────────────────────────────────────
 
@@ -303,12 +439,35 @@ class P2PNode:
             data += chunk
         return data
 
-    def _request(self, host: str, port: int, message: dict, expect_reply: bool = True) -> Optional[dict]:
-        """Abre una conexión, envía `message` y (opcional) devuelve la respuesta."""
-        with socket.create_connection((host, port), timeout=self.timeout) as conn:
-            conn.settimeout(self.timeout)
-            self._send_framed(conn, message)
-            return self._recv_framed(conn) if expect_reply else None
+    def _request(self, host: str, port: int, message: dict, expect_reply: bool = True,
+                 timeout: Optional[float] = None, channel: str = "ctl") -> Optional[dict]:
+        """Envía `message` por la conexión persistente al par y (opcional) devuelve la respuesta.
+
+        Si la conexión reutilizada falla por haberla cerrado el par, se reabre y se reintenta
+        una vez (los mensajes con ``id`` se deduplican en el receptor). Un timeout no se reintenta.
+        """
+        key = (host, port, channel)
+        with self._links_lock:
+            link = self._links.setdefault(key, _Link(self, host, port))
+        timeout = timeout or self.timeout
+        with link.lock:
+            for intento in (0, 1):
+                reutilizada = link.sock is not None and link.viva()
+                try:
+                    if not reutilizada:
+                        link.close()
+                        link.abrir(timeout)
+                    link.sock.settimeout(timeout)
+                    self._send_framed(link.sock, message)
+                    return self._recv_framed(link.sock) if expect_reply else None
+                except (OSError, ssl.SSLError, ValueError) as e:
+                    link.close()
+                    if not reutilizada or intento or isinstance(e, socket.timeout):
+                        raise
+
+    def _cn_de(self, host: str, port: int) -> Optional[str]:
+        link = self._links.get((host, port, "ctl"))
+        return link.cn if link is not None else None
 
     # ── Estado local ──────────────────────────────────────────────────────────
 
@@ -402,6 +561,15 @@ class P2PNode:
 
     def _handle_handshake(self, message: dict, conn: socket.socket) -> None:
         peer_id = message.get("node_id", "unknown")
+        cn = getattr(self._local, "cn", None)
+        if self._tls_server is not None and peer_id != cn:
+            motivo = f"node_id {peer_id!r} no coincide con el CN del certificado ({cn!r})"
+            logger.warning(f"Par rechazado: {motivo}")
+            self._send_framed(conn, {"type": MSG_REJECT, "reason": motivo})
+            return
+        if self._tls_server is None and self.allowlist and peer_id not in self.allowlist:
+            # Sin TLS el node_id no está autenticado: solo se avisa, no se rechaza.
+            self._alertar(f"{peer_id} (no autenticado)")
         motivo = self._incompatible(message)
         if motivo:
             logger.warning(f"Par {peer_id} rechazado: {motivo}")
@@ -555,6 +723,11 @@ class P2PNode:
             if peer is not None:
                 self._mark_failed(peer)
             return False
+        cn = self._cn_de(host, port)
+        if self._tls_client is not None and reply.get("type") == MSG_HANDSHAKE \
+                and reply.get("node_id") != cn:
+            reply = {"type": MSG_REJECT, "reason": f"node_id {reply.get('node_id')!r} "
+                                                   f"no coincide con el CN del certificado ({cn!r})"}
         if reply.get("type") != MSG_HANDSHAKE or self._incompatible(reply):
             motivo = reply.get("reason") or self._incompatible(reply) or "respuesta inválida"
             logger.warning(f"Par {host}:{port} rechazado: {motivo}")
@@ -673,9 +846,8 @@ class P2PNode:
 
     def send_pbft(self, host: str, port: int, pbft_msg: dict, timeout: float = 2.0) -> None:
         """Entrega directa (sin gossip ni respuesta) de un mensaje PBFT a una réplica."""
-        with socket.create_connection((host, port), timeout=timeout) as conn:
-            conn.settimeout(timeout)
-            self._send_framed(conn, {"type": MSG_PBFT, "data": pbft_msg})
+        self._request(host, port, {"type": MSG_PBFT, "data": pbft_msg}, expect_reply=False,
+                      timeout=timeout, channel="pbft")
 
     def _broadcast(self, message: dict) -> int:
         # `origin`: a quién pedir la cadena si el bloque no extiende la punta del receptor.

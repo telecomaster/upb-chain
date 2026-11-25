@@ -123,6 +123,20 @@ def load_replica_key(settings: Settings, rs: ReplicaSet) -> Wallet:
     return wallet
 
 
+def load_p2p_tls(settings: Settings) -> Optional[dict]:
+    """Rutas del certificado de este nodo si ``P2P_TLS=on`` (ConfigError si faltan archivos)."""
+    if settings.p2p_tls != "on":
+        return None
+    d = Path(settings.p2p_tls_dir)
+    rutas = {"ca": d / "ca.crt", "cert": d / f"{settings.node_id}.crt",
+             "key": d / f"{settings.node_id}.key"}
+    faltan = [str(r) for r in rutas.values() if not r.is_file()]
+    if faltan:
+        raise ConfigError("Configuración inválida:\n  P2P_TLS_DIR: faltan " + ", ".join(faltan)
+                          + " (crearlos con scripts/crear_ca.py y scripts/emitir_cert_nodo.py)")
+    return {k: str(v) for k, v in rutas.items()}
+
+
 def load_authority_wallet(path: str, expected_address: str) -> Optional[Wallet]:
     """Carga la llave de la autoridad desde un archivo local (nunca versionado).
 
@@ -260,6 +274,10 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
         on_invalid_block=security_monitor.on_invalid_block,
         on_unknown_peer=security_monitor.on_unknown_peer,
         known_peers=settings.peers,
+        # P2-6: TLS mutuo y lista blanca (por defecto, en pbft, los ids de las réplicas).
+        tls=load_p2p_tls(settings),
+        allowlist=settings.p2p_allowlist or ([r.id for r in replica_set.replicas]
+                                             if replica_set is not None else []),
     )
     node = NodeState(
         settings=settings,

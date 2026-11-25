@@ -55,7 +55,7 @@ overstate what works).
   `InMemoryNetwork` for demo/unit tests). `CONSENSUS=pow|pbft` is network-wide (handshake rejects a
   mismatch); in pbft blocks have difficulty 0 / nonce 0 and need a commit certificate (2f+1 signed
   COMMITs, table `certificates` in chain.db, outside the block hash). Replica keys:
-  `scripts/crear_llave_replica.py`, never committed · `blockchain/network` P2P node (sincronización y peers en `node.py`)
+  `scripts/crear_llave_replica.py`, never committed · `blockchain/network` P2P node (sincronización y peers en `node.py`; P2-6: una conexión persistente por par y canal `ctl`/`pbft`, `P2P_TLS=on` = mTLS TLS 1.3 con contextos en `network/tls.py`, identidad = CN del certificado contra `P2P_ALLOWLIST`; CA privada en `security/pki.py` + `scripts/crear_ca.py`/`emitir_cert_nodo.py`, certificados en `data/tls/`, nunca versionados; sin TLS la lista blanca solo avisa)
 - `blockchain/contracts` (P1-13, guía en `docs/contratos.md`): `base.py` interfaz `Contract`
   (`validate`/`apply`/`initial_state`, estado = reproducción de las TXs confirmadas; una TX inválida
   invalida el bloque entero), `registry.py` `ContractRegistry`, `__init__.py` `default_contracts`;

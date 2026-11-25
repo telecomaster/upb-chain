@@ -296,8 +296,36 @@ Protocolo, variante, qué se omite y diagramas en [`docs/arquitectura.md`](docs/
 - **Estadísticas de cadena**: TPS, distribución de TXs, salud de red
 - **Análisis de credenciales**: tendencias de emisión, revocación y verificación
 
+### TLS mutuo y lista blanca de nodos (P2-6)
+
+Por defecto el P2P va en claro (`P2P_TLS=off`); en las Raspberry Pi se recomienda `P2P_TLS=on`.
+Detalle del diseño en `docs/arquitectura.md` §4.8.
+
+```powershell
+# 1. Una vez, en la máquina del administrador: la CA de la red (data/tls/ca.key + ca.crt)
+venv\Scripts\python.exe scripts\crear_ca.py
+# 2. Un certificado por nodo (CN = NODE_ID; --host = IP o nombre con el que lo alcanzan)
+venv\Scripts\python.exe scripts\emitir_cert_nodo.py node_1 --host 192.168.1.100
+```
+
+Copiar a cada nodo SOLO `ca.crt`, `<node_id>.crt` y `<node_id>.key` (nunca `ca.key`) a su
+`P2P_TLS_DIR` (por defecto `data/tls/`; `data/` no se versiona) y poner en su `.env`:
+`P2P_TLS=on` y, opcionalmente, `P2P_ALLOWLIST=node_1,node_2,...` (en `CONSENSUS=pbft` el valor por
+defecto son los ids de las réplicas; en PoW vacía acepta cualquier certificado de la CA). Si faltan
+los archivos el nodo no arranca.
+
+- **Rotar el certificado de un nodo:** volver a ejecutar `emitir_cert_nodo.py <node_id>` (dura 365 días
+  por defecto, `--dias`), copiar los archivos nuevos y reiniciar ese nodo; el CN no cambia.
+- **Revocar un nodo:** quitar su id de `P2P_ALLOWLIST` en los demás nodos y reiniciarlos. No hay listas
+  de revocación (CRL/OCSP): están fuera de alcance. Sin TLS la lista blanca solo genera alertas, porque
+  el `node_id` anunciado no está autenticado.
+- **Docker Compose:** montar por nodo su carpeta de certificados, p. ej. en `node_1`:
+  `volumes: ["./data/tls/node_1:/tls:ro"]` con `P2P_TLS: "on"` y `P2P_TLS_DIR: /tls` (esa carpeta debe
+  contener `ca.crt`, `node_1.crt` y `node_1.key`; emitir con `--host node_1`).
+
 ### Seguridad
 
+- TLS 1.3 mutuo y lista blanca de nodos en el P2P (opcional, ver arriba)
 - Simulación educativa de ataques del 51 %, Sybil y doble gasto
 - Monitor en tiempo real con niveles INFO / WARNING / CRITICAL
 - Rate limiting por dirección (100 TX/min)

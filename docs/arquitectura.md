@@ -312,6 +312,37 @@ paper conviene repetir con varias semillas y reportar la dispersión.
 
 ---
 
+### 4.8 Transporte P2P: conexiones persistentes, TLS mutuo y lista blanca (P2-6)
+
+**Conexiones.** Antes, cada mensaje abría una conexión TCP nueva (connect, enviar, leer, cerrar). Ahora
+hay **una conexión larga por par y canal** (`ctl`: handshake, sincronización y gossip; `pbft`: mensajes
+PBFT, para que bajar una cadena grande no retrase al consenso), con el mismo framing de 4 bytes + JSON.
+El servidor atiende mensajes en bucle; el cliente serializa petición/respuesta con un candado por
+conexión, comprueba que siga viva antes de reutilizarla (si el par la cerró, reabre y reintenta una vez)
+y la reconexión tras una caída sigue siendo el backoff exponencial de `_mark_failed`. El latido es TCP
+keepalive más el `SYNC_REQUEST` periódico; el servidor cierra tras `idle_timeout` sin tráfico. Encima
+siguen las colas de envío por réplica de PBFT (§4.1), que ahora escriben en la conexión `pbft`.
+
+**TLS mutuo (`P2P_TLS=on`, solo `ssl` de la biblioteca estándar).** TLS 1.3 como mínimo y
+`CERT_REQUIRED` en ambos lados: quien conecta y quien escucha presentan un certificado firmado por la CA
+privada de la red (`scripts/crear_ca.py`, `scripts/emitir_cert_nodo.py`, `security/pki.py`). No se
+verifica el nombre de host (`check_hostname = False`) porque los nodos se direccionan por IP en una LAN
+y esa IP puede cambiar; la identidad es el **CN = `node_id`** del certificado, que se compara con la lista
+blanca. Además, el `node_id` anunciado en `HANDSHAKE` debe coincidir con el CN (un nodo con el
+certificado de otro recibe `REJECT`).
+
+**Lista blanca (`P2P_ALLOWLIST`).** Con TLS, un par cuyo CN no figure se desconecta en el apretón de
+manos y se avisa por `on_unknown_peer` (alerta `UNKNOWN_PEER` del monitor, una vez por identidad). Por
+defecto en `pbft` son los ids de la lista de réplicas; en `pow` vacía significa "cualquier certificado
+de la CA". **Sin TLS la lista solo es informativa**: el `node_id` anunciado no está autenticado, así
+que únicamente se avisa y no se rechaza. Revocar = quitar el id de la lista en los demás nodos (no hay
+CRL ni OCSP); un certificado robado sigue siendo válido para otros nodos que no tengan la lista al día.
+
+**Costo (medido en un portátil, loopback, no en las Pi), mediana de 300 mensajes:** ida y vuelta de un
+`PING` 0,85 ms con conexión por mensaje → 0,24 ms persistente sin TLS → 0,27 ms persistente con mTLS; envío
+de un mensaje PBFT 0,58 ms → 0,12 ms → 0,10 ms. El apretón de manos TLS se paga una vez por conexión,
+no por mensaje.
+
 ## 5. Modelo de Amenazas
 
 | Ataque | Descripción | Mitigación en UPB-Chain |

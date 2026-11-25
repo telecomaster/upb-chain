@@ -151,7 +151,7 @@ Flujos de trabajo y orden de dependencias:
 - [x] **P2-3** Credenciales como W3C Verifiable Credentials / Open Badges 3.0 con `did:web` para la UPB. Alineado con (no certificado ni validado contra esquemas oficiales); VC sin `proof` propio, ancla en cadena como evidencia; ver `docs/credenciales_vc.md`.
 - [x] **P2-4** Índice de bloques y estado en SQLite (fin de recorridos O(altura) y reescrituras completas).
 - [x] **P2-5** Dificultad por bits y elección de cadena por trabajo acumulado.
-- [ ] **P2-6** Conexiones persistentes con TLS mutuo y lista blanca de nodos.
+- [x] **P2-6** Conexiones persistentes con TLS mutuo y lista blanca de nodos. Hecho: una conexión larga por par y canal (`ctl`/`pbft`) con reconexión con backoff; `P2P_TLS=on` (TLS 1.3, `CERT_REQUIRED` en ambos lados, identidad = CN) con CA privada (`scripts/crear_ca.py`, `scripts/emitir_cert_nodo.py`, `security/pki.py`) y `P2P_ALLOWLIST` (en pbft, por defecto los ids de las réplicas; sin TLS solo avisa). Sin CRL. Ver `docs/arquitectura.md` §4.8 y README.
 - [x] **P2-7** Dashboard en vivo por WebSocket/SSE con progreso de minado (`mine_async_friendly`).
 - [x] **P2-8** Docker Compose con 4 nodos y CI en GitHub Actions.
 - [x] **P2-9** Configuración tipada (`pydantic-settings`) y app factory en lugar de globales (desbloquea P0-8).

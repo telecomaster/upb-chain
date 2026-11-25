@@ -45,7 +45,7 @@ def esperar(cond, limite=10.0, paso=0.05):
 class RedPBFT:
     """4 réplicas PBFT (r0..r3) con llaves, lista de réplicas y apps sin arrancar."""
 
-    def __init__(self, tmp_path, n=4):
+    def __init__(self, tmp_path, n=4, **extra):
         tmp_path.mkdir(parents=True, exist_ok=True)
         self.ids = [f"r{i}" for i in range(n)]
         self.puertos = _puertos_libres(n)
@@ -63,7 +63,7 @@ class RedPBFT:
                 tmp_path, rid, consensus="pbft", node_host="127.0.0.1",
                 node_advertise_host="127.0.0.1", node_port=self.puertos[i],
                 pbft_replicas_file=str(self.lista), pbft_key_file=str(llave),
-                pbft_view_timeout=TIMEOUT_VISTA, pbft_batch_interval=0.05)
+                pbft_view_timeout=TIMEOUT_VISTA, pbft_batch_interval=0.05, **extra)
         self.clientes = {}
         self._pila = contextlib.ExitStack()
 

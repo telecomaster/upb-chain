@@ -75,7 +75,15 @@ class Settings(BaseSettings):
     # Cada cuánto, como mínimo, el primario propone un bloque si hay TXs pendientes.
     pbft_batch_interval: float = 0.2
 
-    @field_validator("peers", "cors_origins", mode="before")
+    # P2P con TLS mutuo (P2-6): "off" (por defecto) u "on" (recomendado en las Pi). Con "on" se
+    # leen P2P_TLS_DIR/ca.crt, <NODE_ID>.crt y <NODE_ID>.key (ver scripts/crear_ca.py).
+    p2p_tls: str = "off"
+    p2p_tls_dir: str = "data/tls"
+    # node_ids permitidos (CN del certificado). Vacía = en pbft los ids de las réplicas; en pow,
+    # cualquier certificado de la CA. Sin TLS solo avisa (el node_id anunciado no está autenticado).
+    p2p_allowlist: Annotated[List[str], NoDecode] = []
+
+    @field_validator("peers", "cors_origins", "p2p_allowlist", mode="before")
     @classmethod
     def _separar_comas(cls, v):
         return _lista(v)
@@ -114,6 +122,14 @@ class Settings(BaseSettings):
     def _limite(cls, v: int) -> int:
         if v < 1:
             raise ValueError("debe ser al menos 1")
+        return v
+
+    @field_validator("p2p_tls", mode="before")
+    @classmethod
+    def _p2p_tls(cls, v):
+        v = str(v).strip().lower()
+        if v not in ("off", "on"):
+            raise ValueError("debe ser 'off' o 'on'")
         return v
 
     @field_validator("consensus", mode="before")
