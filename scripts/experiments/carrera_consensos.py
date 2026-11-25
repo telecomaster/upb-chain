@@ -145,7 +145,8 @@ def _minero(node, fin):
             node.p2p.broadcast_block(res.block.to_dict())
 
 
-def correr(modo, n_tx=40, tasa=10.0, semilla=7, bits=14, limite=180.0, convergencia=10.0):
+def correr(modo, n_tx=40, tasa=10.0, semilla=7, bits=14, limite=180.0, convergencia=10.0,
+           conexion=20.0):
     """Ejecuta un modo y devuelve ``(resumen, filas)``."""
     from fastapi.testclient import TestClient
     plan = _carga(n_tx, tasa, semilla)
@@ -159,7 +160,7 @@ def correr(modo, n_tx=40, tasa=10.0, semilla=7, bits=14, limite=180.0, convergen
             pila.enter_context(TestClient(app))
         nodos = [a.state.node for a in apps]
         if not _esperar(lambda: all(n.p2p.get_network_stats()["active_peers"] >= N_NODOS - 1
-                                    for n in nodos), 20):
+                                    for n in nodos), conexion):
             raise RuntimeError("los nodos no se conectaron entre sí")
         fin = threading.Event()
         mineros = []

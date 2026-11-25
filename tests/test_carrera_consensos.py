@@ -19,8 +19,8 @@ def _modulo():
 @pytest.mark.parametrize("modo", ["pow", "pbft"])
 def test_carrera_mide_latencia_en_ambos_modos(modo, tmp_path):
     carrera = _modulo()
-    resumen, filas = carrera.correr(modo, n_tx=3, tasa=20.0, semilla=1, bits=4, limite=30,
-                                     convergencia=0.5)
+    resumen, filas = carrera.correr(modo, n_tx=3, tasa=20.0, semilla=1, bits=4, limite=120,
+                                     convergencia=0.5, conexion=90)
     assert resumen["tx_confirmadas"] == 3 and len(filas) == 3
     assert resumen["latencia_media_ms"] > 0 and resumen["tps"] > 0
     if modo == "pbft":

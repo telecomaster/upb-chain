@@ -184,6 +184,7 @@ Flujos de trabajo y orden de dependencias:
 8. **Elecciones estudiantiles** sobre el tipo `VOTE` existente.
    *Hecho: título, elegibilidad por credencial, estado pending/open/closed, participación y certificación del resultado al cierre (`docs/contratos.md`); la ventana por altura y el voto ponderado ya venían de P2-12.*
 9. **Arnés reproducible del paper:** `scripts/experiments/` regenera todas las tablas y figuras.
+   *Hecho: `scripts/experiments/run_all.py` (`--rapido`, `--solo`, `--salida`) regenera las tablas y figuras que corren en una laptop (Merkle, curva PoW, convergencia del reajuste, anomalías, carrera PoW/PBFT) con 5 semillas; resultados y máquina en `docs/experimentos/README.md`. Las cifras de las Pi siguen siendo solo de `bench_rpi.py`.*
 
 ## Qué ve cada usuario
 

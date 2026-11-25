@@ -1,0 +1,61 @@
+{
+  "plataforma": "Windows-11-10.0.26300-SP0",
+  "arquitectura": "AMD64",
+  "cpu": "AMD64 Family 23 Model 1 Stepping 1, AuthenticAMD",
+  "nucleos": 12,
+  "python": "3.12.6",
+  "fecha_utc": "2026-11-25 16:51:09",
+  "modo": "completo",
+  "semillas": 5,
+  "experimentos": {
+    "merkle": {
+      "csv": [
+        "merkle_prueba.csv"
+      ],
+      "figuras": [
+        "merkle_prueba.png"
+      ],
+      "segundos": 0.5
+    },
+    "pow_curva": {
+      "csv": [
+        "pow_curva.csv",
+        "pow_curva_crudo.csv"
+      ],
+      "figuras": [
+        "pow_curva.png"
+      ],
+      "segundos": 33.3
+    },
+    "retarget": {
+      "csv": [
+        "retarget_convergencia.csv",
+        "retarget_detalle.csv"
+      ],
+      "figuras": [
+        "retarget_convergencia.png"
+      ],
+      "segundos": 0.3
+    },
+    "anomalias": {
+      "csv": [
+        "anomalias_global.csv",
+        "anomalias_crudo.csv"
+      ],
+      "figuras": [
+        "anomalias_global.png"
+      ],
+      "segundos": 6.5
+    },
+    "carrera": {
+      "csv": [
+        "carrera_resumen.csv",
+        "carrera_semillas.csv"
+      ],
+      "figuras": [
+        "carrera_consensos.png"
+      ],
+      "segundos": 1482.6
+    }
+  }
+}

@@ -1,0 +1,3 @@
+modo,semillas,tx_por_corrida,latencia_media_ms_media,latencia_media_ms_std,latencia_p95_ms_media,latencia_p95_ms_std,tps_media,tps_std,cpu_proceso_s_media,cpu_proceso_s_std,mensajes_p2p_media,mensajes_p2p_std,bloques_media,bloques_std
+pow,5,40,37508.28,11461.26,86127.78,33939.17,0.15,0.02,72.86,7.34,1044,113.19,33.4,3.13
+pbft,5,40,63.74,5.86,97.4,14.3,10.55,1.5,2.3,0.16,1246.8,55.99,28.4,2.07
