@@ -22,7 +22,7 @@ class TestProofOfWork:
         )
         result = pow_engine.mine(candidate, timeout=30.0)
         assert result is not None
-        assert result.hash.startswith("0")
+        assert int(result.hash, 16) < 2 ** 255  # 1 bit inicial en cero (P2-5)
         assert result.block.hash == result.hash
 
     def test_validate_proof(self):
@@ -57,7 +57,7 @@ class TestProofOfWork:
     def test_rpi5_benchmark(self):
         result = estimate_rpi5_performance()
         assert result["hash_rate_per_second"] > 0
-        assert "expected_time_difficulty_4_s" in result
+        assert "expected_time_16_bits_s" in result
 
 
 class TestPBFT:

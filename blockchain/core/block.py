@@ -37,6 +37,45 @@ GENESIS_AUTHORITY_ADDRESS = "UPB780F80F6D68015E955B60BD6BEAB9F22"
 GENESIS_HASH = "5aaf08e12cacfc76329174fe7ac6d8348e2665df3e6fef2037aae5fa5dfb262f"
 
 
+# ── Dificultad en bits (P2-5) ─────────────────────────────────────────────────
+# `header.difficulty` = número de BITS iniciales en cero que debe tener el hash
+# SHA-256 del bloque, leído como entero de 256 bits. Equivale a pedir
+#
+#     int(hash, 16) < objetivo,   con   objetivo = 2**(256 - bits)
+#
+# La probabilidad de que un intento cumpla es 2**-bits, así que el trabajo
+# esperado (intentos promedio) de un bloque es 2**bits. Cada bit más duplica el
+# trabajo (antes, con ceros hexadecimales, cada paso lo multiplicaba por 16).
+# Ejemplo: 4 bits ⇔ el primer carácter hex es "0"; 8 bits ⇔ empieza con "00";
+# 6 bits ⇔ empieza con "0" y el segundo carácter hex es 0, 1, 2 o 3.
+# El génesis usa 0 bits (objetivo 2**256: cualquier hash cumple).
+# Todo es aritmética entera: determinista en cualquier máquina.
+HASH_BITS = 256
+
+
+def target_for_bits(bits: int) -> int:
+    """Objetivo entero: un hash cumple `bits` si su valor es MENOR que esto."""
+    return 1 << (HASH_BITS - bits)
+
+
+def hash_meets_bits(block_hash: str, bits: int) -> bool:
+    """True si el hash (hex de 64 caracteres) tiene al menos `bits` bits iniciales en cero."""
+    if not isinstance(bits, int) or isinstance(bits, bool) or not 0 <= bits <= HASH_BITS:
+        return False
+    if len(block_hash) != HASH_BITS // 4:
+        return False
+    try:
+        value = int(block_hash, 16)
+    except ValueError:
+        return False
+    return value < target_for_bits(bits)
+
+
+def work_for_bits(bits: int) -> int:
+    """Trabajo esperado de un bloque con `bits` de dificultad: 2**bits intentos (entero)."""
+    return 1 << bits
+
+
 @dataclass
 class BlockHeader:
     index: int
@@ -44,7 +83,7 @@ class BlockHeader:
     previous_hash: str
     merkle_root: str
     nonce: int = 0
-    difficulty: int = 4
+    difficulty: int = 4  # bits iniciales en cero exigidos al hash (P2-5)
     version: str = "1.0.0"
     node_id: str = ""
 

@@ -18,7 +18,7 @@ Propiedades de seguridad:
 
 Manejo de forks (fork resolution):
     Regla del mayor trabajo acumulado: ante dos cadenas válidas con el mismo
-    génesis se acepta la de mayor Σ 16**dificultad (no la más larga); en
+    génesis se acepta la de mayor Σ 2**bits (no la más larga, P2-5); en
     empate se conserva la propia. Es la regla de Nakamoto.
     Ref: Nakamoto (2008), Sección 5.
 
@@ -46,10 +46,43 @@ from blockchain.contracts import default_contracts
 from blockchain.contracts.accounts import AccountContract, Accounts
 from blockchain.contracts.base import Contract
 from blockchain.contracts.registry import ContractRegistry
-from blockchain.core.block import GENESIS_HASH, Block, BlockHeader
+from blockchain.core.block import (GENESIS_HASH, Block, BlockHeader, hash_meets_bits,
+                                   work_for_bits)
 from blockchain.core.transaction import Transaction, TransactionType
 
 logger = logging.getLogger("upb_chain.core")
+
+
+def retarget_step(expected_ms: int, actual_ms: int, max_step: int) -> int:
+    """Cuántos bits sumar a la dificultad: round(log2(esperado / real)), acotado a ±max_step.
+
+    Si la ventana tardó la mitad de lo esperado, el trabajo debe duplicarse: +1 bit;
+    si tardó un cuarto, +2; si tardó el doble, -1. Se redondea al entero más
+    cercano en escala logarítmica, es decir, el umbral entre k y k+1 bits está
+    en razón = 2**(k + 1/2). Para no usar floats ni raíces se compara al cuadrado:
+
+        log2(e/r) >= k + 1/2   ⇔   e² >= r² · 2**(2k + 1)        (k >= 0)
+        log2(e/r) <  -(m + 1/2) ⇔   e² · 2**(2m + 1) < r²          (m >= 0)
+
+    Sólo enteros (desplazamientos de bits): misma respuesta en cualquier máquina.
+    `actual_ms <= 0` (timestamps iguales o desordenados) cuenta como "muy rápido".
+    """
+    if actual_ms <= 0:
+        return max_step
+    e2 = expected_ms * expected_ms
+    r2 = actual_ms * actual_ms
+    step = 0
+    while step < max_step and e2 >= r2 << (2 * step + 1):
+        step += 1
+    if step == 0:
+        while step > -max_step and (e2 << (2 * -step + 1)) < r2:
+            step -= 1
+    return step
+
+
+def _ms(timestamp) -> int:
+    """Timestamp del encabezado (segundos) a milisegundos enteros."""
+    return int(timestamp * 1000)
 
 
 class Blockchain:
@@ -61,22 +94,26 @@ class Blockchain:
         self,
         node_id: str,
         data_dir: str = "data/chain",
-        initial_difficulty: int = 4,
+        initial_difficulty: int = 16,
         min_difficulty: int = 1,
-        max_difficulty: int = 8,
+        max_difficulty: int = 32,
         target_block_time: float = 10.0,
         difficulty_window: int = 10,
+        max_bits_step: int = 2,
         authority_address: Optional[str] = None,
         contracts: Optional[List[Contract]] = None,
     ):
         self.node_id = node_id
         # Parámetros de la regla de dificultad (parte del consenso: deben ser
-        # iguales en todos los nodos de la red).
+        # iguales en todos los nodos de la red). Dificultades en BITS (P2-5).
         self.initial_difficulty = initial_difficulty
         self.min_difficulty = min_difficulty
         self.max_difficulty = max_difficulty
         self.target_block_time = target_block_time
+        # Objetivo en milisegundos enteros: la regla de ajuste no usa floats.
+        self.target_block_ms = int(round(target_block_time * 1000))
         self.difficulty_window = difficulty_window
+        self.max_bits_step = max_bits_step
         self._confirmed_ids: set = set()
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -370,7 +407,7 @@ class Blockchain:
         if h.difficulty != expected:
             return False, (f"Dificultad incorrecta: esperada {expected}, "
                            f"recibida {h.difficulty}"), None
-        if not block.hash.startswith("0" * h.difficulty):
+        if not hash_meets_bits(block.hash, h.difficulty):
             return False, "Proof of Work insuficiente: el hash no cumple la dificultad", None
         if Block.compute_merkle_root(block.transactions) != h.merkle_root:
             return False, "Merkle root inválido", None
@@ -505,15 +542,21 @@ class Blockchain:
     # ── Ajuste de dificultad ──────────────────────────────────────────────────
 
     def expected_difficulty(self, prefix: List[Block]) -> int:
-        """Dificultad exigida al bloque de altura h = len(prefix), dada chain[:h].
+        """Dificultad (en bits) exigida al bloque de altura h = len(prefix), dada chain[:h].
 
-        Función pura de los bloques anteriores y de los parámetros de la cadena.
-        - Génesis: dificultad 0 (fija).
-        - Mientras no haya `difficulty_window` bloques posteriores al génesis
-          (h <= window): `initial_difficulty`.
-        - Después: se miden los últimos `window` bloques (sin incluir el génesis,
-          cuyo timestamp es artificial). tiempo medio < target/2 -> +1;
-          > target*2 -> -1; si no, igual. Siempre acotada a [min, max].
+        Función pura de los bloques anteriores y de los parámetros de la cadena
+        (P2-5, estilo Bitcoin: reajuste por épocas de `difficulty_window` bloques).
+        - Génesis: 0 bits (fija).
+        - Primera época (h <= window): `initial_difficulty`.
+        - Al empezar cada época nueva (h = window+1, 2·window+1, …) se mide la
+          anterior: los últimos `window` bloques (el génesis nunca entra, su
+          timestamp es artificial) abarcan window-1 intervalos. Se compara el
+          tiempo real con el esperado (target · intervalos) y se suman
+          round(log2(esperado/real)) bits, acotado a ±`max_bits_step` por época
+          y a [min_difficulty, max_difficulty] (`retarget_step`).
+        - Dentro de una época: la misma dificultad del bloque anterior.
+        Reajustar sólo por épocas evita la sobrecorrección de una ventana
+        deslizante: la época medida se minó entera con la misma dificultad.
         """
         h = len(prefix)
         if h == 0:
@@ -521,17 +564,13 @@ class Blockchain:
         w = self.difficulty_window
         if h <= w:
             return self.initial_difficulty
-        recent = prefix[-w:]
-        elapsed = recent[-1].header.timestamp - recent[0].header.timestamp
-        intervals = w - 1
         current = prefix[-1].header.difficulty
-        # avg = elapsed / intervals, comparado sin dividir.
-        if elapsed < self.target_block_time * 0.5 * intervals:
-            nxt = current + 1
-        elif elapsed > self.target_block_time * 2.0 * intervals:
-            nxt = current - 1
-        else:
-            nxt = current
+        if (h - 1) % w != 0:
+            return current
+        recent = prefix[-w:]
+        actual_ms = _ms(recent[-1].header.timestamp) - _ms(recent[0].header.timestamp)
+        expected_ms = self.target_block_ms * (w - 1)
+        nxt = current + retarget_step(expected_ms, actual_ms, self.max_bits_step)
         return max(self.min_difficulty, min(self.max_difficulty, nxt))
 
     def _calculate_difficulty(self) -> int:
@@ -542,12 +581,16 @@ class Blockchain:
 
     @staticmethod
     def block_work(block: Block) -> int:
-        """Trabajo esperado para minar `block`: 16**dificultad intentos (entero)."""
-        return 16 ** block.header.difficulty
+        """Trabajo esperado para minar `block`: 2**bits intentos (entero, P2-5)."""
+        return work_for_bits(block.header.difficulty)
 
     @classmethod
     def cumulative_work(cls, chain: List[Block]) -> int:
-        """Trabajo acumulado de una cadena = Σ 16**dificultad (determinista, sin floats)."""
+        """Trabajo acumulado de una cadena = Σ 2**bits (determinista, sin floats).
+
+        Por eso una cadena más corta pero minada con más bits puede "pesar" más
+        que una más larga y fácil: gana la que costó más trabajo producir.
+        """
         return sum(cls.block_work(b) for b in chain)
 
     @property

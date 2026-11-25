@@ -93,14 +93,14 @@ async def test_minado_usa_dificultad_de_la_cadena(client, tmp_path, monkeypatch)
     assert r.status_code == 200
     blk = r.json()["block"]
     assert blk["header"]["difficulty"] == bc.expected_difficulty(bc.chain[:-1]) == 2
-    assert blk["hash"].startswith("00")
+    assert int(blk["hash"], 16) < 2 ** 254  # 2 bits iniciales en cero (P2-5)
 
 
 def _cadena_con_intervalos(tmp_path, nombre, intervalo, n=12):
     """Cadena de `n` bloques con timestamps construidos (sin esperas reales)."""
     bc = Blockchain("n", str(tmp_path / nombre), initial_difficulty=3,
-                    min_difficulty=1, max_difficulty=8, difficulty_window=10)
-    bc.target_block_time = 10
+                    min_difficulty=1, max_difficulty=8, difficulty_window=10,
+                    target_block_time=10)
     t = bc.chain[0].header.timestamp
     for _ in range(n):
         t += intervalo

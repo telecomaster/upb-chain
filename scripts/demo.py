@@ -134,12 +134,13 @@ def demo():
         print(f"✓ TX {tx.type:<22} id={tx.tx_id[:16]}…  {'en mempool' if ok else 'rechazada: ' + why}")
 
     # ── 6. Proof of Work ─────────────────────────────────────────
-    separator("6. MINADO — PROOF OF WORK (dificultad 3)")
-    pow_engine = ProofOfWork(difficulty=3)
+    separator("6. MINADO — PROOF OF WORK (dificultad en bits, P2-5)")
+    pow_engine = ProofOfWork()
     candidate = chain.create_candidate_block()
+    print(f"  Dificultad exigida por la cadena: {candidate.header.difficulty} bits")
     print(f"  Candidato: índice={candidate.header.index}, TXs={len(candidate.transactions)}")
     t0 = time.perf_counter()
-    result = pow_engine.mine(candidate, timeout=60.0)
+    result = pow_engine.mine(candidate, timeout=60.0, difficulty=candidate.header.difficulty)
     elapsed = time.perf_counter() - t0
     if result:
         chain.add_block(result.block)
@@ -246,8 +247,8 @@ def demo():
 
     rpi_est = estimate_rpi5_performance()
     print(f"\n  Hash SHA-256 estimado RPi5: {rpi_est['hash_rate_per_second']:,} H/s")
-    print(f"  Tiempo esperado (dif=4):    {rpi_est['expected_time_difficulty_4_s']}s")
-    print(f"  Tiempo esperado (dif=6):    {rpi_est['expected_time_difficulty_6_s']}s")
+    print(f"  Tiempo esperado (16 bits):  {rpi_est['expected_time_16_bits_s']}s")
+    print(f"  Tiempo esperado (20 bits):  {rpi_est['expected_time_20_bits_s']}s")
 
     # ── Resumen final ─────────────────────────────────────────────
     separator("RESUMEN FINAL")

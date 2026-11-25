@@ -9,7 +9,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from blockchain.core.block import Block
+from blockchain.core.block import Block, hash_meets_bits
 from blockchain.core.chain import Blockchain
 from blockchain.core.transaction import Transaction, TransactionType
 from blockchain.core.wallet import Wallet
@@ -66,7 +66,7 @@ def test_hash_que_no_cumple_objetivo_rechazado(tmp_path, w):
     while True:  # buscar un nonce que NO cumpla el objetivo
         cand.header.nonce = n
         cand.hash = cand.compute_hash()
-        if not cand.hash.startswith("0" * cand.header.difficulty):
+        if not hash_meets_bits(cand.hash, cand.header.difficulty):
             break
         n += 1
     ok, motivo = bc.add_block(cand)

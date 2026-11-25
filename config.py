@@ -23,7 +23,7 @@ class Settings:
     node_advertise_host: str = ""
     peers: List[str] = field(default_factory=list)
     data_dir: str = "data/chain"      # aquí se guarda chain.json
-    mining_difficulty: int = 4
+    mining_difficulty: int = 16       # dificultad inicial en BITS (P2-5)
     log_level: str = "INFO"
     # Llave privada de la autoridad UPB (P0-6). Archivo local, ignorado por git.
     authority_key_file: str = "data/keys/authority.json"
@@ -52,7 +52,7 @@ def load_settings(load_env_file: bool = True) -> Settings:
         node_advertise_host=env("NODE_ADVERTISE_HOST", ""),
         peers=peers,
         data_dir=env("DATA_DIR", "data/chain"),
-        mining_difficulty=int(env("MINING_DIFFICULTY", "4")),
+        mining_difficulty=int(env("MINING_DIFFICULTY", "16")),
         log_level=env("LOG_LEVEL", "INFO").upper(),
         authority_key_file=env("AUTHORITY_KEY_FILE", "data/keys/authority.json"),
         public_base_url=env("PUBLIC_BASE_URL", "").strip(),

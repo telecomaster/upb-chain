@@ -8,7 +8,8 @@ Uso:  python scripts/verificar_prueba.py <tx_id> --base-url http://127.0.0.1:800
 Comprueba: (1) la prueba Merkle lleva la hoja a la raíz del encabezado;
 (2) el hash del bloque se recalcula desde el bloque completo (en esta cadena
 el hash cubre también las transacciones, por eso se descarga el bloque entero);
-(3) el hash cumple el prefijo de ceros de la dificultad del encabezado.
+(3) el hash cumple la dificultad del encabezado, medida en bits (P2-5):
+    int(hash, 16) < 2**(256 - bits).
 """
 import argparse
 import hashlib
@@ -44,6 +45,16 @@ def hash_bloque(bloque: dict) -> str:
     return _h(json.dumps(d, sort_keys=True, ensure_ascii=False))
 
 
+def cumple_bits(hash_hex: str, bits) -> bool:
+    """Prueba de trabajo en bits: el hash como entero debe ser < 2**(256 - bits)."""
+    if not isinstance(bits, int) or isinstance(bits, bool) or not 0 <= bits <= 256:
+        return False
+    try:
+        return len(hash_hex) == 64 and int(hash_hex, 16) < (1 << (256 - bits))
+    except ValueError:
+        return False
+
+
 def verificar(p: dict, bloque: dict) -> list:
     """Devuelve la lista de fallos (vacía = todo correcto)."""
     fallos = []
@@ -58,7 +69,7 @@ def verificar(p: dict, bloque: dict) -> list:
         fallos.append("la prueba Merkle no llega a la raíz del encabezado")
     if hash_bloque(bloque) != bloque["hash"] or bloque["hash"] != p["block_hash"]:
         fallos.append("el hash del bloque no se recalcula correctamente")
-    if not bloque["hash"].startswith("0" * bloque["header"]["difficulty"]):
+    if not cumple_bits(bloque["hash"], bloque["header"]["difficulty"]):
         fallos.append("el hash del bloque no cumple la prueba de trabajo")
     return fallos
 

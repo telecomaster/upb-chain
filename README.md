@@ -230,6 +230,14 @@ Ubuntu con Python 3.12 en cada push y pull request a `main`.
 | **Consumo** | Alto (CPU) | Bajo |
 | **Ideal para** | Redes públicas | Redes institucionales |
 
+**Dificultad en bits (P2-5).** La dificultad del PoW es el número de bits iniciales en cero del
+hash (`int(hash, 16) < 2**(256 - bits)`); el trabajo de un bloque es `2**bits` y la red elige la
+cadena con mayor `Σ 2**bits`. `MINING_DIFFICULTY` está en **bits** (por defecto 16; antes contaba
+ceros hexadecimales: un 4 antiguo equivale a 16). Cada 10 bloques la dificultad se reajusta en
+`round(log2(esperado/real))` bits (máx. ±2) hacia 10 s por bloque. Es un cambio de consenso: al
+actualizar, todos los nodos deben borrar su `DATA_DIR` (p. ej. `data/chain`). Detalle en
+[`docs/arquitectura.md`](docs/arquitectura.md) §2.4.
+
 ### Criptografía Implementada
 
 - **ECDSA secp256k1**: firma y verificación (mismo estándar que Bitcoin)
@@ -262,8 +270,7 @@ Ubuntu con Python 3.12 en cada push y pull request a `main`.
 | Almacenamiento | 128 GB microSD |
 | Red | Gigabit Ethernet + WiFi 6 |
 | Hash rate SHA-256 (estimado) | ~500,000 – 800,000 H/s |
-| Tiempo de bloque (dificultad 4) | 3–15 segundos |
-| Tiempo de bloque (dificultad 6) | 30–180 segundos |
+| Tiempo de bloque | objetivo 10 s; la dificultad en bits se reajusta sola (P2-5) |
 
 ---
 

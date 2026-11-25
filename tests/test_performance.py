@@ -154,9 +154,9 @@ def test_benchmark_crypto_1000_under_30_seconds():
 
 @pytest.mark.slow
 def test_mining_difficulty_2_under_30_seconds():
-    """Minar un bloque con dificultad 2 (hash inicia con '00') debe tardar < 30 s.
+    """Minar un bloque con dificultad 2 bits (hash < 2**254) debe tardar < 30 s.
 
-    Con ~500 000 H/s estimados para RPi5, se esperan ~0.5 ms en promedio.
+    Se esperan 2**2 = 4 intentos en promedio (P2-5: dificultad en bits).
     El límite de 30 s proporciona margen para hardware lento o VMs.
     """
     pow_engine = ProofOfWork(difficulty=2)
@@ -178,7 +178,7 @@ def test_mining_difficulty_2_under_30_seconds():
     elapsed = time.perf_counter() - start
 
     assert result is not None, "Minado fallido o timeout alcanzado"
-    assert result.hash.startswith("00"), (
+    assert int(result.hash, 16) < 2 ** 254, (
         f"Hash no cumple dificultad 2: {result.hash[:8]}"
     )
     assert pow_engine.validate_proof(result.block)

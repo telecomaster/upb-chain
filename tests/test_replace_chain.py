@@ -37,7 +37,8 @@ def _dicts(bc):
 
 
 # Parámetros con ventana corta para que la dificultad cambie rápido:
-# h <= 2 → 2; después, intervalo < 5 s → +1, > 20 s → -1, acotado a [1, 3].
+# h <= 2 → 2 bits; en h = 3, 5, … se reajusta por round(log2(10 s / intervalo))
+# (±2 bits como máximo por época), acotado a [1, 3] (P2-5).
 _AJUSTE = dict(initial_difficulty=2, min_difficulty=1, max_difficulty=3,
                target_block_time=10.0, difficulty_window=2)
 
@@ -210,9 +211,9 @@ def test_reorg_reconstruye_estados_y_readmite_por_check_transaction(tmp_path):
     assert [t.tx_id for t in b.mempool] == [t_ok.tx_id]
 
 
-def test_trabajo_acumulado_es_suma_de_16_a_la_dificultad(tmp_path):
+def test_trabajo_acumulado_es_suma_de_2_a_los_bits(tmp_path):
     a = _nuevo(tmp_path, "a")
     mine_and_add(a)
     mine_and_add(a)
-    assert a.total_work == 16 ** 0 + 16 ** 1 + 16 ** 1
+    assert a.total_work == 2 ** 0 + 2 ** 1 + 2 ** 1
     assert isinstance(a.total_work, int)

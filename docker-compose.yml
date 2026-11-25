@@ -12,7 +12,7 @@ x-entorno: &entorno
   NODE_PORT: "8001"
   NODE_HOST: 0.0.0.0
   DATA_DIR: /data
-  MINING_DIFFICULTY: "2"
+  MINING_DIFFICULTY: "8"   # bits (P2-5); equivale al antiguo "2" hexadecimal
   LOG_LEVEL: INFO
   ADMIN_API_KEY: ${ADMIN_API_KEY:?definir ADMIN_API_KEY}
   AUTHORITY_KEY_FILE: /run/secrets/authority.json

@@ -359,8 +359,9 @@ async def health():
 async def stats():
     chain_stats = blockchain.get_stats()
     network_stats = p2p.get_network_stats()
+    # Dificultad del próximo bloque, en bits (P2-5).
     pow_stats = {**pow_engine.get_mining_stats(),
-                 "difficulty": blockchain._calculate_difficulty()}
+                 "difficulty_bits": blockchain._calculate_difficulty()}
     threat = security_monitor.get_threat_summary()
     return {
         "chain": chain_stats,
