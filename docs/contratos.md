@@ -90,6 +90,45 @@ julio a las 00:00:00 hora de Bolivia. Como la hora del bloque la elige el minero
 reglas de P0-3 (mayor que la mediana, a lo sumo 2 h en el futuro), un premio enviado en los
 últimos minutos de un semestre puede caer en el siguiente; el minero lo descarta si ya no cabe.
 
+## Canjes, premios automáticos y votación ponderada (P2-12)
+
+**Orden de contratos (consenso).** No se agregó ningún contrato nuevo: el orden sigue siendo
+`accounts, credentials, voting, tokens, badges`. P2-12 amplía `tokens` y `voting`
+(`VotingContract` ahora recibe la dirección de la autoridad). Los contratos nuevos de otros
+trabajos deben ir **al final** de `default_contracts`. Además, el `ctx` del mempool lleva
+`block_index = altura + 1` (antes `None`) para validar ventanas por altura al admitir y al minar.
+
+| TX | Quién firma | Regla |
+|----|-------------|-------|
+| `CATALOG_ITEM` | autoridad | `{item_id, title, price > 0, stock >= 0, redeem_address registrada}`; un `item_id` una sola vez. "Entradas", "impresiones" o "turnos de laboratorio" son solo datos de ejemplo, no están en el código |
+| `TOKEN_REDEEM` + `item_id` | dueño | `amount == price`, `stock > 0`, `recipient == redeem_address` del ítem; descuenta 1 de stock y guarda un recibo con id `R-` + 16 primeros caracteres del `tx_id`. Sin `item_id` funciona como en P1-12 |
+| `AWARD_RULE` | autoridad | `{rule_id, credential_type, issuer_address registrado, amount > 0}`; una regla por (tipo, emisor) |
+| `ELECTION_CREATE` | autoridad o emisor | `{election_id, options (2-20), weight_rule, start_height, end_height}` + `badge_weights` o `cap` según la regla |
+
+**Premio automático: la excepción a "TX inválida ⇒ bloque inválido".** `tokens` declara
+`CREDENTIAL_ISSUE` en `HANDLED_TYPES` y premia con `auto_award(estado, tx, ctx)`, función pura
+que lee la regla y el presupuesto del semestre del bloque. Si el presupuesto restante del
+emisor no alcanza, **el premio se omite y la credencial se emite igual**; el bloque NO se
+invalida. Motivo: el emisor firmó una credencial, no un premio; invalidar el bloque dejaría a un
+emisor sin presupuesto sin poder emitir credenciales y permitiría que un presupuesto agotado por
+otras TXs del mismo bloque tumbe una credencial válida. Es determinista (mismo estado previo y
+misma hora de bloque en todos los nodos). Como los saldos son de `accounts`, ese contrato
+acredita el monto llamando a la misma `auto_award` sobre `ctx.view("tokens")`: en una TX,
+`accounts` aplica primero y `tokens` después, y ambos ven el estado previo a la TX, así que
+coinciden (si se reordenaran los contratos, esto se rompería: no hacerlo).
+
+**Votación ponderada.** Ventana por altura del bloque que incluye el voto
+(`start_height <= altura <= end_height`; nunca por hora). Reglas de peso:
+`one_per_address` (1), `by_badge` (el mayor peso entre las insignias que tiene la dirección en el
+bloque del voto) y `by_pupb_balance_snapshot` (`min(saldo, cap)` según la foto de saldos tomada
+justo antes de crear la elección, guardada en el estado). Voto de peso 0, fuera de ventana o con
+opción inexistente: inválido (400 y bloque rechazado). `tally` devuelve totales ponderados. Las
+elecciones sin `ELECTION_CREATE` siguen con la regla de P1-13 (un voto por dirección, sin
+cierre, peso 1). API: `GET|POST /catalog`, `GET /catalog/receipts/{address}`,
+`GET|POST /tokens/award-rules`, `GET|POST /elections`, `GET /contracts/voting/{id}` (con
+`weighted`, `config` y `weights`). La billetera web (`/billetera`) lista el catálogo, las reglas
+y las elecciones y firma el canje con `item_id` en el navegador.
+
 ## Una sola regla para TXs inválidas
 
 > Si `validate` rechaza una TX de un bloque, **el bloque entero es inválido**, sea cual sea el

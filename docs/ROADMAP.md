@@ -129,8 +129,8 @@ Flujos de trabajo y orden de dependencias:
   API: `GET /tokens/{address}`, `GET /badges/{address}`, `GET /issuers/{address}/budget`,
   `GET|POST /tokens/redeem-addresses`, `POST /tokens/budget`, `/tokens/award`, `/tokens/award/csv`,
   `/tokens/redeem`, `/badges/award`; panel de estudiante y de emisor en el dashboard.
-  Nombre provisorio `PUPB` (decisión abierta). **Pendiente:** premio automático al emitir
-  credencial, códigos QR de un solo uso en eventos y recompensas del laboratorio de ataques.
+  Nombre provisorio `PUPB` (decisión abierta). **Pendiente** (el premio automático al emitir credencial se hizo en P2-12):
+  códigos QR de un solo uso en eventos y recompensas del laboratorio de ataques.
 - [x] **P1-13 Interfaz única de contratos.** `apply(state, tx) -> state` determinista (sin reloj,
   azar ni floats), reproducida en cada nodo. Credential, Token, Badge y Voting como contratos de
   referencia; los estudiantes agregan nuevos por pull request.
@@ -160,8 +160,8 @@ Flujos de trabajo y orden de dependencias:
   pila hecha a mano (~500 líneas) con gas pagado en puntos de testnet. Nunca ejecutar Python del
   estudiante con `exec()`. Para Solidity, laboratorios aparte en una testnet pública (Sepolia), no
   compatibilidad EVM.
-- [ ] **P2-12** Canjes (entradas, impresiones, turnos de laboratorio), premios automáticos por contrato
-  y votación ponderada.
+- [x] **P2-12** Canjes (entradas, impresiones, turnos de laboratorio), premios automáticos por contrato
+  y votación ponderada. Hecho: `CATALOG_ITEM` + `TOKEN_REDEEM` con `item_id` (precio, stock, recibo), `AWARD_RULE` (premio automático al emitir credencial; sin presupuesto se omite el premio sin invalidar el bloque), `ELECTION_CREATE` (ventana por altura; pesos `one_per_address`, `by_badge`, saldo con foto y tope). Ver `docs/contratos.md`. Orden de contratos sin cambios.
 
 ## Ideas fuera de lo común
 

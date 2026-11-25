@@ -24,6 +24,9 @@ class TransactionType(str, Enum):
     ISSUER_BUDGET       = "ISSUER_BUDGET"       # admin: presupuesto semestral de un emisor (P1-12)
     REDEEM_ADDRESS_REGISTER = "REDEEM_ADDRESS_REGISTER"  # admin: alta de dirección de canje (P1-12)
     BADGE_AWARD         = "BADGE_AWARD"         # insignia intransferible, la otorga un emisor (P1-12)
+    CATALOG_ITEM        = "CATALOG_ITEM"        # admin: ítem canjeable con precio y stock (P2-12)
+    AWARD_RULE          = "AWARD_RULE"          # admin: premio automático al emitir una credencial (P2-12)
+    ELECTION_CREATE     = "ELECTION_CREATE"     # configuración de una elección ponderada (P2-12)
     SMART_CONTRACT      = "SMART_CONTRACT"
 
 
@@ -422,15 +425,96 @@ def create_redeem_transaction(
     private_key_hex: str,
     nonce: int = 0,
     item: str = "",
+    item_id: str = "",
 ) -> Transaction:
-    """TX TOKEN_REDEEM: quema ``amount`` del saldo de ``sender`` en una dirección de canje."""
+    """TX TOKEN_REDEEM: quema ``amount`` del saldo de ``sender`` en una dirección de canje.
+
+    Con ``item_id`` (P2-12) compra un ítem del catálogo: ``amount`` debe ser su precio.
+    """
     payload: dict = {"amount": amount}
     if item:
         payload["item"] = item
+    if item_id:
+        payload["item_id"] = item_id
     tx = Transaction(
         type=TransactionType.TOKEN_REDEEM,
         sender=sender,
         recipient=redeem_address,
+        payload=payload,
+        nonce=nonce,
+    )
+    tx.sign(private_key_hex)
+    return tx
+
+
+def create_catalog_item_transaction(
+    authority_address: str,
+    item_id: str,
+    title: str,
+    price: int,
+    stock: int,
+    redeem_address: str,
+    private_key_hex: str,
+    nonce: int = 0,
+) -> Transaction:
+    """TX CATALOG_ITEM (P2-12): la autoridad publica un ítem canjeable en una dirección de canje."""
+    tx = Transaction(
+        type=TransactionType.CATALOG_ITEM,
+        sender=authority_address,
+        recipient=redeem_address,
+        payload={"item_id": item_id, "title": title, "price": price, "stock": stock,
+                 "redeem_address": redeem_address},
+        nonce=nonce,
+    )
+    tx.sign(private_key_hex)
+    return tx
+
+
+def create_award_rule_transaction(
+    authority_address: str,
+    rule_id: str,
+    credential_type: str,
+    issuer_address: str,
+    amount: int,
+    private_key_hex: str,
+    nonce: int = 0,
+) -> Transaction:
+    """TX AWARD_RULE (P2-12): premio automático al emitir una credencial de cierto tipo."""
+    tx = Transaction(
+        type=TransactionType.AWARD_RULE,
+        sender=authority_address,
+        recipient=issuer_address,
+        payload={"rule_id": rule_id, "credential_type": credential_type,
+                 "issuer_address": issuer_address, "amount": amount},
+        nonce=nonce,
+    )
+    tx.sign(private_key_hex)
+    return tx
+
+
+def create_election_transaction(
+    creator_address: str,
+    election_id: str,
+    options: list,
+    weight_rule: str,
+    start_height: int,
+    end_height: int,
+    private_key_hex: str,
+    nonce: int = 0,
+    badge_weights: Optional[dict] = None,
+    cap: Optional[int] = None,
+) -> Transaction:
+    """TX ELECTION_CREATE (P2-12): elección con ventana por altura de bloque y regla de peso."""
+    payload: dict = {"election_id": election_id, "options": options, "weight_rule": weight_rule,
+                     "start_height": start_height, "end_height": end_height}
+    if badge_weights is not None:
+        payload["badge_weights"] = badge_weights
+    if cap is not None:
+        payload["cap"] = cap
+    tx = Transaction(
+        type=TransactionType.ELECTION_CREATE,
+        sender=creator_address,
+        recipient="VOTING_CONTRACT",
         payload=payload,
         nonce=nonce,
     )

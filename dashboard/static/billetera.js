@@ -56,6 +56,7 @@ async function obtener(ruta) {
 
 async function refrescar() {
   if (!direccion) return;
+  cargarCatalogo();
   try {
     const cuenta = await obtener(`/accounts/${direccion}`);
     $('saldo').textContent = cuenta.balance;
@@ -71,12 +72,48 @@ async function refrescar() {
       li(`${x.degree || x.credential_id} (${x.status || ''})`)));
   } catch { /* opcional */ }
 }
+// Catálogo (P2-12): "Canjear" rellena el formulario con el ítem; la firma sigue siendo local.
+async function cargarCatalogo() {
+  try {
+    const c = await obtener('/catalog');
+    $('catalogo').replaceChildren(...c.items.map((x) => {
+      const e = li(`${x.title} · ${x.price} puntos · quedan ${x.stock} `);
+      const b = document.createElement('button');
+      b.textContent = 'Canjear'; b.disabled = x.stock <= 0;
+      b.onclick = () => {
+        $('tipo').value = 'redeem'; actualizarCampos();
+        $('destino').value = x.redeem_address; $('monto').value = x.price; $('item-id').value = x.item_id;
+        $('item').value = x.title;
+      };
+      e.append(b);
+      return e;
+    }));
+  } catch { /* opcional */ }
+  try {
+    const r = await obtener('/tokens/award-rules');
+    $('reglas').replaceChildren(...r.rules.map((x) =>
+      li(`Credencial ${x.credential_type}: ${x.amount} puntos (${x.rule_id})`)));
+  } catch { /* opcional */ }
+  try {
+    const v = await obtener('/elections');
+    $('elecciones').replaceChildren(...v.elections.map((x) => {
+      const totales = Object.entries(x.tally).map(([o, n]) => `${o}: ${n}`).join(', ');
+      const e = li(`${x.election_id} (${x.open ? 'abierta' : 'cerrada'}, bloques ${x.start_height}-${x.end_height}, ` +
+        `peso: ${x.weight_rule}) ${totales} `);
+      const b = document.createElement('button');
+      b.textContent = 'Votar'; b.disabled = !x.open;
+      b.onclick = () => { $('tipo').value = 'vote'; actualizarCampos(); $('eleccion').value = x.election_id; };
+      e.append(b);
+      return e;
+    }));
+  } catch { /* opcional */ }
+}
 function li(texto) { const e = document.createElement('li'); e.textContent = texto; return e; }
 
 function actualizarCampos() {
   const t = $('tipo').value;
   const visible = { 'l-dest': t === 'transfer' || t === 'redeem' || t === 'data',
-    'l-monto': t === 'transfer' || t === 'redeem', 'l-item': t === 'redeem',
+    'l-monto': t === 'transfer' || t === 'redeem', 'l-item': t === 'redeem', 'l-itemid': t === 'redeem',
     'l-eleccion': t === 'vote', 'l-opcion': t === 'vote', 'l-dato': t === 'data' };
   for (const [id, v] of Object.entries(visible)) $(id).classList.toggle('oculto', !v);
 }
@@ -141,7 +178,7 @@ $('btn-enviar').onclick = () => protegido(async () => {
   let campos;
   switch ($('tipo').value) {
     case 'transfer': campos = kinds.transfer($('destino').value.trim(), entero('monto')); break;
-    case 'redeem': campos = kinds.redeem($('destino').value.trim(), entero('monto'), $('item').value.trim()); break;
+    case 'redeem': campos = kinds.redeem($('destino').value.trim(), entero('monto'), $('item').value.trim(), $('item-id').value.trim()); break;
     case 'vote': campos = kinds.vote($('eleccion').value.trim(), $('opcion').value.trim()); break;
     default: campos = kinds.data($('destino').value.trim(), { dato: $('dato').value });
   }

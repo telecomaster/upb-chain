@@ -159,10 +159,13 @@ class ContractRegistry:
             raise ValueError("La foto no corresponde a estos contratos")
         return {name: c.state_from_json(data[name]) for name, c in self._contracts.items()}
 
-    @staticmethod
-    def _mempool_ctx(working: States, timestamp: Optional[float]) -> TxContext:
-        """Contexto sin bloque: ``timestamp`` es la hora ESTIMADA del próximo bloque."""
-        return TxContext(MEMPOOL.block_index, MEMPOOL.block_hash, timestamp, working)
+    def _mempool_ctx(self, working: States, timestamp: Optional[float]) -> TxContext:
+        """Contexto sin bloque: ``timestamp`` es la hora ESTIMADA del próximo bloque.
+
+        ``block_index`` es la altura del próximo bloque (``height + 1``, P2-12): las
+        ventanas de elecciones por altura se validan igual en el mempool y al minar.
+        """
+        return TxContext(self.height + 1, MEMPOOL.block_hash, timestamp, working)
 
     def check_transaction(self, tx: dict, pending: Iterable[dict] = (),
                           timestamp: Optional[float] = None) -> Tuple[bool, str]:

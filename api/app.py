@@ -46,6 +46,9 @@ from blockchain.core.transaction import (
     create_redeem_address_transaction,
     create_redeem_transaction,
     create_badge_award_transaction,
+    create_catalog_item_transaction,
+    create_award_rule_transaction,
+    create_election_transaction,
 )
 from blockchain.core.wallet import Wallet, derive_address, public_key_from_private
 from blockchain.consensus.proof_of_work import ProofOfWork
@@ -360,6 +363,34 @@ class RedeemRequest(BaseModel):
     redeem_address: str
     amount: int = Field(gt=0)
     item: str = ""
+    item_id: str = ""       # ítem del catálogo (P2-12): amount debe ser su precio
+
+
+class CatalogItemRequest(BaseModel):
+    item_id: str
+    title: str
+    price: int
+    stock: int
+    redeem_address: str
+
+
+class AwardRuleRequest(BaseModel):
+    rule_id: str
+    credential_type: str
+    issuer_address: str
+    amount: int
+
+
+class ElectionRequest(BaseModel):
+    creator_address: str
+    private_key_hex: str
+    election_id: str
+    options: list
+    weight_rule: str
+    start_height: int
+    end_height: int
+    badge_weights: Optional[dict] = None
+    cap: Optional[int] = None
 
 
 class BadgeRequest(BaseModel):
@@ -825,7 +856,81 @@ async def redeem_tokens(request: RedeemRequest, node: NodeState = Depends(get_no
     """Canje: TOKEN_REDEEM firmada por el estudiante; quema el monto en una dirección de canje."""
     tx = _signed(lambda: create_redeem_transaction(
         request.sender, request.redeem_address, request.amount, request.private_key_hex,
-        nonce=node.blockchain.next_nonce(request.sender), item=request.item))
+        nonce=node.blockchain.next_nonce(request.sender), item=request.item,
+        item_id=request.item_id))
+    _submit_contract_tx(node, tx)
+    return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce}
+
+
+# ── Catálogo de canjes, premios automáticos y elecciones (P2-12) ──────────────
+
+@router.get("/catalog")
+async def list_catalog(node: NodeState = Depends(get_node)):
+    """Ítems canjeables confirmados (precio, stock y dirección de canje)."""
+    state = node.blockchain.contract_state("tokens")
+    return {"items": list(state.catalog.values()), "symbol": TOKEN_SYMBOL,
+            "height": node.blockchain.contracts.height}
+
+
+@router.post("/catalog", dependencies=[Depends(require_admin)])
+async def publish_catalog_item(request: CatalogItemRequest, node: NodeState = Depends(get_node)):
+    """Publica un ítem del catálogo (CATALOG_ITEM, firma la autoridad)."""
+    authority = _require_authority(node)
+    tx = create_catalog_item_transaction(
+        authority.address, request.item_id, request.title, request.price, request.stock,
+        request.redeem_address, authority.private_key_hex,
+        nonce=node.blockchain.next_nonce(authority.address))
+    _submit_contract_tx(node, tx)
+    return {"status": "PENDING", "tx_id": tx.tx_id}
+
+
+@router.get("/catalog/receipts/{address}")
+async def get_receipts(address: str, node: NodeState = Depends(get_node)):
+    """Recibos de canje del catálogo de ``address`` (id derivado del tx_id)."""
+    state = node.blockchain.contract_state("tokens")
+    return {"address": address,
+            "receipts": [r for r in state.receipts.values() if r["buyer"] == address]}
+
+
+@router.get("/tokens/award-rules")
+async def list_award_rules(node: NodeState = Depends(get_node)):
+    """Reglas de premio automático al emitir credenciales."""
+    return {"rules": list(node.blockchain.contract_state("tokens").rules.values()),
+            "symbol": TOKEN_SYMBOL}
+
+
+@router.post("/tokens/award-rules", dependencies=[Depends(require_admin)])
+async def create_award_rule(request: AwardRuleRequest, node: NodeState = Depends(get_node)):
+    """Crea una regla de premio automático (AWARD_RULE, firma la autoridad)."""
+    authority = _require_authority(node)
+    tx = create_award_rule_transaction(
+        authority.address, request.rule_id, request.credential_type, request.issuer_address,
+        request.amount, authority.private_key_hex,
+        nonce=node.blockchain.next_nonce(authority.address))
+    _submit_contract_tx(node, tx)
+    return {"status": "PENDING", "tx_id": tx.tx_id}
+
+
+@router.get("/elections")
+async def list_elections(node: NodeState = Depends(get_node)):
+    """Elecciones configuradas con su recuento ponderado y si están abiertas a la altura actual."""
+    state = node.blockchain.contract_state("voting")
+    height = node.blockchain.contracts.height
+    return {"height": height, "elections": [
+        {**{k: v for k, v in c.items() if k != "snapshot"},
+         "open": c["start_height"] <= height + 1 <= c["end_height"],
+         "tally": state.tally(eid), "total_votes": len(state.elections.get(eid, {}))}
+        for eid, c in state.configs.items()]}
+
+
+@router.post("/elections")
+async def create_election(request: ElectionRequest, node: NodeState = Depends(get_node)):
+    """Crea una elección (ELECTION_CREATE firmada por la autoridad o un emisor registrado)."""
+    tx = _signed(lambda: create_election_transaction(
+        request.creator_address, request.election_id, request.options, request.weight_rule,
+        request.start_height, request.end_height, request.private_key_hex,
+        nonce=node.blockchain.next_nonce(request.creator_address),
+        badge_weights=request.badge_weights, cap=request.cap))
     _submit_contract_tx(node, tx)
     return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce}
 
@@ -1258,12 +1363,16 @@ async def get_election(election_id: str, node: NodeState = Depends(get_node)):
     pending = sum(1 for tx in node.blockchain.pending_dicts()
                   if tx.get("type") == TransactionType.VOTE.value
                   and (tx.get("payload") or {}).get("election_id") == election_id)
-    if not votes and not pending:
+    if not votes and not pending and election_id not in state.configs:
         raise HTTPException(404, "Elección sin votos")
+    config = state.configs.get(election_id)
     return {
         "election_id": election_id,
         "total_votes": len(votes),
-        "tally": state.tally(election_id),
+        "tally": state.tally(election_id),     # ponderado si la elección tiene configuración
+        "weighted": config is not None,
+        "config": ({k: v for k, v in config.items() if k != "snapshot"} if config else None),
+        "weights": state.weights.get(election_id, {}),
         "voters": list(votes),
         "pending_votes": pending,
         "height": node.blockchain.contracts.height,

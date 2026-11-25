@@ -27,6 +27,30 @@ Reglas:
                              biblioteca…) se registra una sola vez.
     TOKEN_REDEEM             recipient = dirección de canje registrada; el
                              contrato de cuentas quema ``amount`` del sender.
+                             Con ``item_id`` (P2-12) compra un ítem del catálogo:
+                             amount == precio, stock > 0, recipient == la dirección
+                             de canje del ítem; descuenta 1 de stock y guarda un
+                             recibo cuyo id sale del ``tx_id``.
+    CATALOG_ITEM  (P2-12)    sender = autoridad; payload {item_id, title, price int > 0,
+                             stock int >= 0, redeem_address registrada}. Un ``item_id``
+                             se publica una sola vez. Entradas, impresiones o turnos
+                             de laboratorio son solo ejemplos de datos, no del código.
+    AWARD_RULE    (P2-12)    sender = autoridad; payload {rule_id, credential_type,
+                             issuer_address registrado, amount int > 0}. "Al emitir
+                             ``issuer_address`` una credencial de ese tipo, premiar al
+                             estudiante con ``amount``, a cargo del presupuesto
+                             semestral del emisor." Un par (tipo, emisor) tiene una
+                             sola regla.
+
+Premio automático (P2-12): ``CREDENTIAL_ISSUE`` también es de este contrato. Si hay
+una regla para (tipo, emisor) se calcula con ``auto_award`` (función pura, la misma
+para tokens y cuentas): si el semestre del bloque tiene presupuesto restante >=
+monto, se acredita; si NO alcanza, el premio se OMITE y la credencial se emite igual.
+No invalida el bloque porque el emisor firmó una credencial, no un premio: de lo
+contrario un emisor sin presupuesto no podría emitir credenciales (excepción a la
+política de TX inválida de P1-13, a propósito). Como los saldos son del contrato de
+cuentas, ese contrato acredita el monto leyendo ``ctx.view("tokens")`` ANTES de que
+este contrato aplique la TX; ambos usan el mismo estado previo, así que coinciden.
 
 No hay recompensa por minado: los mineros son nodos de la UPB.
 
@@ -100,6 +124,42 @@ def is_registered_issuer(ctx: TxContext, address) -> bool:
             and credentials.is_registered_issuer(address))
 
 
+MAX_ID = 64
+MAX_TITLE = 140
+
+
+def receipt_id_of(tx_id: str) -> str:
+    """Id determinista del recibo de un canje: sale del ``tx_id`` (P2-12)."""
+    return "R-" + str(tx_id)[:16]
+
+
+def auto_award(state: "TokenState", tx: dict, ctx: TxContext) -> Optional[dict]:
+    """Premio automático que corresponde a una TX ``CREDENTIAL_ISSUE`` (P2-12), o None.
+
+    Pura y determinista: solo mira ``state`` (previo a la TX), la TX y la hora del
+    bloque. Devuelve ``{rule_id, amount, issuer, recipient, semester}`` si hay regla
+    para (credential_type, emisor) y el presupuesto del semestre del bloque alcanza;
+    None en cualquier otro caso (sin regla, sin hora, emisor sin presupuesto).
+    """
+    if tx_type_of(tx) != "CREDENTIAL_ISSUE" or ctx.block_timestamp is None:
+        return None
+    payload = tx.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    sender, recipient = tx.get("sender", ""), tx.get("recipient", "")
+    ctype = payload.get("credential_type")
+    if not isinstance(ctype, str) or not isinstance(recipient, str) or recipient in ("", sender):
+        return None
+    for rule_id, rule in state.rules.items():
+        if rule["credential_type"] == ctype and rule["issuer_address"] == sender:
+            semester = semester_of(ctx.block_timestamp)
+            if rule["amount"] > state.remaining(sender, semester):
+                return None     # presupuesto insuficiente: se omite el premio
+            return {"rule_id": rule_id, "amount": rule["amount"], "issuer": sender,
+                    "recipient": recipient, "semester": semester}
+    return None
+
+
 @dataclass
 class TokenState:
     """Estado del contrato de tokens (los saldos están en ``accounts``)."""
@@ -108,6 +168,9 @@ class TokenState:
     redeem_addresses: Dict[str, str] = field(default_factory=dict)    # dirección → etiqueta
     redeemed: Dict[str, int] = field(default_factory=dict)            # dirección de canje → total quemado
     awards: Dict[str, List[dict]] = field(default_factory=dict)       # estudiante → premios recibidos
+    catalog: Dict[str, dict] = field(default_factory=dict)            # item_id → ítem (P2-12)
+    receipts: Dict[str, dict] = field(default_factory=dict)           # recibo → canje de catálogo (P2-12)
+    rules: Dict[str, dict] = field(default_factory=dict)              # rule_id → premio automático (P2-12)
 
     def budget_of(self, issuer: str, semester: str) -> int:
         return self.budgets.get(issuer, {}).get(semester, 0)
@@ -122,7 +185,8 @@ class TokenState:
 class TokenContract(Contract):
     NAME = "tokens"
     HANDLED_TYPES = frozenset({"ISSUER_BUDGET", "TOKEN_MINT",
-                               "REDEEM_ADDRESS_REGISTER", "TOKEN_REDEEM"})
+                               "REDEEM_ADDRESS_REGISTER", "TOKEN_REDEEM",
+                               "CATALOG_ITEM", "AWARD_RULE", "CREDENTIAL_ISSUE"})
 
     def __init__(self, authority_address: Optional[str] = None) -> None:
         from blockchain.core.block import GENESIS_AUTHORITY_ADDRESS
@@ -159,8 +223,69 @@ class TokenContract(Contract):
                 return False, "El destino no es una dirección de canje registrada"
             if not is_int(payload.get("amount")) or payload["amount"] <= 0:
                 return False, "amount debe ser un entero > 0"
+            if "item_id" in payload:
+                return self._check_item_redeem(state, tx.get("recipient"), payload)
             return True, "OK"
+        if tx_type == "CATALOG_ITEM":
+            return self._check_catalog_item(state, sender, payload)
+        if tx_type == "AWARD_RULE":
+            return self._check_award_rule(state, sender, payload, ctx)
+        if tx_type == "CREDENTIAL_ISSUE":
+            return True, "OK"   # la valida el contrato de credenciales; aquí solo se premia
         return False, f"Tipo no soportado por el contrato: {tx_type}"
+
+    @staticmethod
+    def _check_item_redeem(state: TokenState, redeem_address, payload: dict) -> Tuple[bool, str]:
+        item = state.catalog.get(payload["item_id"]) if isinstance(payload["item_id"], str) else None
+        if item is None:
+            return False, "El ítem no existe en el catálogo"
+        if payload["amount"] != item["price"]:
+            return False, f"El precio del ítem es {item['price']}, se ofreció {payload['amount']}"
+        if item["stock"] <= 0:
+            return False, "Ítem agotado"
+        if redeem_address != item["redeem_address"]:
+            return False, "El ítem se canjea en otra dirección de canje"
+        return True, "OK"
+
+    def _check_catalog_item(self, state: TokenState, sender: str, payload: dict) -> Tuple[bool, str]:
+        if sender != self.authority_address:
+            return False, "Solo la autoridad puede publicar ítems del catálogo"
+        item_id = text_or_none(payload.get("item_id"), MAX_ID)
+        if item_id is None:
+            return False, f"item_id debe ser texto de 1 a {MAX_ID} caracteres"
+        if text_or_none(payload.get("title"), MAX_TITLE) is None:
+            return False, f"title debe ser texto de 1 a {MAX_TITLE} caracteres"
+        if not is_int(payload.get("price")) or payload["price"] <= 0:
+            return False, "price debe ser un entero > 0"
+        if not is_int(payload.get("stock")) or payload["stock"] < 0:
+            return False, "stock debe ser un entero >= 0"
+        if payload.get("redeem_address") not in state.redeem_addresses:
+            return False, "redeem_address no es una dirección de canje registrada"
+        if item_id in state.catalog:
+            return False, f"El ítem {item_id} ya está en el catálogo"
+        return True, "OK"
+
+    def _check_award_rule(self, state: TokenState, sender: str, payload: dict,
+                          ctx: TxContext) -> Tuple[bool, str]:
+        if sender != self.authority_address:
+            return False, "Solo la autoridad puede crear reglas de premio"
+        rule_id = text_or_none(payload.get("rule_id"), MAX_ID)
+        if rule_id is None:
+            return False, f"rule_id debe ser texto de 1 a {MAX_ID} caracteres"
+        ctype = text_or_none(payload.get("credential_type"), MAX_ID)
+        if ctype is None:
+            return False, f"credential_type debe ser texto de 1 a {MAX_ID} caracteres"
+        if not is_registered_issuer(ctx, payload.get("issuer_address")):
+            return False, "Emisor no registrado"
+        if not is_int(payload.get("amount")) or payload["amount"] <= 0:
+            return False, "amount debe ser un entero > 0"
+        if rule_id in state.rules:
+            return False, f"La regla {rule_id} ya existe"
+        for rule in state.rules.values():
+            if (rule["credential_type"] == ctype
+                    and rule["issuer_address"] == payload["issuer_address"]):
+                return False, "Ya hay una regla para ese tipo de credencial y emisor"
+        return True, "OK"
 
     def _check_budget(self, state: TokenState, sender: str, payload: dict,
                       ctx: TxContext) -> Tuple[bool, str]:
@@ -229,4 +354,34 @@ class TokenContract(Contract):
         elif tx_type == "TOKEN_REDEEM":
             recipient = tx["recipient"]
             state.redeemed[recipient] = state.redeemed.get(recipient, 0) + payload["amount"]
+            if "item_id" in payload:
+                state.catalog[payload["item_id"]]["stock"] -= 1
+                state.receipts[receipt_id_of(tx.get("tx_id", ""))] = {
+                    "receipt_id": receipt_id_of(tx.get("tx_id", "")),
+                    "buyer": sender, "item_id": payload["item_id"],
+                    "price": payload["amount"], "redeem_address": recipient,
+                    "block_index": ctx.block_index, "tx_id": tx.get("tx_id", ""),
+                }
+        elif tx_type == "CATALOG_ITEM":
+            state.catalog[payload["item_id"]] = {
+                "item_id": payload["item_id"], "title": payload["title"],
+                "price": payload["price"], "stock": payload["stock"],
+                "redeem_address": payload["redeem_address"],
+            }
+        elif tx_type == "AWARD_RULE":
+            state.rules[payload["rule_id"]] = {
+                "rule_id": payload["rule_id"], "credential_type": payload["credential_type"],
+                "issuer_address": payload["issuer_address"], "amount": payload["amount"],
+            }
+        elif tx_type == "CREDENTIAL_ISSUE":
+            award = auto_award(state, tx, ctx)
+            if award is not None:     # sin premio: la credencial se emite igual (ver docstring)
+                per_issuer = state.minted.setdefault(sender, {})
+                per_issuer[award["semester"]] = per_issuer.get(award["semester"], 0) + award["amount"]
+                state.awards.setdefault(award["recipient"], []).append({
+                    "issuer": sender, "amount": award["amount"],
+                    "reason": f"premio automático por credencial ({award['rule_id']})",
+                    "semester": award["semester"], "block_index": ctx.block_index,
+                    "tx_id": tx.get("tx_id", ""), "rule_id": award["rule_id"],
+                })
         return state

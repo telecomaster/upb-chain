@@ -100,8 +100,8 @@ export async function buildSignedTx(privHex, fields) {
 // Campos por tipo de TX (mismos que los constructores de transaction.py).
 export const kinds = {
   transfer: (recipient, amount) => ({ type: 'TOKEN_TRANSFER', recipient, payload: { amount } }),
-  redeem: (recipient, amount, item) =>
-    ({ type: 'TOKEN_REDEEM', recipient, payload: item ? { amount, item } : { amount } }),
+  redeem: (recipient, amount, item, itemId) =>
+    ({ type: 'TOKEN_REDEEM', recipient, payload: { amount, ...(item ? { item } : {}), ...(itemId ? { item_id: itemId } : {}) } }),
   vote: (election_id, choice) =>
     ({ type: 'VOTE', recipient: 'VOTING_CONTRACT', payload: { election_id, choice } }),
   // data_hash = sha256(json.dumps(data, sort_keys=True)), igual que create_data_record_transaction.

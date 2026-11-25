@@ -120,6 +120,18 @@ class AccountContract(Contract):
             return state   # quemado: el recipient (dirección de canje) no recibe saldo
         if amount:
             state.balances[recipient] = state.balance_of(recipient) + amount
+        elif tx_type == "CREDENTIAL_ISSUE":
+            # Premio automático (P2-12): los saldos son de este contrato, la regla y el
+            # presupuesto del contrato ``tokens``. Se lee su estado PREVIO a la TX (el
+            # registro aplica este contrato primero) con la misma función pura que usa
+            # ``tokens`` al contabilizar, así los dos coinciden.
+            tokens = ctx.view("tokens")
+            if tokens is not None:
+                from blockchain.contracts.tokens import auto_award
+                award = auto_award(tokens, tx, ctx)
+                if award is not None:
+                    state.balances[recipient] = state.balance_of(recipient) + award["amount"]
+                    state.total_supply += award["amount"]
         return state
 
     # ── Vistas para la API (no son reglas de consenso) ────────────────────────

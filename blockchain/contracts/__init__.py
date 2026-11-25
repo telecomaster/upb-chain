@@ -17,7 +17,7 @@ def default_contracts(authority_address: Optional[str] = None) -> List:
     from blockchain.contracts.voting import VotingContract
     return [
         CredentialContract(authority_address),
-        VotingContract(),
+        VotingContract(authority_address),  # P2-12: elecciones ponderadas (lee badges/accounts)
         TokenContract(authority_address),   # P1-12: lee emisores de "credentials"
         BadgeContract(),                    # P1-12: ídem
     ]

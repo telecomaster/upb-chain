@@ -296,4 +296,4 @@ async def test_api_lista_contratos(client):
     assert [c["name"] for c in r["contracts"]] == ["accounts", "credentials", "voting",
                                                    "tokens", "badges"]
     assert r["contracts"][0]["handled_types"] is None
-    assert r["contracts"][2]["handled_types"] == ["VOTE"]
+    assert r["contracts"][2]["handled_types"] == ["ELECTION_CREATE", "VOTE"]
