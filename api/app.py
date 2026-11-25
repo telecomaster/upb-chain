@@ -3,12 +3,14 @@ API REST de UPB-Chain — FastAPI.
 Expone endpoints para bloques, transacciones, credenciales, análisis y seguridad.
 """
 import asyncio
+import json
 import logging
 import os
 import threading
 import time
 from contextlib import asynccontextmanager
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,8 +20,14 @@ from pydantic import BaseModel
 
 from config import load_settings, configure_logging
 from blockchain.core.chain import Blockchain
-from blockchain.core.transaction import Transaction, TransactionType, create_credential_transaction
-from blockchain.core.wallet import Wallet
+from blockchain.core.transaction import (
+    Transaction,
+    TransactionType,
+    create_credential_transaction,
+    create_issuer_register_transaction,
+    create_revoke_transaction,
+)
+from blockchain.core.wallet import Wallet, derive_address, public_key_from_private
 from blockchain.consensus.proof_of_work import ProofOfWork
 from blockchain.consensus.pbft import PBFTNode
 from blockchain.contracts.credential import CredentialContract
@@ -42,13 +50,50 @@ NODE_PORT  = settings.node_port
 API_PORT   = settings.api_port
 PEERS      = settings.peers
 
-blockchain      = Blockchain(node_id=NODE_ID, data_dir=settings.data_dir,
-                              initial_difficulty=settings.mining_difficulty)
+def build_node_state(data_dir: str, node_id: str, authority_address: Optional[str] = None,
+                     initial_difficulty: int = 4) -> Tuple[Blockchain, CredentialContract]:
+    """Carga la cadena y deriva de ella el estado del contrato de credenciales (P0-6).
+
+    El contrato se registra como observador de la cadena: se reproduce ahora
+    (arranque) y luego en cada bloque nuevo o reemplazo de cadena.
+    """
+    chain = Blockchain(node_id=node_id, data_dir=data_dir,
+                       initial_difficulty=initial_difficulty)
+    contract = CredentialContract(authority_address=authority_address)
+    chain.register_state_listener(contract)
+    return chain, contract
+
+
+def load_authority_wallet(path: str, expected_address: str) -> Optional[Wallet]:
+    """Carga la llave de la autoridad desde un archivo local (nunca versionado).
+
+    Devuelve None si el archivo no existe o si la llave no corresponde a la
+    dirección de autoridad del génesis (este nodo no podrá registrar emisores).
+    """
+    if not Path(path).exists():
+        return None
+    try:
+        wallet = Wallet.load(path)
+        public_key = public_key_from_private(wallet.private_key_hex)
+        address = derive_address(public_key)
+    except Exception:
+        logger.warning(f"Llave de autoridad ilegible en {path}")
+        return None
+    if address != expected_address:
+        logger.warning(f"La llave en {path} no es la autoridad del génesis; se ignora")
+        return None
+    return Wallet(private_key_hex=wallet.private_key_hex, public_key_hex=public_key,
+                  address=address)
+
+
+blockchain, credential_contract = build_node_state(
+    settings.data_dir, NODE_ID, initial_difficulty=settings.mining_difficulty)
+authority_wallet = load_authority_wallet(settings.authority_key_file,
+                                         credential_contract.authority_address)
 # La dificultad NO vive aquí: la dicta Blockchain._calculate_difficulty() (P0-4).
 pow_engine      = ProofOfWork()
 mining_lock     = asyncio.Lock()        # un solo minado a la vez (409 si ya hay uno)
 mining_stop     = threading.Event()     # se activa al apagar el nodo para abortar el PoW
-credential_contract = CredentialContract()
 tx_anomaly_detector = TransactionAnomalyDetector()
 block_anomaly_detector = BlockAnomalyDetector()
 chain_analytics = ChainAnalytics()
@@ -135,6 +180,13 @@ class MineRequest(BaseModel):
 class RegisterIssuerRequest(BaseModel):
     issuer_address: str
     institution_code: str
+
+
+class RevokeRequest(BaseModel):
+    credential_id: str
+    revoker_address: str
+    private_key_hex: str
+    reason: str = ""
 
 
 class PruneMempoolRequest(BaseModel):
@@ -329,20 +381,40 @@ async def prune_mempool(request: PruneMempoolRequest):
 
 # ── Endpoints: credenciales ───────────────────────────────────────────────────
 
-@app.post("/credentials/issuers")
-async def register_issuer(request: RegisterIssuerRequest):
-    ok, reason = credential_contract.register_issuer(
-        request.issuer_address, request.institution_code
-    )
+def _submit_contract_tx(tx: Transaction) -> None:
+    """Admite una TX del contrato al mempool (firma + reglas del contrato) o lanza 400."""
+    ok, reason = blockchain.add_transaction(tx)
     if not ok:
         raise HTTPException(400, reason)
-    return {"status": "registered"}
+    p2p.broadcast_transaction(tx.to_dict())
+
+
+@app.post("/credentials/issuers")
+async def register_issuer(request: RegisterIssuerRequest):
+    """Registra un emisor con una TX ISSUER_REGISTER firmada por la autoridad (P0-6).
+
+    Solo funciona en el nodo que tiene la llave de autoridad (AUTHORITY_KEY_FILE).
+    Una TX ISSUER_REGISTER firmada por otra llave se rechaza (también vía /transactions).
+    """
+    if authority_wallet is None:
+        raise HTTPException(503, "Este nodo no tiene la llave de autoridad configurada")
+    tx = create_issuer_register_transaction(
+        authority_address=authority_wallet.address,
+        issuer_address=request.issuer_address,
+        institution_code=request.institution_code,
+        private_key_hex=authority_wallet.private_key_hex,
+    )
+    _submit_contract_tx(tx)
+    return {"status": "PENDING", "tx_id": tx.tx_id}
 
 
 @app.post("/credentials/issue")
 async def issue_credential(request: CredentialRequest):
-    # La TX se firma y valida ANTES de mutar el contrato, para que una llave
-    # que no corresponde al emisor no deje una credencial huérfana.
+    """Emite una credencial: firma la TX y la pone en el mempool.
+
+    No toca el estado confirmado: la credencial queda PENDING hasta que un
+    bloque la incluya. El emisor debe estar registrado (confirmado o pendiente).
+    """
     try:
         tx = create_credential_transaction(
             issuer_address=request.issuer_address,
@@ -354,32 +426,49 @@ async def issue_credential(request: CredentialRequest):
         raise HTTPException(400, str(e))
     except Exception:
         raise HTTPException(400, "Llave privada inválida")
-    tx_ok, tx_reason = tx.is_valid()
-    if not tx_ok:
-        raise HTTPException(400, tx_reason)
+    _submit_contract_tx(tx)
 
-    ok, reason, credential = credential_contract.issue_credential(
-        request.issuer_address,
-        request.student_address,
-        request.credential_data,
-    )
-    if not ok:
-        raise HTTPException(400, reason)
-
-    blockchain.add_transaction(tx)
-    p2p.broadcast_transaction(tx.to_dict())
-
+    data = request.credential_data
+    credential_id = credential_contract.credential_id_of_tx(tx.to_dict())
     return {
-        "credential_id": credential.credential_id,
+        "credential_id": credential_id,
         "tx_id": tx.tx_id,
-        "qr_data": credential.generate_qr_data(),
+        "status": "PENDING",
+        "qr_data": json.dumps({
+            "id": credential_id,
+            "student": data.get("student_name"),
+            "degree": data.get("degree"),
+            "date": data.get("issue_date"),
+            "verify_url": f"upbchain://verify/{credential_id}",
+        }),
     }
+
+
+@app.post("/credentials/revoke")
+async def revoke_credential(request: RevokeRequest):
+    """Revoca una credencial con una TX CREDENTIAL_REVOKE firmada.
+
+    Solo la acepta si la firma el emisor original o la autoridad del génesis.
+    """
+    try:
+        tx = create_revoke_transaction(
+            revoker_address=request.revoker_address,
+            credential_id=request.credential_id,
+            reason=request.reason,
+            private_key_hex=request.private_key_hex,
+        )
+    except Exception:
+        raise HTTPException(400, "Llave privada inválida")
+    _submit_contract_tx(tx)
+    return {"tx_id": tx.tx_id, "status": "PENDING"}
 
 
 @app.get("/credentials/verify/{credential_id}")
 async def verify_credential(credential_id: str):
-    ok, reason, data = credential_contract.verify_credential(credential_id)
-    return {"valid": ok, "reason": reason, "credential": data}
+    """Estado de la credencial: PENDING, CONFIRMED (con bloque y confirmaciones),
+    REVOKED, EXPIRED o NOT_FOUND. ``valid`` es true solo si está CONFIRMED."""
+    pending = [t.to_dict() for t in blockchain.mempool]
+    return credential_contract.credential_status(credential_id, pending=pending)
 
 
 @app.get("/credentials/student/{address}")

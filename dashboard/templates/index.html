@@ -860,11 +860,17 @@ async function generateWalletAndIssue() {
   const { ok: wOk, data: wallet } = await fetchJSON('/wallet/generate', { method:'POST' });
   if (!wOk) { resultEl.textContent = '✗ Error al generar wallet'; return; }
 
+  // El registro lo firma la autoridad del nodo (TX ISSUER_REGISTER, P0-6).
   resultEl.textContent = '⏳ Registrando emisor UPB…';
-  await fetchJSON('/credentials/issuers', {
+  const { ok: rOk, data: reg } = await fetchJSON('/credentials/issuers', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ issuer_address: wallet.address, institution_code: 'UPB' })
   });
+  if (!rOk) {
+    resultEl.style.color = '#f87171';
+    resultEl.textContent = '✗ No se pudo registrar el emisor: ' + (reg?.detail || 'desconocido');
+    return;
+  }
 
   resultEl.textContent = '⏳ Emitiendo credencial en blockchain…';
   const { ok: iOk, data: issued } = await fetchJSON('/credentials/issue', {
@@ -916,10 +922,14 @@ async function verifyCredential() {
       `Grado:       ${c?.degree || '—'}\n` +
       `Institución: ${c?.institution || '—'}\n` +
       `Fecha:       ${c?.issue_date || '—'}\n` +
-      `Estado:      ${c?.status || '—'}`;
+      `Bloque:      #${data.block_index} (${data.confirmations} confirmaciones)` +
+      (data.pending_revocation ? `\n⚠ Revocación pendiente de minado` : '');
+  } else if (data.status === 'PENDING') {
+    el.style.color = 'var(--upb-gold)';
+    el.textContent = `⏳ CREDENCIAL PENDIENTE\n\nEstá en el mempool; aún no fue minada en un bloque.`;
   } else {
     el.style.color = '#f87171';
-    el.textContent = `✗ CREDENCIAL INVÁLIDA\n\nRazón: ${data.reason}`;
+    el.textContent = `✗ CREDENCIAL ${data.verdict || 'INVÁLIDA'}\n\nRazón: ${data.reason}`;
   }
 }
 

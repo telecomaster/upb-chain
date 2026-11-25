@@ -15,6 +15,7 @@ class TransactionType(str, Enum):
     CREDENTIAL_ISSUE    = "CREDENTIAL_ISSUE"
     CREDENTIAL_REVOKE   = "CREDENTIAL_REVOKE"
     CREDENTIAL_VERIFY   = "CREDENTIAL_VERIFY"
+    ISSUER_REGISTER     = "ISSUER_REGISTER"     # admin: alta de emisor, firmada por la autoridad (P0-6)
     VOTE                = "VOTE"
     DATA_RECORD         = "DATA_RECORD"
     TOKEN_TRANSFER      = "TOKEN_TRANSFER"
@@ -180,6 +181,40 @@ def create_credential_transaction(
                 json.dumps(credential_data, sort_keys=True).encode()
             ).hexdigest(),
         },
+    )
+    tx.sign(private_key_hex)
+    return tx
+
+
+def create_revoke_transaction(
+    revoker_address: str,
+    credential_id: str,
+    reason: str,
+    private_key_hex: str,
+) -> Transaction:
+    """TX CREDENTIAL_REVOKE firmada (P0-6): solo vale si la firma el emisor o la autoridad."""
+    tx = Transaction(
+        type=TransactionType.CREDENTIAL_REVOKE,
+        sender=revoker_address,
+        recipient="CREDENTIAL_CONTRACT",
+        payload={"credential_id": credential_id, "reason": reason},
+    )
+    tx.sign(private_key_hex)
+    return tx
+
+
+def create_issuer_register_transaction(
+    authority_address: str,
+    issuer_address: str,
+    institution_code: str,
+    private_key_hex: str,
+) -> Transaction:
+    """TX de administración ISSUER_REGISTER (P0-6), firmada por la autoridad del génesis."""
+    tx = Transaction(
+        type=TransactionType.ISSUER_REGISTER,
+        sender=authority_address,
+        recipient=issuer_address,
+        payload={"issuer_address": issuer_address, "institution_code": institution_code},
     )
     tx.sign(private_key_hex)
     return tx

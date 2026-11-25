@@ -11,7 +11,7 @@ from blockchain.core.block import GENESIS_HASH, Block, BlockHeader
 from blockchain.core.chain import Blockchain
 
 # Literal fijado a mano: detecta cambios accidentales de las constantes.
-HASH_ESPERADO = "23705afc1033aadb67a31a9192b569a097ebe000255c31801dc8890fcf045950"
+HASH_ESPERADO = "5aaf08e12cacfc76329174fe7ac6d8348e2665df3e6fef2037aae5fa5dfb262f"
 
 
 def test_constante_fijada():

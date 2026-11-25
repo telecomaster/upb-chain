@@ -76,6 +76,8 @@ class Blockchain:
         self.chain: List[Block] = []
         self.mempool: List[Transaction] = []
         self._lock = Lock()
+        # Estados derivados de la cadena (P0-6), p. ej. el contrato de credenciales.
+        self._state_listeners: List = []
 
         self._load_or_init()
 
@@ -134,6 +136,20 @@ class Blockchain:
     def height(self) -> int:
         return len(self.chain) - 1
 
+    # ── Estado derivado (P0-6) ────────────────────────────────────────────────
+
+    def register_state_listener(self, listener) -> None:
+        """Registra un estado derivado (ver ``blockchain/core/state.py``).
+
+        Se reproduce de inmediato sobre la cadena cargada; luego la cadena le
+        avisa de cada bloque nuevo (``apply_block``), de cada reemplazo de
+        cadena (``rebuild``) y le consulta la admisión de TXs al mempool
+        (``check_transaction``).
+        """
+        with self._lock:
+            listener.rebuild(self.chain)
+            self._state_listeners.append(listener)
+
     # ── Mempool ───────────────────────────────────────────────────────────────
 
     def add_transaction(self, tx: Transaction) -> Tuple[bool, str]:
@@ -144,6 +160,13 @@ class Blockchain:
             return False, "Transacción ya confirmada en la cadena"
         if any(t.tx_id == tx.tx_id for t in self.mempool):
             return False, "Transacción duplicada"
+        if self._state_listeners:
+            tx_dict = tx.to_dict()
+            pending = [t.to_dict() for t in self.mempool]
+            for listener in self._state_listeners:
+                valid, reason = listener.check_transaction(tx_dict, pending)
+                if not valid:
+                    return False, reason
         with self._lock:
             self.mempool.append(tx)
         logger.debug(f"TX {tx.tx_id[:8]}… añadida al mempool")
@@ -161,6 +184,8 @@ class Blockchain:
                 return False, reason
             self.chain.append(block)
             self._confirmed_ids.update(tx.get("tx_id") for tx in block.transactions)
+            for listener in self._state_listeners:
+                listener.apply_block(block)
             # Remueve transacciones confirmadas del mempool
             confirmed_ids = {tx.get("tx_id") for tx in block.transactions}
             self.mempool = [t for t in self.mempool if t.tx_id not in confirmed_ids]
@@ -395,6 +420,8 @@ class Blockchain:
         with self._lock:
             self.chain = candidate
             self._confirmed_ids = self._collect_ids(candidate)
+            for listener in self._state_listeners:
+                listener.rebuild(self.chain)
             self._save_to_disk()
         logger.info(f"Cadena reemplazada: ahora altura {self.height}")
         return True, "OK"

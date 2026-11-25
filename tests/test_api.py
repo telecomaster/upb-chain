@@ -170,61 +170,9 @@ async def test_verify_nonexistent_credential_returns_valid_false(client):
     assert body["valid"] is False
 
 
-@pytest.mark.asyncio
-async def test_full_credential_flow(client):
-    """Flujo completo: generar wallet → registrar emisor → emitir credencial → verificar."""
-    # 1. Generar wallet emisora
-    issuer_resp = await client.post("/wallet/generate")
-    assert issuer_resp.status_code == 200
-    issuer = issuer_resp.json()
-
-    # 2. Generar wallet de estudiante
-    student_resp = await client.post("/wallet/generate")
-    assert student_resp.status_code == 200
-    student = student_resp.json()
-
-    # 3. Registrar emisor UPB
-    reg_resp = await client.post(
-        "/credentials/issuers",
-        json={"issuer_address": issuer["address"], "institution_code": "UPB"},
-    )
-    assert reg_resp.status_code == 200, f"Registro de emisor falló: {reg_resp.text}"
-
-    # 4. Emitir credencial (campos requeridos por el contrato Y por create_credential_transaction)
-    unique_degree = f"Licenciatura_IA_{time.time_ns()}"
-    issue_resp = await client.post(
-        "/credentials/issue",
-        json={
-            "issuer_address": issuer["address"],
-            "student_address": student["address"],
-            "private_key_hex": issuer["private_key"],
-            "credential_data": {
-                # Requeridos por CredentialContract.issue_credential
-                "student_name": "Carlos Mamani Quispe",
-                "program": "Ingeniería en Inteligencia Artificial",
-                "degree": unique_degree,
-                "issue_date": "2025-06-10",
-                "credential_type": "DEGREE",
-                # Requeridos por create_credential_transaction
-                "institution": "Universidad Privada Boliviana",
-                "date": "2025-06-10",
-                "grade": 91.0,
-            },
-        },
-    )
-    assert issue_resp.status_code == 200, f"Emisión falló: {issue_resp.text}"
-    issue_body = issue_resp.json()
-    assert "credential_id" in issue_body
-    assert "tx_id" in issue_body
-    credential_id = issue_body["credential_id"]
-
-    # 5. Verificar que la credencial es válida
-    verify_resp = await client.get(f"/credentials/verify/{credential_id}")
-    assert verify_resp.status_code == 200
-    verify_body = verify_resp.json()
-    assert verify_body["valid"] is True, (
-        f"Credencial debería ser válida, razón: {verify_body.get('reason')}"
-    )
+# El flujo completo (registrar → emitir → PENDING → minar → VÁLIDA → reiniciar →
+# revocar → REVOCADA) está en tests/test_credentials_chain.py (P0-6), sobre una
+# cadena en tmp_path y con una autoridad controlada por el test.
 
 
 # ---------------------------------------------------------------------------

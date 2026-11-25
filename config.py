@@ -25,6 +25,8 @@ class Settings:
     data_dir: str = "data/chain"      # aquí se guarda chain.json
     mining_difficulty: int = 4
     log_level: str = "INFO"
+    # Llave privada de la autoridad UPB (P0-6). Archivo local, ignorado por git.
+    authority_key_file: str = "data/keys/authority.json"
 
 
 def load_settings(load_env_file: bool = True) -> Settings:
@@ -43,6 +45,7 @@ def load_settings(load_env_file: bool = True) -> Settings:
         data_dir=env("DATA_DIR", "data/chain"),
         mining_difficulty=int(env("MINING_DIFFICULTY", "4")),
         log_level=env("LOG_LEVEL", "INFO").upper(),
+        authority_key_file=env("AUTHORITY_KEY_FILE", "data/keys/authority.json"),
     )
 
 

@@ -61,7 +61,7 @@ Flujos de trabajo y orden de dependencias:
   `replace_chain` debe comprobar génesis y trabajo acumulado, devolver TXs huérfanas al mempool y
   llamar `on_chain_reorg`. *Listo cuando:* el nodo 2, arrancado después, alcanza al nodo 1 y se
   recupera tras una desconexión.
-- [ ] **P0-6 Credenciales derivadas de la cadena.** El estado del contrato = reproducción de TXs
+- [x] **P0-6 Credenciales derivadas de la cadena.** El estado del contrato = reproducción de TXs
   `CREDENTIAL_ISSUE`/`REVOKE` confirmadas (al iniciar y en cada bloque). Verificación devuelve
   `PENDING`/`CONFIRMED` con bloque y confirmaciones; endpoint de revocación firmado; registro de
   emisores por TX de administración firmada con la llave de autoridad del génesis.

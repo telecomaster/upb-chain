@@ -26,13 +26,13 @@ from typing import List, Optional
 # incompatibles las cadenas existentes (es una nueva red).
 GENESIS_TIMESTAMP = 1767225600.0  # 2026-01-01T00:00:00Z, fijo
 GENESIS_DATA = "UPB-Chain Genesis Block — Universidad Privada Boliviana"
-# Dirección (clave pública) de la autoridad UPB. PLACEHOLDER: el trabajo P0-6
-# la sustituirá por la dirección real de la autoridad, que firmará las TXs del
-# registro de emisores. Nunca se versiona la clave privada.
-GENESIS_AUTHORITY_ADDRESS = ""
+# Dirección de la autoridad UPB (P0-6): la única que puede firmar TXs
+# ISSUER_REGISTER (alta de emisores de credenciales). La llave privada NUNCA se
+# versiona: vive en data/keys/authority.json (ver scripts/crear_llave_autoridad.py).
+GENESIS_AUTHORITY_ADDRESS = "UPB780F80F6D68015E955B60BD6BEAB9F22"
 # Hash esperado del bloque 0. Fijado a mano para detectar cambios accidentales
 # (un test verifica que create_genesis() lo reproduce).
-GENESIS_HASH = "23705afc1033aadb67a31a9192b569a097ebe000255c31801dc8890fcf045950"
+GENESIS_HASH = "5aaf08e12cacfc76329174fe7ac6d8348e2665df3e6fef2037aae5fa5dfb262f"
 
 
 @dataclass
