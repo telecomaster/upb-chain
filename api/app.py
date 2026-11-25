@@ -41,6 +41,7 @@ from blockchain.network.node import P2PNode
 from ai.anomaly.detector import TransactionAnomalyDetector, BlockAnomalyDetector
 from ai.analytics.chain_stats import ChainAnalytics
 from security.monitor import SecurityMonitor
+from security.rate_limiter import TxRateLimiter
 from security.attacks.simulator import full_security_analysis
 from security.attacks.eclipse import EclipseAttack
 from security.hardening import HardeningAuditor
@@ -109,6 +110,27 @@ tx_anomaly_detector = TransactionAnomalyDetector()
 block_anomaly_detector = BlockAnomalyDetector()
 chain_analytics = ChainAnalytics()
 security_monitor = SecurityMonitor()
+security_monitor.TX_RATE_LIMIT = settings.tx_rate_limit
+# P1-5: límite de admisión al mempool (política local, nunca regla de consenso).
+tx_rate_limiter = TxRateLimiter(limit=settings.tx_rate_limit, window=security_monitor.TX_RATE_WINDOW)
+
+
+def _enforce_tx_rate_limit(sender: str) -> None:
+    """429 (y alerta) si el emisor superó el límite de TX por minuto."""
+    allowed, count = tx_rate_limiter.check(sender)
+    if not allowed:
+        security_monitor.on_tx_rate_limited(sender, count, tx_rate_limiter.limit)
+        raise HTTPException(429, f"Límite de {tx_rate_limiter.limit} TX por minuto excedido")
+
+
+def _on_chain_reorg(fork_height: int, dropped: list, added: list) -> None:
+    """Reorganización → alerta (profundidad = bloques propios descartados) y bloques nuevos."""
+    security_monitor.on_chain_reorg(len(dropped))
+    for block in added:
+        security_monitor.on_block(block.to_dict())
+
+
+blockchain.add_reorg_listener(_on_chain_reorg)
 
 pbft_peers = [NODE_ID] + [f"node_{i}" for i in range(2, 5)]
 pbft_node = PBFTNode(
@@ -126,6 +148,11 @@ p2p = P2PNode(
     # extiende la punta, sincroniza con el emisor (replace_chain por trabajo).
     blockchain=blockchain,
     on_pbft_message=lambda m: logger.info(f"PBFT msg recibido: {m}"),
+    # P1-5: bloques recibidos y aceptados, bloques inválidos y pares fuera de PEERS.
+    on_new_block=security_monitor.on_block,
+    on_invalid_block=security_monitor.on_invalid_block,
+    on_unknown_peer=security_monitor.on_unknown_peer,
+    known_peers=PEERS,
 )
 
 
@@ -335,7 +362,9 @@ async def mine_block(request: MineRequest, background_tasks: BackgroundTasks):
         ok, reason = blockchain.add_block(result.block)
         if not ok:
             # Típico: llegó un bloque de un peer y la punta cambió durante el minado.
+            security_monitor.on_invalid_block(reason, NODE_ID)
             raise HTTPException(409, f"Bloque minado ya no es válido: {reason}")
+        security_monitor.on_block(result.block.to_dict())
     # Difusión a los pares (E/S de red bloqueante) fuera del event loop (P0-5).
     await asyncio.to_thread(p2p.broadcast_block, result.block.to_dict())
     return {
@@ -389,6 +418,7 @@ async def create_transaction(request: TransactionRequest):
         except Exception:
             raise HTTPException(400, "Llave privada inválida")
 
+    _enforce_tx_rate_limit(tx.sender)
     anomaly = tx_anomaly_detector.predict(tx.to_dict())
     security_monitor.on_transaction(tx.to_dict())
 
@@ -505,10 +535,12 @@ async def transfer_tokens(request: TransferRequest):
 # ── Endpoints: credenciales ───────────────────────────────────────────────────
 
 def _submit_contract_tx(tx: Transaction) -> None:
-    """Admite una TX al mempool (firma, cuentas y reglas del contrato) o lanza 400."""
+    """Admite una TX al mempool (límite por emisor, firma, cuentas y reglas del contrato) o lanza 400/429."""
+    _enforce_tx_rate_limit(tx.sender)
     ok, reason = blockchain.add_transaction(tx)
     if not ok:
         raise HTTPException(400, reason)
+    security_monitor.on_transaction(tx.to_dict())
     p2p.broadcast_transaction(tx.to_dict())
 
 

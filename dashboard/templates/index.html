@@ -457,6 +457,11 @@
           <div id="chain-reorgs" style="font-size:22px; font-weight:700; color:#a78bfa;">—</div>
         </div>
       </div>
+
+      <div style="margin-top:12px;">
+        <div style="font-size:10px; color:var(--upb-muted); text-transform:uppercase; margin-bottom:6px;">Alertas en vivo</div>
+        <div id="live-alerts" style="max-height:160px; overflow-y:auto; font-size:11px; line-height:1.5;">Sin alertas.</div>
+      </div>
     </div>
 
     <!-- Distribución TX -->
@@ -1460,6 +1465,26 @@ setInterval(loadNetwork,              15000);
 setInterval(loadBlockTimeline,        15000);
 setInterval(loadPendingTransactions,   5000);
 setInterval(loadConsensusMetrics,     15000);
+
+// ── Alertas de seguridad en vivo (P1-5; SSE queda para P2-7) ──
+async function loadLiveAlerts() {
+  const { ok, data } = await fetchJSON('/security/alerts');
+  const box = document.getElementById('live-alerts');
+  if (!ok || !data || !box) return;
+  const alerts = (data.alerts || []).slice(-15).reverse();
+  if (!alerts.length) { box.textContent = 'Sin alertas.'; return; }
+  const colores = { INFO:'#60a5fa', WARNING:'#fbbf24', CRITICAL:'#f87171' };
+  box.textContent = '';
+  for (const a of alerts) {
+    const fila = document.createElement('div');
+    fila.style.color = colores[a.level] || 'var(--upb-text)';
+    const hora = new Date(a.timestamp * 1000).toLocaleTimeString();
+    fila.textContent = `${hora} [${a.level}] ${a.event_type}: ${a.message}`;
+    box.appendChild(fila);
+  }
+}
+loadLiveAlerts();
+setInterval(loadLiveAlerts, 5000);
 
 // ── Ciclo de actualización ────────────────────────────────
 async function refresh() {

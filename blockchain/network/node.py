@@ -113,11 +113,19 @@ class P2PNode:
         retry_base: float = 1.0,
         retry_max: float = 60.0,
         timeout: float = 10.0,
+        on_invalid_block: Optional[Callable] = None,
+        on_unknown_peer: Optional[Callable] = None,
+        known_peers: Optional[List[str]] = None,
     ):
         """
         - ``blockchain``: si se pasa, el nodo valida y añade bloques/TXs recibidos,
           responde ``GET_CHAIN`` y sincroniza con ``replace_chain``. ``on_new_block``
           y ``on_new_tx`` pasan a ser avisos DESPUÉS de aceptar (dict recibido).
+        - ``on_invalid_block(reason, origen)``: aviso cuando un bloque recibido que
+          extiende la punta es rechazado (P1-5).
+        - ``on_unknown_peer(direccion)`` + ``known_peers``: si ``known_peers`` (PEERS) no
+          está vacío, se avisa una vez por cada par entrante que no figure en esa lista.
+          Sin lista configurada (red abierta) no hay "desconocidos" y no se avisa.
         - ``port=0`` elige un puerto libre (útil en tests); ver ``self.port`` tras ``start()``.
         - ``sync_interval``: cada cuánto se consulta el estado de los pares activos.
         - ``retry_base``/``retry_max``: backoff exponencial de reconexión (segundos).
@@ -145,6 +153,9 @@ class P2PNode:
         self.on_new_block = on_new_block
         self.on_new_tx = on_new_tx
         self.on_pbft_message = on_pbft_message
+        self.on_invalid_block = on_invalid_block
+        self.on_unknown_peer = on_unknown_peer
+        self.known_peers: Set[str] = set(known_peers or [])
 
         self._server: Optional[socket.socket] = None
         self._threads: List[threading.Thread] = []
@@ -371,6 +382,11 @@ class P2PNode:
         port = int(message.get("port") or 0)
         if not host or not port or self._is_self(host, port, peer_id):
             return
+        if self.on_unknown_peer and self.known_peers and f"{host}:{port}" not in self.known_peers:
+            with self._peers_lock:
+                nuevo = f"{host}:{port}" not in self.peers
+            if nuevo:
+                self._notify(self.on_unknown_peer, f"{host}:{port}")
         self._register_peer(host, port, message)
         self._learn_peers(message.get("peers", []))
         if int(message.get("work", 0)) > self._local_work():
@@ -403,6 +419,9 @@ class P2PNode:
                 return
             if bc.last_block.hash == tip.hash:   # la punta no cambió: el bloque es inválido
                 logger.warning(f"Bloque #{block.header.index} inválido ignorado: {reason}")
+                origin = message.get("origin") or {}
+                self._notify(self.on_invalid_block, reason,
+                             origin.get("node_id") or message.get("node_id") or "par desconocido")
                 return
         # No extiende nuestra punta: puede venir de una cadena con más trabajo.
         origin = message.get("origin") or {}
@@ -411,6 +430,16 @@ class P2PNode:
         if host and port and not self._is_self(host, port):
             logger.info(f"Bloque #{block.header.index} no extiende la punta: sincronizando con {host}:{port}")
             self.sync_with(f"{host}:{port}")
+
+    @staticmethod
+    def _notify(callback: Optional[Callable], *args) -> None:
+        """Avisa a un observador sin dejar que sus errores rompan el manejo del mensaje."""
+        if callback is None:
+            return
+        try:
+            callback(*args)
+        except Exception:
+            logger.exception("Error en un callback del nodo P2P")
 
     def _handle_tx(self, message: dict) -> None:
         data = message.get("data") or {}

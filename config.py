@@ -33,6 +33,8 @@ class Settings:
     admin_api_key: str = ""
     # Orígenes CORS permitidos. Vacía = solo el origen propio del nodo en localhost.
     cors_origins: List[str] = field(default_factory=list)
+    # Máximo de TX por minuto y emisor admitidas al mempool (P1-5). No es regla de consenso.
+    tx_rate_limit: int = 100
 
 
 def load_settings(load_env_file: bool = True) -> Settings:
@@ -56,6 +58,7 @@ def load_settings(load_env_file: bool = True) -> Settings:
         public_base_url=env("PUBLIC_BASE_URL", "").strip(),
         admin_api_key=env("ADMIN_API_KEY", "").strip(),
         cors_origins=cors_origins,
+        tx_rate_limit=int(env("TX_RATE_LIMIT", "100")),
     )
 
 

@@ -97,7 +97,7 @@ Flujos de trabajo y orden de dependencias:
   `http` de verificación (estado, bloque, confirmaciones, emisor). `qrcode` ya está en requirements.
 - [x] **P1-4 Revocación e historial en el dashboard.** Formularios y el guion de TAREAS 3.1
   (5 emitidas, 1 revocada).
-- [ ] **P1-5 Monitor de seguridad conectado.** Llamar `on_block`, `on_invalid_block`,
+- [x] **P1-5 Monitor de seguridad conectado.** Llamar `on_block`, `on_invalid_block`,
   `on_chain_reorg`, `on_unknown_peer`; aplicar (no solo alertar) el límite de 100 TX/min; alertas en
   vivo en el dashboard.
 - [ ] **P1-6 Detección de anomalías medible (OE-4, AUC > 0,85).** Generador de carga con semilla y

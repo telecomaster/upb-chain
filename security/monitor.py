@@ -108,6 +108,18 @@ class SecurityMonitor:
                 metadata={"sender": sender, "tx_count": len(recent), "offenses": self._suspicious_addresses[sender]},
             ))
 
+    def on_tx_rate_limited(self, sender: str, count: int, limit: int) -> None:
+        """Alerta por una TX rechazada (429) al superar el límite por emisor (P1-5)."""
+        self._suspicious_addresses[sender] += 1
+        offenses = self._suspicious_addresses[sender]
+        self._all_tx_events.append((time.time(), sender, True))
+        self._fire(SecurityAlert(
+            level=AlertLevel.WARNING if offenses < 5 else AlertLevel.CRITICAL,
+            event_type="TX_RATE_LIMIT",
+            message=f"Dirección {sender[:16]}… superó {limit} TX por {self.TX_RATE_WINDOW}s (rechazada)",
+            metadata={"sender": sender, "tx_count": count, "limit": limit, "offenses": offenses},
+        ))
+
     def on_block(self, block: dict) -> None:
         header = block.get("header", {})
         now = time.time()
