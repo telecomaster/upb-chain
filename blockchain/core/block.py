@@ -21,6 +21,19 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional
 
+# ── Constantes del génesis (P0-1) ─────────────────────────────────────────────
+# Cambiar CUALQUIERA de estas constantes cambia GENESIS_HASH y vuelve
+# incompatibles las cadenas existentes (es una nueva red).
+GENESIS_TIMESTAMP = 1767225600.0  # 2026-01-01T00:00:00Z, fijo
+GENESIS_DATA = "UPB-Chain Genesis Block — Universidad Privada Boliviana"
+# Dirección (clave pública) de la autoridad UPB. PLACEHOLDER: el trabajo P0-6
+# la sustituirá por la dirección real de la autoridad, que firmará las TXs del
+# registro de emisores. Nunca se versiona la clave privada.
+GENESIS_AUTHORITY_ADDRESS = ""
+# Hash esperado del bloque 0. Fijado a mano para detectar cambios accidentales
+# (un test verifica que create_genesis() lo reproduce).
+GENESIS_HASH = "23705afc1033aadb67a31a9192b569a097ebe000255c31801dc8890fcf045950"
+
 
 @dataclass
 class BlockHeader:
@@ -95,20 +108,27 @@ class Block:
 
     @classmethod
     def create_genesis(cls, node_id: str = "genesis") -> "Block":
+        """Bloque génesis fijo y determinista (idéntico en todos los nodos).
+
+        El parámetro ``node_id`` se conserva por compatibilidad pero se ignora:
+        el génesis no depende del nodo que lo crea, de lo contrario dos nodos
+        tendrían bloques 0 distintos y nunca podrían sincronizar (P0-1).
+        """
         genesis_tx = {
             "type": "GENESIS",
-            "data": "UPB-Chain Genesis Block — Universidad Privada Boliviana",
-            "timestamp": time.time(),
+            "data": GENESIS_DATA,
+            "authority_address": GENESIS_AUTHORITY_ADDRESS,
+            "timestamp": GENESIS_TIMESTAMP,
         }
         merkle_root = cls.compute_merkle_root([genesis_tx])
         header = BlockHeader(
             index=0,
-            timestamp=time.time(),
+            timestamp=GENESIS_TIMESTAMP,
             previous_hash="0" * 64,
             merkle_root=merkle_root,
             nonce=0,
             difficulty=0,
-            node_id=node_id,
+            node_id="genesis",
         )
         return cls(header=header, transactions=[genesis_tx])
 

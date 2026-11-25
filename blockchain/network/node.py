@@ -250,6 +250,7 @@ class P2PNode:
         elif msg_type == MSG_BLOCK_REQUEST:
             self._send_framed(conn, {"type": MSG_BLOCK_RESPONSE, "data": None})
 
+    # TODO(P0-5): incluir genesis_hash en el handshake y rechazar pares con otro génesis.
     def _handle_handshake(self, message: dict, conn: socket.socket) -> None:
         peer_id = message.get("node_id", "unknown")
         peer_host = message.get("host", "")

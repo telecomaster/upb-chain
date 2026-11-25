@@ -41,7 +41,7 @@ Flujos de trabajo y orden de dependencias:
 
 ## P0 — Bloqueantes
 
-- [ ] **P0-1 Génesis determinista.** `block.py:create_genesis` usa `time.time()`. Génesis fijo
+- [x] **P0-1 Génesis determinista.** `block.py:create_genesis` usa `time.time()`. Génesis fijo
   (constante o `genesis.json` versionado, con la llave de autoridad UPB); rechazar peers con otro génesis.
   *Listo cuando:* dos nodos nuevos tienen el mismo hash de bloque 0.
 - [ ] **P0-2 Autenticación de TXs.** `transaction.py:is_valid` no verifica firmas y la TX no lleva

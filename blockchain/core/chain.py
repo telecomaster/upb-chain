@@ -40,7 +40,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Dict, List, Optional, Tuple
 
-from blockchain.core.block import Block, BlockHeader
+from blockchain.core.block import GENESIS_HASH, Block, BlockHeader
 from blockchain.core.transaction import Transaction, TransactionType
 
 logger = logging.getLogger("upb_chain.core")
@@ -74,7 +74,20 @@ class Blockchain:
     def _load_from_disk(self, path: Path) -> None:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        self.chain = [Block.from_dict(b) for b in data]
+        chain = [Block.from_dict(b) for b in data]
+        ok, reason = self._check_genesis(chain)
+        if not ok:
+            raise ValueError(f"{path}: {reason}")
+        self.chain = chain
+
+    @staticmethod
+    def _check_genesis(chain: List[Block]) -> Tuple[bool, str]:
+        """El bloque 0 debe ser exactamente el génesis fijo (P0-1)."""
+        if not chain:
+            return False, "Cadena vacía"
+        if chain[0].hash != GENESIS_HASH or chain[0].compute_hash() != GENESIS_HASH:
+            return False, "Génesis distinto al de la red (GENESIS_HASH no coincide)"
+        return True, "OK"
 
     def _save_to_disk(self) -> None:
         chain_file = self.data_dir / "chain.json"
@@ -279,7 +292,10 @@ class Blockchain:
         temp.chain = candidate
         temp.mempool = []
         temp._lock = Lock()
-        valid, reason = temp.validate_chain()
+        # TODO(P0-5): rehacer replace_chain (trabajo acumulado, TXs huérfanas).
+        valid, reason = self._check_genesis(candidate)
+        if valid:
+            valid, reason = temp.validate_chain()
         if not valid:
             return False, f"Cadena recibida inválida: {reason}"
         with self._lock:
