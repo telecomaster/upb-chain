@@ -64,6 +64,16 @@ class Settings(BaseSettings):
     cors_origins: Annotated[List[str], NoDecode] = []
     # Máximo de TX por minuto y emisor admitidas al mempool (P1-5). No es regla de consenso.
     tx_rate_limit: int = 100
+    # Consenso (P1-1): "pow" o "pbft". Es de TODA la red: un par con otro modo se rechaza.
+    consensus: str = "pow"
+    # PBFT: lista ordenada de réplicas {"replicas": [{"id", "address", "public_key"}]}
+    # (el orden define el primario de cada vista) y la llave de firma de ESTA réplica.
+    pbft_replicas_file: str = "pbft_replicas.json"
+    pbft_key_file: str = "data/keys/pbft_replica.json"
+    # Segundos sin progreso con trabajo pendiente antes de pedir cambio de vista.
+    pbft_view_timeout: float = 5.0
+    # Cada cuánto, como mínimo, el primario propone un bloque si hay TXs pendientes.
+    pbft_batch_interval: float = 0.2
 
     @field_validator("peers", "cors_origins", mode="before")
     @classmethod
@@ -106,6 +116,21 @@ class Settings(BaseSettings):
             raise ValueError("debe ser al menos 1")
         return v
 
+    @field_validator("consensus", mode="before")
+    @classmethod
+    def _consenso(cls, v):
+        v = str(v).strip().lower()
+        if v not in ("pow", "pbft"):
+            raise ValueError("debe ser 'pow' o 'pbft'")
+        return v
+
+    @field_validator("pbft_view_timeout", "pbft_batch_interval")
+    @classmethod
+    def _segundos(cls, v: float) -> float:
+        if not v > 0:
+            raise ValueError("debe ser un número de segundos mayor que 0")
+        return v
+
     @field_validator("log_level", mode="before")
     @classmethod
     def _nivel(cls, v):
@@ -130,6 +155,8 @@ class Settings(BaseSettings):
 def _mensaje(err: dict) -> str:
     if err["type"].startswith("int_"):
         return "debe ser un número entero"
+    if err["type"].startswith("float_"):
+        return "debe ser un número"
     return err["msg"].removeprefix("Value error, ")
 
 

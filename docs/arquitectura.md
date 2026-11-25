@@ -168,29 +168,147 @@ Universidad (Emisor)                    Blockchain                    Estudiante
 
 ---
 
-## 4. Protocolo PBFT Simplificado
+## 4. Consenso PBFT (P1-1)
 
-Para una red de **n = 4 nodos** (2 × RPi5 + 2 simulados), el sistema tolera **f = 1 nodo** defectuoso.
+`CONSENSUS=pbft` cambia el consenso de **toda la red** (un par con otro modo se rechaza en el
+HANDSHAKE, igual que con otro génesis). Código: `blockchain/consensus/pbft.py` (≈ 950 líneas
+comentadas), cadena en `blockchain/core/chain.py`, transporte en `blockchain/network/node.py`.
+Referencia: Castro, M. & Liskov, B. (1999), *Practical Byzantine Fault Tolerance*, OSDI'99 —
+§4.1 (vistas y primario), §4.2 (caso normal), §4.4 (cambio de vista), §4.5.2 (vivacidad).
+
+### 4.1 Réplicas, llaves y quórums
+
+- `PBFT_REPLICAS_FILE` (por defecto `pbft_replicas.json`, igual en todos los nodos):
+  `{"replicas": [{"id", "address": "host:puerto P2P", "public_key"}]}`. El **orden** define el
+  primario de la vista *v*: `replicas[v mod n]`.
+- `PBFT_KEY_FILE`: llave ECDSA secp256k1 de esta réplica (formato wallet, nunca versionada). Se
+  crea con `scripts/crear_llave_replica.py --id node_1 --address 192.168.1.100:8001`, que además
+  agrega la llave pública a la lista. Si la llave no coincide con la de la lista, el nodo no arranca.
+- Un nodo en modo pbft cuyo `NODE_ID` no está en la lista es **observador**: verifica
+  certificados y sigue la cadena, pero no vota.
+- *n* réplicas toleran *f* = ⌊(*n* − 1)/3⌋ fallas bizantinas. Quórum de COMMIT y de VIEW-CHANGE:
+  2*f* + 1. Quórum de PREPARE: 2*f* respaldos + el PRE-PREPARE del primario.
+
+**Decisión de despliegue: 4 réplicas, 2 por Raspberry Pi (f = 1).** Limitación honesta para el
+paper: las dos réplicas de un mismo Pi comparten hardware, alimentación y red. Si **un Pi cae se
+pierden 2 réplicas**, quedan 2 < 2*f* + 1 = 3 y **PBFT se detiene** (no hay commit: se pierde la
+vivacidad, no la seguridad; nunca se confirman dos bloques distintos). La configuración tolera la
+caída de *un proceso* de réplica, no la de un equipo. Para tolerar la caída de un equipo hace
+falta un tercer equipo (p. ej. 2 + 1 + 1 réplicas en tres máquinas) o más réplicas en más
+equipos.
+
+### 4.2 Validez de un bloque según el modo
+
+| Regla | `pow` | `pbft` |
+|---|---|---|
+| Génesis | fijo (`GENESIS_HASH`) | **idéntico** |
+| Índice, enlace, hash, raíz Merkle, timestamp (mediana / futuro), TXs firmadas y sin duplicados, contratos | sí | sí (mismas reglas) |
+| `header.difficulty` | la de la regla de bits (§2.4) | **0** en todas las alturas |
+| Prueba de trabajo | hash < 2^(256−bits) | no hay (0 bits: cualquier hash cumple) |
+| `header.nonce` | libre (lo busca el minero) | **0** (no hay minado) |
+| Certificado de commit | — | **obligatorio** para cada bloque > 0 |
+| Elección entre cadenas | mayor Σ 2^bits | mayor altura entre cadenas con certificados válidos; **nunca** se reemplaza un bloque certificado |
+
+El **certificado de commit** de la altura *h* es `{"view", "seq": h, "digest": hash, "commits":
+[2f+1 COMMIT firmados]}`: misma vista, misma altura, mismo hash, firmantes distintos de la lista,
+todas las firmas válidas (`ReplicaSet.check_commit_certificate`, sin reloj ni azar). Se guarda en
+la tabla `certificates` de `chain.db`, **fuera del hash del bloque**: dos réplicas pueden juntar
+subconjuntos distintos de COMMIT igualmente válidos, y el bloque debe ser el mismo para todas.
+Se verifica al agregar un bloque (`add_block(bloque, certificate)`), al sincronizar
+(`GET_CHAIN` → `CHAIN` lleva `certificates`; `replace_chain` los verifica en vez del trabajo) y al
+arrancar (fast y full). Si una cadena recibida trae otro bloque certificado en una altura que ya
+tenemos, se rechaza y el monitor emite la alerta **CRITICAL `PBFT_CONFLICT`** (solo puede pasar
+con más de *f* réplicas bizantinas). Un `DATA_DIR` de una red PoW no arranca en modo pbft.
+
+### 4.3 Caso normal (§4.2 del artículo)
+
+El número de secuencia es la altura. El primario propone cuando hay TXs en el mempool (como
+mínimo cada `PBFT_BATCH_INTERVAL` = 0,2 s; sin TXs no hay bloques vacíos) y con **ventana de 1**:
+no propone *h* + 2 hasta confirmar *h* + 1. `POST /blocks/mine` responde 409 en modo pbft.
 
 ```
-Nodo 1 (Primario)    Nodo 2           Nodo 3           Nodo 4
-      │                 │                │                │
-      │── PRE-PREPARE ──►│── PRE-PREPARE ──►│── PRE-PREPARE ──►│
-      │                 │                │                │
-      │◄── PREPARE ─────│◄── PREPARE ─────│◄── PREPARE ─────│
-      │── PREPARE ──────►│── PREPARE ──────►│── PREPARE ──────►│
-      │                 │                │                │
-      │  (≥ 2f+1 = 3 PREPARE recibidos) │                │
-      │                 │                │                │
-      │── COMMIT ───────►│── COMMIT ───────►│── COMMIT ───────►│
-      │◄── COMMIT ──────│◄── COMMIT ──────│◄── COMMIT ──────│
-      │                 │                │                │
-      │  (≥ 2f+1 = 3 COMMIT recibidos)  │                │
-      │                 │                │                │
-      │══ BLOQUE COMPROMETIDO ══════════►│════════════════►│
+ Primario r0           r1                 r2                 r3
+     │  PRE-PREPARE⟨v,h,d⟩ + bloque (firmado por r0)            │
+     ├──────────────────►├──────────────────►├──────────────────►│
+     │                   │ valida el bloque (check_block)        │
+     │    PREPARE⟨v,h,d,i⟩ (solo respaldos, firmados)            │
+     │◄──────────────────┼──────────────────►│◄─────────────────►│
+     │  prepared = PRE-PREPARE + 2f PREPARE (el PRE-PREPARE es el voto del primario)
+     │    COMMIT⟨v,h,d,i⟩ (todos, firmados)                      │
+     │◄─────────────────►│◄─────────────────►│◄─────────────────►│
+     │  committed = prepared + 2f+1 COMMIT (incluido el propio)  │
+     ▼  add_block(bloque, certificado = 2f+1 COMMIT)  — en cada réplica
+     └─► el primario difunde NEW_BLOCK + certificado (observadores y réplicas atrasadas)
 ```
 
-**Latencia esperada** en LAN: < 100 ms (2 round-trips de red local).
+**Variante implementada:** la del artículo. El primario **no** envía PREPARE; su PRE-PREPARE
+cuenta como su voto, así que "prepared" exige el PRE-PREPARE más 2*f* PREPARE de respaldos
+distintos (quórum efectivo 2*f* + 1). Antes de P1-1 el código pedía 2*f* + 1 PREPARE de respaldos
+y el primario nunca contaba: con una réplica caída no había commit. COMMIT exige 2*f* + 1
+firmantes incluido el propio.
+
+Cada mensaje va firmado con la llave de la réplica; la firma cubre el JSON canónico del mensaje
+excepto `signature` y `block` (el bloque queda atado por *d* = su hash). Se descartan: firmas
+inválidas, réplicas fuera de la lista, PRE-PREPARE de quien no es el primario, PREPARE del
+primario, mensajes de otra vista o fuera de la ventana (contador `upb_pbft_rejected_messages`).
+Dos mensajes del mismo tipo, vista y altura con distinto *d* firmados por la misma réplica son
+una **equivocación**: se ignora el segundo y el monitor emite **CRITICAL `PBFT_EQUIVOCATION`**.
+
+### 4.4 Cambio de vista (§4.4 y §4.5.2 del artículo)
+
+```
+ r1, r2, r3: hay TXs pendientes o un bloque aceptado sin confirmar durante PBFT_VIEW_TIMEOUT (5 s)
+     │  VIEW-CHANGE⟨v+1, h, P, i⟩   h = altura confirmada, P = certificados "prepared" > h
+     ├──────────────── a todas ───────────────►
+ nuevo primario = replicas[(v+1) mod n], con 2f VIEW-CHANGE de otros + el propio:
+     │  NEW-VIEW⟨v+1, V, O⟩   V = las 2f+1 pruebas, O = PRE-PREPARE del bloque "prepared"
+     │                         de mayor vista en la altura max(h)+1 (o nada)
+     ├──────────────── a todas ───────────────►
+ cada réplica verifica V (firmas, certificados prepared) y RECALCULA O; si coincide, instala v+1
+ y procesa O como un PRE-PREPARE normal → PREPARE → COMMIT
+```
+
+- Si la vista *v* + 1 tampoco avanza, se intenta *v* + 2 con el doble de espera (exponencial,
+  tope 32×). Con *f* + 1 VIEW-CHANGE para vistas mayores, una réplica se une a la menor de ellas.
+- Un bloque "prepared" en la vista vieja se **re-propone** en la nueva (lo prueban
+  `test_bloque_preparado_se_repropone_tras_el_cambio_de_vista` y la prueba del primario que
+  equivoca: el bloque B preparado en r2 y r3 es el que se confirma tras el cambio de vista).
+- Los mensajes de una vista que aún no se instaló (la red reordena) se guardan y se reprocesan al
+  instalarla.
+
+### 4.5 Qué se omite (y por qué)
+
+- **Checkpoints y recolección de basura (§4.3 del artículo):** con ventana 1 el log solo guarda
+  la altura siguiente; la cadena confirmada con sus certificados hace de checkpoint estable.
+- **Peticiones nulas en NEW-VIEW:** con ventana 1 no hay huecos que rellenar.
+- **Clientes y REPLY:** el "cliente" consulta la cadena por la API. Las TXs llegan a las
+  réplicas por el gossip P2P existente (`NEW_TX`); el primario no reenvía peticiones.
+- **Transferencia de estado:** una réplica atrasada pide la cadena a sus pares (`GET_CHAIN`) y
+  verifica certificado por certificado.
+- **Retransmisión:** un mensaje perdido no se reenvía; el temporizador provoca un cambio de vista.
+- **Vista en disco:** al reiniciar, la réplica toma la vista del certificado del último bloque.
+- **Firmas por mensaje en vez de MACs (§4.1 usa autenticadores):** más simple y más caro en CPU.
+- **Cambio de membresía:** la lista de réplicas es fija; cambiarla es una red nueva.
+
+### 4.6 Observabilidad
+
+- `GET /consensus`: modo, vista, primario, ¿cambio de vista en curso?, *n*, *f*, quórum, última
+  altura confirmada, cambios de vista, mensajes descartados y estado de cada réplica (último
+  mensaje recibido).
+- `GET /events`: eventos `pbft_phase` (`PRE_PREPARE`, `PREPARED`, `COMMITTED`, `VIEW_CHANGE`,
+  `NEW_VIEW`, `EQUIVOCATION`).
+- `/metrics`: `upb_consensus_info{mode}`, `upb_pbft_view`, `upb_pbft_committed_seq`,
+  `upb_pbft_in_view_change`, `upb_pbft_view_changes_total`, `upb_pbft_rejected_messages_total`.
+
+### 4.7 Carrera de consensos (medida en un portátil, no en las Pi)
+
+`scripts/experiments/carrera_consensos.py` corre la misma carga con semilla en 4 nodos en
+proceso, primero en PoW y luego en PBFT, y escribe `docs/experimentos/carrera_consensos.{csv,md}`.
+Los números de ese archivo son **medidos en un portátil de desarrollo con red en proceso
+(loopback) y los 4 nodos en un mismo intérprete de Python**; no son mediciones de las Raspberry Pi
+ni de una LAN (eso es P1-10). Resultado de la última corrida: ver ese archivo. Es UNA corrida:
+la latencia PoW varía mucho entre corridas (empates, reorgs, minado aleatorio), así que para el
+paper conviene repetir con varias semillas y reportar la dispersión.
 
 ---
 
@@ -214,9 +332,9 @@ Nodo 1 (Primario)    Nodo 2           Nodo 3           Nodo 4
 | Hash rate SHA-256 | 500,000–800,000 H/s |
 | Tiempo de bloque | objetivo 10 s, reajustado por bits (§2.4) |
 | Latencia P2P (LAN) | < 5 ms |
-| Latencia PBFT (4 nodos, LAN) | < 100 ms |
+| Latencia PBFT (4 nodos, LAN) | < 100 ms (estimación sin medir; la carrera de §4.7 mide en un portátil, no en la Pi) |
 | Transacciones por bloque | 50–200 |
-| TPS efectivo (PBFT) | 5–20 TPS |
+| TPS efectivo (PBFT) | 5–20 TPS (estimación sin medir) |
 | Consumo energético (1 RPi5) | ~12 W en carga |
 
 ---

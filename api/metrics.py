@@ -83,6 +83,21 @@ class NodeCollector:
         for nivel, n in conteo.items():
             alerts.add_metric([nivel], n)
         yield alerts
+        modo = GaugeMetricFamily("upb_consensus_info", "Modo de consenso (valor siempre 1)",
+                                 labels=["mode"])
+        modo.add_metric([node.settings.consensus], 1)
+        yield modo
+        replica = getattr(node, "pbft", None)
+        if replica is not None:   # P1-1: solo en una réplica PBFT
+            yield gauge("upb_pbft_view", "Vista PBFT actual", replica.view)
+            yield gauge("upb_pbft_committed_seq", "Última altura confirmada por PBFT", bc.height)
+            yield gauge("upb_pbft_in_view_change", "1 si la réplica está cambiando de vista",
+                        1 if replica.in_view_change else 0)
+            yield CounterMetricFamily("upb_pbft_view_changes", "Vistas nuevas instaladas",
+                                      value=replica.view_changes_total)
+            yield CounterMetricFamily("upb_pbft_rejected_messages",
+                                      "Mensajes PBFT descartados (firma, réplica o forma inválida)",
+                                      value=replica.rejected_messages)
 
 
 def build_registry(node) -> CollectorRegistry:

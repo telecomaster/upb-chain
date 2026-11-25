@@ -67,7 +67,7 @@ blockchain_upb_ia/
 │   │   └── wallet.py         # ECDSA secp256k1 + derivación de direcciones
 │   ├── consensus/
 │   │   ├── proof_of_work.py  # PoW adaptativo + benchmark RPi5
-│   │   └── pbft.py           # PBFT completo (Pre-prepare/Prepare/Commit)
+│   │   └── pbft.py           # PBFT firmado: caso normal, cambio de vista, certificados (P1-1)
 │   ├── network/
 │   │   └── node.py           # P2P TCP + gossip + heartbeat
 │   └── contracts/
@@ -89,7 +89,9 @@ blockchain_upb_ia/
 │       └── index.html        # Dashboard responsive (Tailwind + Chart.js)
 ├── tests/
 │   ├── test_blockchain.py    # 15+ tests unitarios de core
-│   ├── test_consensus.py     # Tests PoW + PBFT
+│   ├── test_consensus.py     # Tests PoW
+│   ├── test_pbft.py          # PBFT en memoria (reloj falso)
+│   ├── test_pbft_red.py      # PBFT con 4 apps reales por P2P
 │   └── test_security.py      # Tests crypto + ataques + monitor
 └── scripts/
     ├── setup_rpi.sh          # Instalación automatizada en RPi5
@@ -142,7 +144,8 @@ python scripts/demo.py
 | GET | `/health` | Estado del nodo |
 | GET | `/stats` | Estadísticas completas |
 | GET | `/blocks` | Lista de bloques (paginado) |
-| POST | `/blocks/mine` | Minar un bloque (PoW) |
+| POST | `/blocks/mine` | Minar un bloque (PoW; 409 en modo PBFT) |
+| GET | `/consensus` | Modo de consenso; en PBFT vista, primario y réplicas (P1-1) |
 | POST | `/transactions` | Nueva transacción |
 | POST | `/wallet/generate` | Generar wallet ECDSA |
 | POST | `/credentials/issue` | Emitir credencial académica |
@@ -260,6 +263,24 @@ ceros hexadecimales: un 4 antiguo equivale a 16). Cada 10 bloques la dificultad 
 `round(log2(esperado/real))` bits (máx. ±2) hacia 10 s por bloque. Es un cambio de consenso: al
 actualizar, todos los nodos deben borrar su `DATA_DIR` (p. ej. `data/chain`). Detalle en
 [`docs/arquitectura.md`](docs/arquitectura.md) §2.4.
+
+**PBFT real (P1-1).** `CONSENSUS=pbft` (toda la red en el mismo modo) reemplaza el minado por
+PBFT de Castro & Liskov con 4 réplicas firmadas (f = 1): el primario `replicas[v mod 4]` propone un
+bloque cuando hay TXs, los demás lo validan y lo confirman con PRE-PREPARE / PREPARE / COMMIT; cada
+bloque se guarda con su certificado (2f+1 COMMIT firmados), que los nodos verifican al sincronizar.
+Si el primario cae, VIEW-CHANGE / NEW-VIEW elige al siguiente. Preparación, una vez por réplica:
+
+```bash
+venv\Scripts\python.exe scripts\crear_llave_replica.py --id node_1 --address 192.168.1.100:8001 --llave data/keys/pbft_node_1.json
+# … node_2, node_3, node_4; copiar pbft_replicas.json (sin reordenar) a todos los nodos
+# .env de cada réplica: CONSENSUS=pbft, NODE_ID=node_1, PBFT_KEY_FILE=data/keys/pbft_node_1.json
+```
+
+En modo pbft `POST /blocks/mine` responde 409; `GET /consensus` muestra vista, primario y réplicas.
+Despliegue previsto: 2 réplicas por Raspberry Pi, así que **si cae un Pi caen 2 réplicas y PBFT se
+detiene** (sin perder seguridad). Comparación con PoW (medida en un portátil, no en las Pi):
+`scripts/experiments/carrera_consensos.py` → [`docs/experimentos/carrera_consensos.md`](docs/experimentos/carrera_consensos.md).
+Protocolo, variante, qué se omite y diagramas en [`docs/arquitectura.md`](docs/arquitectura.md) §4.
 
 ### Criptografía Implementada
 

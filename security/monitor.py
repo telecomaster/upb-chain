@@ -53,6 +53,8 @@ class SecurityMonitor:
         "ANOMALY":        "application",
         "DIFFICULTY_SPIKE": "consensus",
         "ORPHAN_BLOCK":   "consensus",
+        "PBFT_EQUIVOCATION": "consensus",
+        "PBFT_CONFLICT":  "consensus",
     }
     # Prioridad numérica para comparar niveles de alerta
     _LEVEL_PRIORITY: Dict[str, int] = {
@@ -176,6 +178,27 @@ class SecurityMonitor:
             event_type="UNKNOWN_PEER",
             message=f"Nuevo par no registrado intenta conectarse: {peer_address}",
             metadata={"peer": peer_address},
+        ))
+
+    def on_pbft_equivocation(self, replica: str, view, seq, kind: str, digests: list) -> None:
+        """Una réplica firmó dos mensajes PBFT contradictorios (P1-1): prueba de falla bizantina."""
+        self._fire(SecurityAlert(
+            level=AlertLevel.CRITICAL,
+            event_type="PBFT_EQUIVOCATION",
+            message=(f"Equivocación PBFT de {replica}: dos {kind} distintos en la vista {view}, "
+                     f"altura {seq}"),
+            metadata={"replica": replica, "view": view, "seq": seq, "kind": kind,
+                      "digests": [str(d)[:16] for d in digests]},
+        ))
+
+    def on_certified_conflict(self, height: int, ours: str, theirs: str) -> None:
+        """Dos bloques con certificado de commit en la misma altura (P1-1): violación de seguridad."""
+        self._fire(SecurityAlert(
+            level=AlertLevel.CRITICAL,
+            event_type="PBFT_CONFLICT",
+            message=(f"Dos bloques certificados distintos en la altura {height}: "
+                     f"{ours[:12]}… y {theirs[:12]}… (más de f réplicas bizantinas)"),
+            metadata={"height": height, "ours": ours, "theirs": theirs},
         ))
 
     # ── Consultas ─────────────────────────────────────────────────────────────
@@ -349,7 +372,7 @@ class SecurityMonitor:
         Categorías:
           network:     INVALID_BLOCK, UNKNOWN_PEER
           application: TX_RATE_LIMIT, HIGH_FEE
-          consensus:   CHAIN_REORG, DIFFICULTY_SPIKE, ORPHAN_BLOCK
+          consensus:   CHAIN_REORG, DIFFICULTY_SPIKE, ORPHAN_BLOCK, PBFT_EQUIVOCATION, PBFT_CONFLICT
 
         Returns:
             Diccionario con conteo y nivel de alerta más alto por categoría.

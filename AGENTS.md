@@ -35,6 +35,8 @@ overstate what works).
   Second local node (PowerShell):
   `$env:NODE_ID="node_2"; $env:DATA_DIR="data/node_2"; $env:NODE_PORT="8011"; $env:PEERS="127.0.0.1:8001"; venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8010`
 - Demo without server: `venv\Scripts\python.exe scripts\demo.py`
+- PoW vs PBFT race (4 in-process nodes, writes `docs/experimentos/`):
+  `venv\Scripts\python.exe scripts\experiments\carrera_consensos.py`
 
 ## Layout
 
@@ -48,7 +50,12 @@ overstate what works).
   An old `chain.json` is imported once and kept as `chain.json.migrated`;
   `scripts/exportar_cadena.py` dumps chain.db to JSON. Tests tamper with the DB via
   `tests/helpers.py` (`bloques_en_disco`, `escribir_bloque_en_disco`)
-- `blockchain/consensus` proof_of_work, pbft · `blockchain/network` P2P node (sincronización y peers en `node.py`)
+- `blockchain/consensus` proof_of_work, pbft (P1-1: `ReplicaSet` from `PBFT_REPLICAS_FILE`,
+  `PBFTReplica` normal case + view change with signed messages, `PBFTTransport` direct delivery,
+  `InMemoryNetwork` for demo/unit tests). `CONSENSUS=pow|pbft` is network-wide (handshake rejects a
+  mismatch); in pbft blocks have difficulty 0 / nonce 0 and need a commit certificate (2f+1 signed
+  COMMITs, table `certificates` in chain.db, outside the block hash). Replica keys:
+  `scripts/crear_llave_replica.py`, never committed · `blockchain/network` P2P node (sincronización y peers en `node.py`)
 - `blockchain/contracts` (P1-13, guía en `docs/contratos.md`): `base.py` interfaz `Contract`
   (`validate`/`apply`/`initial_state`, estado = reproducción de las TXs confirmadas; una TX inválida
   invalida el bloque entero), `registry.py` `ContractRegistry`, `__init__.py` `default_contracts`;

@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from config import Settings, load_settings, configure_logging
+from config import ConfigError, Settings, load_settings, configure_logging
 from api.metrics import EventCounters, CONTENT_TYPE as METRICS_CONTENT_TYPE, build_registry, render as render_metrics
 from blockchain.core.chain import Blockchain
 from blockchain.core.merkle import build_proof, leaf_hash
@@ -52,7 +52,7 @@ from blockchain.core.transaction import (
 )
 from blockchain.core.wallet import Wallet, derive_address, public_key_from_private
 from blockchain.consensus.proof_of_work import ProofOfWork
-from blockchain.consensus.pbft import PBFTNode
+from blockchain.consensus.pbft import PBFTConfigError, PBFTReplica, PBFTTransport, ReplicaSet
 from blockchain.contracts.credential import CredentialState, credential_id_of_tx
 from blockchain.contracts import vc_export
 from blockchain.contracts.tokens import (
@@ -74,7 +74,8 @@ logger = logging.getLogger("upb_chain.api")
 
 def build_node_state(data_dir: str, node_id: str, authority_address: Optional[str] = None,
                      initial_difficulty: int = 4, revalidate_on_start: str = "fast",
-                     snapshot_interval: int = 100) -> Blockchain:
+                     snapshot_interval: int = 100, consensus: str = "pow",
+                     replica_set: Optional[ReplicaSet] = None) -> Blockchain:
     """Carga la cadena con sus contratos (P1-13): cuentas, credenciales y votación.
 
     El estado de cada contrato se deriva reproduciendo la cadena al arrancar y
@@ -86,7 +87,37 @@ def build_node_state(data_dir: str, node_id: str, authority_address: Optional[st
                       initial_difficulty=initial_difficulty,
                       authority_address=authority_address,
                       revalidate_on_start=revalidate_on_start,
-                      snapshot_interval=snapshot_interval)
+                      snapshot_interval=snapshot_interval,
+                      consensus=consensus, replica_set=replica_set)
+
+
+def load_replica_set(settings: Settings) -> ReplicaSet:
+    """Lista de réplicas PBFT (P1-1) desde ``PBFT_REPLICAS_FILE``; ConfigError si falla."""
+    try:
+        rs = ReplicaSet.from_file(settings.pbft_replicas_file)
+    except PBFTConfigError as e:
+        raise ConfigError(f"Configuración inválida:\n  PBFT_REPLICAS_FILE: {e}") from None
+    if rs.f == 0:
+        logger.warning(f"PBFT con {rs.n} réplica(s): f = 0, no tolera ninguna falla "
+                       f"(se necesitan 4 para f = 1)")
+    return rs
+
+
+def load_replica_key(settings: Settings, rs: ReplicaSet) -> Wallet:
+    """Llave de firma de esta réplica; debe coincidir con su llave pública en la lista."""
+    path = settings.pbft_key_file
+    try:
+        wallet = Wallet.load(path)
+        public_key = public_key_from_private(wallet.private_key_hex)
+    except FileNotFoundError:
+        raise ConfigError(f"Configuración inválida:\n  PBFT_KEY_FILE: {path} no existe "
+                          f"(crearla con scripts/crear_llave_replica.py)") from None
+    except Exception as e:
+        raise ConfigError(f"Configuración inválida:\n  PBFT_KEY_FILE: {path} ilegible: {e}") from None
+    if public_key != rs.get(settings.node_id).public_key:
+        raise ConfigError(f"Configuración inválida:\n  PBFT_KEY_FILE: la llave de {path} no es "
+                          f"la registrada para {settings.node_id} en {settings.pbft_replicas_file}")
+    return wallet
 
 
 def load_authority_wallet(path: str, expected_address: str) -> Optional[Wallet]:
@@ -128,10 +159,40 @@ class NodeState:
     chain_analytics: ChainAnalytics
     security_monitor: SecurityMonitor
     tx_rate_limiter: TxRateLimiter
-    pbft_node: PBFTNode
     p2p: P2PNode
     events: EventBus                   # P2-7: bus de eventos para GET /events
     counters: EventCounters = field(default_factory=EventCounters)   # P2-10
+    # P1-1: en modo pbft, la lista de réplicas; ``pbft`` solo si este nodo es réplica
+    # (un nodo pbft fuera de la lista es observador: verifica certificados, no vota).
+    replica_set: Optional[ReplicaSet] = None
+    pbft: Optional[PBFTReplica] = None
+    pbft_transport: Optional[PBFTTransport] = None
+
+    def on_pbft_committed(self, block, certificate: dict) -> None:
+        """Bloque confirmado por PBFT: aviso + el primario lo difunde con su certificado
+        (los nodos observadores y las réplicas atrasadas lo agregan verificándolo)."""
+        self.announce_block(block.to_dict())
+        self.counters.inc("pbft_committed")
+        if self.pbft is not None and self.pbft.primary == self.settings.node_id:
+            threading.Thread(target=self.p2p.broadcast_block,
+                             args=(block.to_dict(), certificate), daemon=True).start()
+
+    def consensus_status(self) -> dict:
+        """Estado para ``GET /consensus`` (P1-1)."""
+        bc = self.blockchain
+        if self.settings.consensus == "pow":
+            return {"mode": "pow", "height": bc.height,
+                    "difficulty_bits": bc._calculate_difficulty(), "work": bc.total_work}
+        if self.pbft is not None:
+            return self.pbft.status()
+        rs = self.replica_set
+        cert = bc.certificates.get(bc.height) if bc.height > 0 else None
+        view = cert["view"] if cert else 0
+        return {"mode": "pbft", "replica_id": None, "is_replica": False, "view": view,
+                "primary": rs.primary(view), "n": rs.n, "f": rs.f, "quorum": rs.quorum,
+                "last_committed_seq": bc.height,
+                "replicas": [{"id": r.id, "address": r.address, "primary": r.id == rs.primary(view)}
+                             for r in rs.replicas]}
 
     def announce_block(self, block: dict) -> None:
         """Bloque nuevo (propio o de un par): monitor + evento ``block``."""
@@ -160,11 +221,15 @@ class NodeState:
 def build_node(settings: Settings, authority_address: Optional[str] = None) -> NodeState:
     """Construye el estado completo de un nodo a partir de ``settings`` (sin arrancar la red)."""
     node_id = settings.node_id
+    replica_set = load_replica_set(settings) if settings.consensus == "pbft" else None
+    replica_wallet = (load_replica_key(settings, replica_set)
+                      if replica_set is not None and replica_set.get(node_id) else None)
     blockchain = build_node_state(
         settings.data_dir, node_id, authority_address=authority_address,
         initial_difficulty=settings.mining_difficulty,
         revalidate_on_start=settings.revalidate_on_start,
-        snapshot_interval=settings.snapshot_interval)
+        snapshot_interval=settings.snapshot_interval,
+        consensus=settings.consensus, replica_set=replica_set)
     authority_wallet = load_authority_wallet(
         settings.authority_key_file, blockchain.contracts.contract("accounts").authority_address)
     tx_anomaly_detector = TransactionAnomalyDetector()
@@ -177,8 +242,6 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
     # P1-5: límite de admisión al mempool (política local, nunca regla de consenso).
     tx_rate_limiter = TxRateLimiter(limit=settings.tx_rate_limit,
                                     window=security_monitor.TX_RATE_WINDOW)
-    pbft_peers = [node_id] + [f"node_{i}" for i in range(2, 5)]
-    pbft_node = PBFTNode(node_id=node_id, peers=pbft_peers, is_primary=(node_id == "node_1"))
     p2p = P2PNode(
         node_id=node_id,
         host=settings.node_host,
@@ -187,7 +250,8 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
         # P0-5: el nodo valida/añade bloques y TXs recibidos y, si un bloque no
         # extiende la punta, sincroniza con el emisor (replace_chain por trabajo).
         blockchain=blockchain,
-        on_pbft_message=lambda m: logger.info(f"PBFT msg recibido: {m}"),
+        consensus=settings.consensus,
+        on_pbft_message=lambda m: node.pbft.receive(m) if node.pbft is not None else None,
         # P1-5: bloques recibidos y aceptados, bloques inválidos y pares fuera de PEERS.
         on_new_block=lambda b: node.announce_block(b),
         on_invalid_block=security_monitor.on_invalid_block,
@@ -208,11 +272,26 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
         chain_analytics=ChainAnalytics(),
         security_monitor=security_monitor,
         tx_rate_limiter=tx_rate_limiter,
-        pbft_node=pbft_node,
         p2p=p2p,
         events=events,
+        replica_set=replica_set,
     )
     blockchain.add_reorg_listener(node.on_chain_reorg)
+    blockchain.add_certified_conflict_listener(security_monitor.on_certified_conflict)
+    if replica_wallet is not None:
+        transport = PBFTTransport(p2p, replica_set, node_id)
+        node.pbft_transport = transport
+        node.pbft = PBFTReplica(
+            node_id, replica_wallet.private_key_hex, replica_set, blockchain,
+            transport.multicast,
+            view_timeout=settings.pbft_view_timeout,
+            batch_interval=settings.pbft_batch_interval,
+            on_event=lambda fase, datos: events.publish("pbft_phase", datos),
+            on_committed=node.on_pbft_committed,
+            on_equivocation=security_monitor.on_pbft_equivocation,
+            on_invalid_block=security_monitor.on_invalid_block,
+            request_sync=p2p.sync_with_peers,
+        )
     return node
 
 
@@ -447,7 +526,7 @@ async def stats(node: NodeState = Depends(get_node)):
         "network": network_stats,
         "mining": pow_stats,
         "security": threat,
-        "pbft": node.pbft_node.get_consensus_stats(),
+        "pbft": node.consensus_status() if node.settings.consensus == "pbft" else {"mode": "pow"},
     }
 
 
@@ -519,8 +598,17 @@ async def metrics(request: Request):
                     media_type=METRICS_CONTENT_TYPE)
 
 
+@router.get("/consensus")
+async def consensus_info(node: NodeState = Depends(get_node)):
+    """Modo de consenso y, en PBFT, vista, primario, réplicas y última altura confirmada (P1-1)."""
+    return node.consensus_status()
+
+
 @router.post("/blocks/mine", dependencies=[Depends(require_admin)])
 async def mine_block(request: MineRequest, background_tasks: BackgroundTasks, node: NodeState = Depends(get_node)):
+    if node.settings.consensus == "pbft":
+        raise HTTPException(409, "Modo PBFT: los bloques no se minan; el primario propone "
+                                 "uno automáticamente cuando hay transacciones pendientes")
     if node.mining_lock.locked():
         raise HTTPException(409, "minado en curso")
     async with node.mining_lock:
@@ -1516,9 +1604,20 @@ def create_app(settings: Optional[Settings] = None,
             if ":" in peer:
                 host, port = peer.rsplit(":", 1)
                 node.p2p.add_peer(host, int(port))
-        logger.info(f"UPB-Chain nodo {settings.node_id} iniciado")
+        # PBFT (P1-1): las réplicas también son pares (gossip de TXs y sincronización).
+        if node.replica_set is not None:
+            for r in node.replica_set.replicas:
+                if r.id != settings.node_id:
+                    node.p2p.add_peer(r.host, r.port)
+        if node.pbft is not None:
+            node.pbft_transport.start()
+            node.pbft.start()
+        logger.info(f"UPB-Chain nodo {settings.node_id} iniciado ({settings.consensus})")
         yield
         node.mining_stop.set()
+        if node.pbft is not None:
+            node.pbft.stop()
+            node.pbft_transport.stop()
         node.p2p.stop()
         logger.info("Nodo detenido")
 

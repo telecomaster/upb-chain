@@ -1484,11 +1484,11 @@ async function loadConsensusMetrics() {
     bt != null ? parseFloat(bt).toFixed(1) + ' s' : '— s';
 
   document.getElementById('pbft-quorum').textContent =
-    pbft.quorum_size ?? pbft.nodes_in_quorum ?? '—';
+    pbft.quorum ?? (pbft.mode === "pow" ? "PoW" : "—");
   document.getElementById('pbft-view').textContent =
     pbft.current_view ?? pbft.view ?? '—';
   document.getElementById('pbft-committed').textContent =
-    pbft.committed_blocks ?? pbft.total_committed ?? '—';
+    pbft.last_committed_seq ?? "—";
 }
 
 // ── 5. Block Explorer expandible ─────────────────────

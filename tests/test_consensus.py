@@ -3,7 +3,8 @@ import pytest
 
 from blockchain.core.block import Block
 from blockchain.consensus.proof_of_work import ProofOfWork, estimate_rpi5_performance
-from blockchain.consensus.pbft import PBFTNode, PBFTPhase
+from blockchain.consensus.pbft import ReplicaSet
+from blockchain.core.wallet import Wallet
 
 
 class TestProofOfWork:
@@ -61,60 +62,13 @@ class TestProofOfWork:
 
 
 class TestPBFT:
-    def _make_network(self, n_nodes: int = 4):
-        nodes = []
-        peer_ids = [f"node_{i}" for i in range(n_nodes)]
-        for i, node_id in enumerate(peer_ids):
-            node = PBFTNode(node_id=node_id, peers=peer_ids, is_primary=(i == 0))
-            nodes.append(node)
-        return nodes
+    """La clase ``PBFTNode`` anterior (sin firmas ni cambio de vista real) se reemplazó
+    por ``PBFTReplica`` en P1-1; sus pruebas están en test_pbft.py y test_pbft_red.py."""
 
-    def test_pbft_consensus_4_nodes(self):
-        nodes = self._make_network(4)
-        primary = nodes[0]
-        request = {"block_hash": "abc123", "index": 1}
-
-        pre_prepare = primary.propose(request)
-        assert pre_prepare is not None
-        assert pre_prepare.phase == PBFTPhase.PRE_PREPARE
-
-        prepare_msgs = []
-        for node in nodes[1:]:
-            msg = node.handle_pre_prepare(pre_prepare)
-            if msg:
-                prepare_msgs.append(msg)
-
-        commit_msgs = []
-        for node in nodes:
-            for prep in prepare_msgs:
-                msg = node.handle_prepare(prep)
-                if msg:
-                    commit_msgs.append(msg)
-
-        committed = []
-        for node in nodes:
-            for commit in commit_msgs:
-                result = node.handle_commit(commit)
-                if result:
-                    committed.append(result)
-
-        assert len(committed) > 0
-
-    def test_fault_tolerance_calculation(self):
-        nodes = self._make_network(7)
-        primary = nodes[0]
-        assert primary.f == 2  # tolera 2 nodos defectuosos con 7 nodos
-        assert primary.quorum == 5
-
-    def test_view_change(self):
-        nodes = self._make_network(4)
-        secondary = nodes[1]
-        msg = secondary.trigger_view_change()
-        assert secondary.view == 1
-        assert secondary.is_primary is False
-
-    def test_consensus_stats(self):
-        nodes = self._make_network(4)
-        stats = nodes[0].get_consensus_stats()
-        assert "fault_tolerance_f" in stats
-        assert "quorum_size" in stats
+    def test_quorum_textual_4_replicas(self):
+        rs = ReplicaSet.from_list([{"id": f"n{i}", "address": f"h:{i + 1}",
+                                    "public_key": Wallet.generate().public_key_hex}
+                                   for i in range(4)])
+        # n = 3f + 1: con 4 réplicas f = 1, COMMIT necesita 2f+1 = 3 y PREPARE 2f = 2
+        # (más el PRE-PREPARE del primario, que cuenta como su voto).
+        assert (rs.f, rs.quorum, rs.prepare_quorum) == (1, 3, 2)

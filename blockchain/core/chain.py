@@ -22,6 +22,16 @@ Manejo de forks (fork resolution):
     empate se conserva la propia. Es la regla de Nakamoto.
     Ref: Nakamoto (2008), Sección 5.
 
+Modo de consenso (P1-1, ``consensus``):
+    "pow" (por defecto): dificultad por bits y regla del mayor trabajo.
+    "pbft": los bloques no se minan; cada bloque > 0 lleva dificultad 0 y
+        nonce 0 y solo entra con un CERTIFICADO DE COMMIT válido (2f+1 COMMIT
+        firmados por réplicas de ``replica_set``), guardado aparte del bloque.
+        Al sincronizar se verifican certificados en vez de trabajo; nunca se
+        reemplazan bloques ya certificados (dos bloques certificados en la
+        misma altura = violación de seguridad, se avisa a
+        ``on_certified_conflict``). El génesis es el mismo en ambos modos.
+
 Persistencia (P2-4): ``storage.ChainStore`` en ``<data_dir>/chain.db`` (SQLite).
     Cada bloque es un INSERT en una transacción; un reorg borra e inserta solo
     las alturas que cambian. La lista ``self.chain`` se sigue manteniendo en
@@ -120,10 +130,22 @@ class Blockchain:
         contracts: Optional[List[Contract]] = None,
         revalidate_on_start: str = "fast",
         snapshot_interval: int = 100,
+        consensus: str = "pow",
+        replica_set=None,
     ):
         if revalidate_on_start not in ("fast", "full"):
             raise ValueError("revalidate_on_start debe ser 'fast' o 'full'")
+        if consensus not in ("pow", "pbft"):
+            raise ValueError("consensus debe ser 'pow' o 'pbft'")
+        if consensus == "pbft" and replica_set is None:
+            raise ValueError("el modo pbft necesita el conjunto de réplicas (replica_set)")
         self.node_id = node_id
+        # Modo de consenso (P1-1). En pbft, ``replica_set`` (ReplicaSet) verifica
+        # los certificados de commit; ``certificates`` = {altura: certificado}.
+        self.consensus = consensus
+        self.replica_set = replica_set
+        self.certificates: Dict[int, dict] = {}
+        self.on_certified_conflict: List[Callable[[int, str, str], None]] = []
         # Arranque y fotos de estado (P2-4): ver el docstring del módulo.
         self.revalidate_on_start = revalidate_on_start
         self.snapshot_interval = max(0, int(snapshot_interval))   # 0 = sin fotos
@@ -237,6 +259,10 @@ class Blockchain:
         ok, reason = self._check_genesis(chain)
         if not ok:
             raise ValueError(f"{path}: {reason}")
+        if self.consensus == "pbft":
+            ok, reason = self._check_certificates(chain, self.certificates)
+            if not ok:
+                raise ValueError(f"{path}: {reason}")
         # Revalidar TODA la cadena (P0-3): un archivo manipulado se rechaza.
         # La misma pasada deja el estado de los contratos (P1-13).
         ok, reason, states = self._replay_blocks(chain)
@@ -256,6 +282,12 @@ class Blockchain:
             chain = [Block.from_dict(b) for b in self.store.load_blocks()]
         except (KeyError, TypeError, ValueError) as e:
             raise ValueError(f"{path}: bloque ilegible en disco: {e}") from e
+        if self.consensus == "pbft":
+            self.certificates = self.store.load_certificates()
+            ok, reason = self._check_certificates(chain, self.certificates)
+            if not ok:
+                raise ValueError(f"{path}: cadena inválida en disco para el modo pbft: {reason} "
+                                 f"(¿DATA_DIR de una red PoW? usar otro directorio)")
         if self.revalidate_on_start == "full":
             states = self._install_chain([b.to_dict() for b in chain], path)
             # Las fotos viejas se descartan (p. ej. si cambiaron las reglas de
@@ -459,7 +491,49 @@ class Blockchain:
 
     # ── Minado / adición de bloques ───────────────────────────────────────────
 
-    def add_block(self, block: Block) -> Tuple[bool, str]:
+    # ── Certificados PBFT (P1-1) ─────────────────────────────────────────────
+
+    def check_certificate(self, block: Block, certificate) -> Tuple[bool, str]:
+        """¿``certificate`` prueba que ``block`` se confirmó por PBFT? (siempre True en pow)."""
+        if self.consensus != "pbft":
+            return True, "OK"
+        return self.replica_set.check_commit_certificate(
+            certificate, block.hash, block.header.index)
+
+    def _check_certificates(self, chain: List[Block], certificates: Dict[int, dict],
+                            ) -> Tuple[bool, str]:
+        """Cada bloque > 0 de ``chain`` tiene un certificado válido (modo pbft)."""
+        for block in chain[1:]:
+            ok, reason = self.check_certificate(block, certificates.get(block.header.index))
+            if not ok:
+                return False, f"Bloque {block.header.index}: {reason}"
+        return True, "OK"
+
+    def add_certified_conflict_listener(self, callback: Callable[[int, str, str], None]) -> None:
+        """``callback(altura, hash_propio, hash_ajeno)`` ante dos bloques certificados
+        distintos en la misma altura (no debería ocurrir con ≤ f réplicas bizantinas)."""
+        self.on_certified_conflict.append(callback)
+
+    def _notify_conflict(self, height: int, ours: str, theirs: str) -> None:
+        logger.critical(f"Dos bloques CERTIFICADOS distintos en la altura {height}: "
+                        f"{ours[:12]}… y {theirs[:12]}…")
+        for callback in list(self.on_certified_conflict):
+            try:
+                callback(height, ours, theirs)
+            except Exception:
+                logger.exception("Error en un listener de on_certified_conflict")
+
+    def check_block(self, block: Block) -> Tuple[bool, str]:
+        """Validez de consenso de ``block`` como siguiente bloque, sin certificado
+        (lo que una réplica PBFT revisa antes de enviar PREPARE)."""
+        return self._validate_block(block)
+
+    def add_block(self, block: Block, certificate: Optional[dict] = None) -> Tuple[bool, str]:
+        """Agrega ``block`` en la punta. En modo pbft exige su certificado de commit."""
+        if self.consensus == "pbft":
+            ok, reason = self.check_certificate(block, certificate)
+            if not ok:
+                return False, reason
         with self._lock:
             valid, reason, states = self._validate_block_at(
                 block, self.chain, set(self._confirmed_ids), time.time(),
@@ -472,12 +546,15 @@ class Blockchain:
             height = block.header.index
             snapshot = (self._make_snapshot(block, states)
                         if self._snapshot_due(height - 1, height) else None)
+            cert = certificate if self.consensus == "pbft" else None
             try:
-                self.store.append_block(block, snapshot)
+                self.store.append_block(block, snapshot, cert)
             except sqlite3.Error as e:
                 logger.exception("No se pudo guardar el bloque en chain.db")
                 return False, f"Error de almacenamiento: {e}"
             self.chain.append(block)
+            if cert is not None:
+                self.certificates[height] = cert
             self._confirmed_ids.update(tx.get("tx_id") for tx in block.transactions)
             self.contracts.commit(states, block.header.index)
             # Remueve del mempool las TXs confirmadas y las que ya no pueden
@@ -567,6 +644,8 @@ class Blockchain:
             return False, "Hash previo no coincide", None
         if block.compute_hash() != block.hash:
             return False, "Hash del bloque inválido", None
+        if self.consensus == "pbft" and h.nonce != 0:
+            return False, "En modo PBFT el nonce debe ser 0 (no hay minado)", None
         expected = self.expected_difficulty(prefix)
         if h.difficulty != expected:
             return False, (f"Dificultad incorrecta: esperada {expected}, "
@@ -754,8 +833,8 @@ class Blockchain:
         deslizante: la época medida se minó entera con la misma dificultad.
         """
         h = len(prefix)
-        if h == 0:
-            return 0
+        if h == 0 or self.consensus == "pbft":
+            return 0          # génesis, o PBFT: no hay prueba de trabajo (P1-1)
         w = self.difficulty_window
         if h <= w:
             return self.initial_difficulty
@@ -807,8 +886,15 @@ class Blockchain:
         """
         self.on_chain_reorg.append(callback)
 
-    def replace_chain(self, new_chain: List[dict]) -> Tuple[bool, str]:
+    def replace_chain(self, new_chain: List[dict],
+                      certificates: Optional[dict] = None) -> Tuple[bool, str]:
         """Adopta `new_chain` si es válida y tiene MÁS trabajo acumulado (P0-5).
+
+        Modo pbft (P1-1): ``certificates`` = {altura: certificado} de la cadena
+        recibida; cada bloque > 0 debe tener uno válido. Como cada bloque pesa
+        2**0 = 1, "más trabajo" = mayor altura. Si la cadena recibida difiere de
+        la nuestra en una altura que ambas tienen, hay dos bloques certificados
+        distintos: se rechaza y se avisa a ``on_certified_conflict``.
 
         Reglas:
           1. Mismo génesis y validez de consenso completa (`_validate_blocks`).
@@ -822,13 +908,25 @@ class Blockchain:
         """
         try:
             candidate = [Block.from_dict(b) for b in new_chain]
+            certs = {int(k): v for k, v in (certificates or {}).items()}
         except (KeyError, TypeError, ValueError, AttributeError) as e:
             return False, f"Cadena recibida malformada: {e}"
+        if self.consensus == "pbft":
+            ok, reason = self._check_certificates(candidate, certs)
+            if not ok:
+                return False, f"Cadena recibida sin certificados válidos: {reason}"
         # Validación costosa fuera del lock: una cadena válida lo sigue siendo.
         valid, reason, states = self._replay_blocks(candidate)
         if not valid:
             return False, f"Cadena recibida inválida: {reason}"
         new_work = self.cumulative_work(candidate)
+        if self.consensus == "pbft":
+            chain = self.chain
+            for i in range(1, min(len(chain), len(candidate))):
+                if chain[i].hash != candidate[i].hash:
+                    self._notify_conflict(i, chain[i].hash, candidate[i].hash)
+                    return False, (f"Conflicto PBFT: otro bloque certificado en la altura {i}; "
+                                   f"los bloques certificados nunca se reemplazan")
 
         with self._lock:
             our_work = self.cumulative_work(self.chain)
@@ -865,12 +963,17 @@ class Blockchain:
             tip = len(candidate) - 1
             snapshot = (self._make_snapshot(candidate[-1], states)
                         if self._snapshot_due(fork, tip) else None)
+            added_certs = ({b.header.index: certs[b.header.index] for b in added}
+                           if self.consensus == "pbft" else None)
             try:
-                self.store.replace_from(fork, added, snapshot)
+                self.store.replace_from(fork, added, snapshot, added_certs)
             except sqlite3.Error as e:
                 logger.exception("No se pudo guardar la reorganización en chain.db")
                 return False, f"Error de almacenamiento: {e}"
             self.chain = candidate
+            if added_certs is not None:
+                self.certificates = {h: c for h, c in self.certificates.items() if h <= fork}
+                self.certificates.update(added_certs)
             self._confirmed_ids = new_ids
             self.mempool = []
             self.contracts.commit(states, tip)

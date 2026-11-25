@@ -87,7 +87,7 @@ Flujos de trabajo y orden de dependencias:
 
 ## P1 — Funcionalidad prevista que no funciona
 
-- [ ] **P1-1 PBFT real.** Switch `CONSENSUS=pow|pbft`, réplicas desde configuración, mensajes
+- [x] **P1-1 PBFT real.** *(4 réplicas, 2 por RPi, f=1; variante textual de Castro & Liskov: el PRE-PREPARE cuenta como voto del primario; certificado de commit 2f+1 en la tabla `certificates`; ver `docs/arquitectura.md` §4; carrera PoW vs PBFT medida en un portátil en `docs/experimentos/carrera_consensos.md`)* Switch `CONSENSUS=pow|pbft`, réplicas desde configuración, mensajes
   firmados por nodo, el primario cuenta su PREPARE, VIEW-CHANGE real, commit tras 2f+1. Con 2 nodos
   f=0: usar 4 réplicas (2 por RPi o una PC de laboratorio) para tolerar 1 falla.
 - [x] **P1-2 Datos personales fuera de la cadena.** *(raíz Merkle de campos con sal en `fields_root`; divulgación selectiva; ver `docs/contratos.md`; cambio de consenso: borrar `data/chain`)* Hoy nombre y nota quedan en claro en un registro
@@ -168,6 +168,7 @@ Flujos de trabajo y orden de dependencias:
 1. **Laboratorio de ataques en vivo:** un nodo malicioso real intenta doble gasto, reorg del 51 % y
    Sybil; con `CONSENSUS=pbft` el mismo ataque falla frente al tribunal.
 2. **Carrera de consensos:** la misma carga en PoW y PBFT, latencia/TPS/CPU lado a lado (figuras OE-2).
+   *Arnés hecho en P1-1 (`scripts/experiments/carrera_consensos.py`, medido en un portátil); falta correrlo en las RPi.*
 3. **Anclaje público:** sellar el hash de la cabeza en Bitcoin con OpenTimestamps cada N bloques.
 4. **Kiosco verificador:** QR impreso en el diploma → página móvil con estado, prueba Merkle y anclaje.
 5. **RPi consciente de temperatura:** controlador que ajusta la dificultad según la temperatura.
@@ -201,6 +202,8 @@ requieren las RPi: el dueño ejecuta `scripts/bench_rpi.py` (P1-10) y devuelve l
 
 ## Decisiones abiertas
 
-- ¿2 réplicas (solo PoW, f=0) o 4 réplicas (2 por RPi o un tercer equipo)? Define el valor de P1-1.
+- ~~¿2 réplicas (solo PoW, f=0) o 4 réplicas?~~ **Decidido (P1-1): 4 réplicas, 2 por RPi (f=1).**
+  Limitación aceptada: si cae un Pi caen 2 réplicas y PBFT se detiene (quedan 2 < 2f+1 = 3);
+  tolerar la caída de un equipo requiere un tercer equipo.
 - Nombre del token y política de presupuesto por emisor.
 - Visto bueno legal de la UPB para puntos de circuito cerrado y para datos personales (P1-2).

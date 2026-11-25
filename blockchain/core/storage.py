@@ -18,6 +18,11 @@ Esquema (ver ``_SCHEMA``):
     snapshots(height PK, block_hash, contracts, states, digest)
                                               foto del estado de los contratos en
                                               la altura ``height`` (JSON)
+    certificates(height PK, block_hash, data) certificado de commit PBFT del
+                                              bloque (P1-1): 2f+1 COMMIT firmados.
+                                              Fuera del hash del bloque: dos
+                                              réplicas pueden juntar subconjuntos
+                                              distintos de firmas igual de válidos.
 
 Operaciones y su costo:
 
@@ -85,6 +90,11 @@ CREATE TABLE IF NOT EXISTS txs (
 CREATE INDEX IF NOT EXISTS txs_height    ON txs(height);
 CREATE INDEX IF NOT EXISTS txs_sender    ON txs(sender);
 CREATE INDEX IF NOT EXISTS txs_recipient ON txs(recipient);
+CREATE TABLE IF NOT EXISTS certificates (
+    height     INTEGER PRIMARY KEY,
+    block_hash TEXT NOT NULL,
+    data       TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS snapshots (
     height     INTEGER PRIMARY KEY,
     block_hash TEXT NOT NULL,
@@ -236,20 +246,31 @@ class ChainStore:
             "VALUES (?, ?, ?, ?, ?)",
             (snap.height, snap.block_hash, snap.contracts, snap.states, snap.digest))
 
-    def _add_blocks(self, conn, blocks, snapshot: Optional[Snapshot]) -> None:
+    def _add_blocks(self, conn, blocks, snapshot: Optional[Snapshot],
+                    certificates: Optional[dict] = None) -> None:
         for block in blocks:
             self._insert_block(conn, block)
             self._insert_txs(conn, block)
+            cert = (certificates or {}).get(block.header.index)
+            if cert is not None:
+                conn.execute(
+                    "INSERT OR REPLACE INTO certificates(height, block_hash, data) "
+                    "VALUES (?, ?, ?)",
+                    (block.header.index, block.hash,
+                     json.dumps(cert, ensure_ascii=False, separators=(",", ":"))))
         if snapshot is not None:
             self._insert_snapshot(conn, snapshot)
 
-    def append_block(self, block, snapshot: Optional[Snapshot] = None) -> None:
-        """Agrega ``block`` en la punta (y opcionalmente una foto): una transacción."""
+    def append_block(self, block, snapshot: Optional[Snapshot] = None,
+                     certificate: Optional[dict] = None) -> None:
+        """Agrega ``block`` en la punta (y opcionalmente una foto y su certificado
+        PBFT): una transacción."""
+        certs = {block.header.index: certificate} if certificate is not None else None
         with self._transaction() as conn:
-            self._add_blocks(conn, [block], snapshot)
+            self._add_blocks(conn, [block], snapshot, certs)
 
     def replace_from(self, fork_height: int, blocks, snapshot: Optional[Snapshot] = None,
-                     ) -> None:
+                     certificates: Optional[dict] = None) -> None:
         """Reorganización: borra las alturas > ``fork_height`` y agrega ``blocks``.
 
         Todo en una transacción: tras un corte queda la cadena vieja o la nueva,
@@ -257,9 +278,9 @@ class ChainStore:
         (describían bloques que ya no están).
         """
         with self._transaction() as conn:
-            for table in ("txs", "blocks", "snapshots"):
+            for table in ("txs", "blocks", "snapshots", "certificates"):
                 conn.execute(f"DELETE FROM {table} WHERE height > ?", (fork_height,))
-            self._add_blocks(conn, blocks, snapshot)
+            self._add_blocks(conn, blocks, snapshot, certificates)
 
     def import_chain(self, blocks, snapshot: Optional[Snapshot] = None) -> None:
         """Carga una cadena completa (migración desde chain.json) en una transacción."""
@@ -332,6 +353,11 @@ class ChainStore:
     def count_txs(self) -> int:
         """Total de TXs en bloques (incluida la del génesis, como antes)."""
         return self._query("SELECT COALESCE(SUM(n_txs), 0) FROM blocks")[0][0]
+
+    def load_certificates(self) -> dict:
+        """Certificados de commit PBFT guardados: ``{altura: certificado}`` (P1-1)."""
+        return {r[0]: json.loads(r[1]) for r in
+                self._query("SELECT height, data FROM certificates ORDER BY height")}
 
     def snapshots(self) -> List[Snapshot]:
         """Fotos guardadas, de la más alta a la más baja."""

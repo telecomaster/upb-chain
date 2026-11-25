@@ -23,7 +23,7 @@ def test_dos_apps_en_el_mismo_proceso_son_independientes(tmp_path):
     a, b = make_app(tmp_path, "nodo_a"), make_app(tmp_path, "nodo_b")
     na, nb = a.state.node, b.state.node
     for campo in ("blockchain", "p2p", "security_monitor", "tx_rate_limiter", "mining_lock",
-                  "mining_stop", "tx_anomaly_detector", "block_anomaly_detector", "pbft_node"):
+                  "mining_stop", "tx_anomaly_detector", "block_anomaly_detector", "events"):
         assert getattr(na, campo) is not getattr(nb, campo), campo
     with TestClient(a) as ca, TestClient(b) as cb:
         assert ca.post("/blocks/mine", json={"miner_address": "M"}).status_code == 200

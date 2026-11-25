@@ -20,7 +20,7 @@ from blockchain.core.transaction import (
 )
 from blockchain.core.wallet import Wallet
 from blockchain.consensus.proof_of_work import ProofOfWork, estimate_rpi5_performance
-from blockchain.consensus.pbft import PBFTNode
+from blockchain.consensus.pbft import InMemoryNetwork, PBFTReplica, ReplicaSet
 from blockchain.contracts.credential import CredentialContract, credential_id_of_tx
 from ai.anomaly.detector import TransactionAnomalyDetector
 from ai.analytics.chain_stats import ChainAnalytics
@@ -152,30 +152,35 @@ def demo():
         print("✗ Timeout — dificultad demasiado alta para demo")
 
     # ── 7. PBFT ──────────────────────────────────────────────────
-    separator("7. CONSENSUS PBFT (4 nodos, tolera 1 fallo)")
-    peers = ["node_1", "node_2", "node_3", "node_4"]
-    nodes = [PBFTNode(pid, peers, is_primary=(pid == "node_1")) for pid in peers]
-    primary = nodes[0]
-    request = {"block_hash": chain.last_block.hash, "index": chain.height}
-
-    pre_prepare = primary.propose(request)
-    prepare_msgs = [n.handle_pre_prepare(pre_prepare) for n in nodes[1:] if n.handle_pre_prepare(pre_prepare)]
-    commit_msgs = []
-    for node in nodes:
-        for prep in prepare_msgs:
-            msg = node.handle_prepare(prep)
-            if msg:
-                commit_msgs.append(msg)
-    committed = []
-    for node in nodes:
-        for commit in commit_msgs:
-            r = node.handle_commit(commit)
-            if r:
-                committed.append(r)
-
-    stats = primary.get_consensus_stats()
-    print(f"✓ PBFT configurado: f={stats['fault_tolerance_f']}, quórum={stats['quorum_size']}/{len(peers)}")
-    print(f"  Bloques comprometidos: {stats['committed_blocks']}")
+    separator("7. CONSENSO PBFT (4 réplicas firmadas, tolera 1 falla)")
+    # Red en memoria (sin sockets): 4 réplicas con su propia cadena en modo pbft.
+    llaves = [Wallet.generate() for _ in range(4)]
+    ids = [f"node_{i + 1}" for i in range(4)]
+    rs = ReplicaSet.from_list([{"id": rid, "address": f"127.0.0.1:{8001 + 10 * i}",
+                                "public_key": w.public_key_hex}
+                               for i, (rid, w) in enumerate(zip(ids, llaves))])
+    red = InMemoryNetwork()
+    cadenas = []
+    for rid, w in zip(ids, llaves):
+        bc = Blockchain(node_id=rid, data_dir=tempfile.mkdtemp(prefix="upbchain-pbft-"),
+                        consensus="pbft", replica_set=rs)
+        cadenas.append(bc)
+        red.add(PBFTReplica(rid, w.private_key_hex, rs, bc, red.sender(rid), batch_interval=0))
+    red.down = {"node_4"}            # una réplica caída: f = 1 la tolera
+    autor = Wallet.generate()
+    tx_pbft = Transaction(type=TransactionType.DATA_RECORD, sender=autor.address,
+                          recipient="UPB_DEMO", payload={"nota": "demo PBFT"}, nonce=1)
+    tx_pbft.sign(autor.private_key_hex)
+    for bc in cadenas[:3]:
+        bc.add_transaction(tx_pbft)
+    red.replicas["node_1"].tick()    # el primario de la vista 0 propone
+    estado = red.replicas["node_1"].status()
+    cert = cadenas[0].certificates.get(1, {})
+    print(f"✓ PBFT: n={estado['n']}, f={estado['f']}, quórum={estado['quorum']} "
+          f"(una réplica caída)")
+    print(f"  Altura confirmada en las 3 vivas: {[bc.height for bc in cadenas[:3]]}")
+    print(f"  Certificado de commit: {len(cert.get('commits', []))} firmas ECDSA, "
+          f"mensajes entregados: {red.delivered}")
 
     # ── 8. Detección de anomalías IA ──────────────────────────────
     separator("8. IA — DETECCIÓN DE ANOMALÍAS EN TRANSACCIONES")

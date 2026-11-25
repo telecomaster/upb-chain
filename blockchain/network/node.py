@@ -24,7 +24,18 @@ Mensajes (P0-5)
   re-propaga una vez; si no la extiende se sincroniza con el emisor
   (``origin``); si es inválido se ignora con un log.
 - ``NEW_TX`` (sin respuesta): admisión al mempool; si entra, se re-propaga.
-- ``GET_PEERS`` → ``PEERS``; ``PING`` → ``PONG``; ``PBFT``.
+- ``GET_PEERS`` → ``PEERS``; ``PING`` → ``PONG``.
+- ``PBFT`` (sin respuesta, P1-1): ``data`` = un mensaje PBFT firmado
+  (PRE_PREPARE, PREPARE, COMMIT, VIEW_CHANGE o NEW_VIEW) para la réplica
+  local (``on_pbft_message``). Se envía directo a cada réplica (``send_pbft``),
+  no por gossip.
+
+Modo de consenso (P1-1)
+-----------------------
+El estado anunciado lleva ``consensus`` ("pow" o "pbft"); es de toda la red:
+un par con otro modo recibe ``REJECT`` igual que con otro génesis. En pbft,
+``NEW_BLOCK`` lleva ``certificate`` y ``CHAIN`` lleva ``certificates``
+({altura: certificado}); la cadena los verifica en lugar del trabajo.
 
 Compatibilidad backward
 -----------------------
@@ -116,6 +127,7 @@ class P2PNode:
         on_invalid_block: Optional[Callable] = None,
         on_unknown_peer: Optional[Callable] = None,
         known_peers: Optional[List[str]] = None,
+        consensus: str = "pow",
     ):
         """
         - ``blockchain``: si se pasa, el nodo valida y añade bloques/TXs recibidos,
@@ -156,6 +168,8 @@ class P2PNode:
         self.on_invalid_block = on_invalid_block
         self.on_unknown_peer = on_unknown_peer
         self.known_peers: Set[str] = set(known_peers or [])
+        # Modo de consenso de la red (P1-1): un par con otro modo se rechaza.
+        self.consensus = consensus
 
         self._server: Optional[socket.socket] = None
         self._threads: List[threading.Thread] = []
@@ -308,11 +322,22 @@ class P2PNode:
             "host": self.advertise_host,
             "port": self.port,
             "genesis_hash": self.genesis_hash,
+            "consensus": self.consensus,
             "height": bc.height if bc is not None else 0,
             "work": bc.total_work if bc is not None else 0,
             "tip": bc.last_block.hash if bc is not None else self.genesis_hash,
             "peers": known,
         }
+
+    def _incompatible(self, status: dict) -> Optional[str]:
+        """Motivo para rechazar a un par (otro génesis u otro modo de consenso), o None."""
+        if status.get("genesis_hash") != self.genesis_hash:
+            return "Génesis distinto"
+        # Un par sin el campo es anterior a P1-1, es decir, PoW.
+        if status.get("consensus", "pow") != self.consensus:
+            return (f"Modo de consenso distinto ({status.get('consensus', 'pow')} "
+                    f"!= {self.consensus})")
+        return None
 
     def _local_work(self) -> int:
         return self.blockchain.total_work if self.blockchain is not None else 0
@@ -359,7 +384,11 @@ class P2PNode:
             self._handle_tx(message)
         elif msg_type == MSG_GET_CHAIN:
             chain = list(self.blockchain.chain) if self.blockchain is not None else []
-            self._send_framed(conn, {"type": MSG_CHAIN, "data": [b.to_dict() for b in chain]})
+            reply = {"type": MSG_CHAIN, "data": [b.to_dict() for b in chain]}
+            certs = getattr(self.blockchain, "certificates", None)
+            if certs:
+                reply["certificates"] = {str(h): c for h, c in dict(certs).items()}
+            self._send_framed(conn, reply)
         elif msg_type == MSG_SYNC_REQUEST:
             self._send_framed(conn, {"type": MSG_SYNC_RESPONSE, **self._status()})
         elif msg_type == MSG_GET_PEERS:
@@ -369,13 +398,14 @@ class P2PNode:
         elif msg_type == MSG_PING:
             self._send_framed(conn, {"type": MSG_PONG, "node_id": self.node_id})
         elif msg_type == MSG_PBFT and self.on_pbft_message:
-            self.on_pbft_message(message["data"])
+            self._notify(self.on_pbft_message, message.get("data"))
 
     def _handle_handshake(self, message: dict, conn: socket.socket) -> None:
         peer_id = message.get("node_id", "unknown")
-        if message.get("genesis_hash") != self.genesis_hash:
-            logger.warning(f"Par {peer_id} rechazado: génesis distinto")
-            self._send_framed(conn, {"type": MSG_REJECT, "reason": "Génesis distinto"})
+        motivo = self._incompatible(message)
+        if motivo:
+            logger.warning(f"Par {peer_id} rechazado: {motivo}")
+            self._send_framed(conn, {"type": MSG_REJECT, "reason": motivo})
             return
         host = self._peer_host(message.get("host", ""), conn)
         port = int(message.get("port") or 0)
@@ -413,7 +443,9 @@ class P2PNode:
         tip = bc.last_block
         extends = block.header.index == tip.header.index + 1 and block.header.previous_hash == tip.hash
         if extends:
-            ok, reason = bc.add_block(block)
+            certificate = message.get("certificate")
+            ok, reason = (bc.add_block(block, certificate=certificate) if certificate is not None
+                          else bc.add_block(block))
             if ok:
                 logger.info(f"Bloque #{block.header.index} recibido y añadido")
                 if self.on_new_block:
@@ -523,8 +555,9 @@ class P2PNode:
             if peer is not None:
                 self._mark_failed(peer)
             return False
-        if reply.get("type") != MSG_HANDSHAKE or reply.get("genesis_hash") != self.genesis_hash:
-            logger.warning(f"Par {host}:{port} rechazado: génesis distinto o respuesta inválida")
+        if reply.get("type") != MSG_HANDSHAKE or self._incompatible(reply):
+            motivo = reply.get("reason") or self._incompatible(reply) or "respuesta inválida"
+            logger.warning(f"Par {host}:{port} rechazado: {motivo}")
             with self._peers_lock:
                 self.peers.pop(f"{host}:{port}", None)
             return False
@@ -543,11 +576,16 @@ class P2PNode:
 
     def request_chain_sync(self, peer_address: str) -> Optional[List[dict]]:
         """Pide la cadena completa (``GET_CHAIN``) a ``"host:port"``. None si falla."""
+        response = self._fetch_chain(peer_address)
+        return response.get("data", []) if response is not None else None
+
+    def _fetch_chain(self, peer_address: str) -> Optional[dict]:
+        """Respuesta ``CHAIN`` completa (bloques y, en pbft, certificados) o None."""
         try:
             host, port = peer_address.rsplit(":", 1)
             response = self._request(host, int(port), {"type": MSG_GET_CHAIN, "node_id": self.node_id})
             if response.get("type") == MSG_CHAIN:
-                return response.get("data", [])
+                return response
             logger.debug(f"request_chain_sync: respuesta inesperada de {peer_address}: {response.get('type')}")
         except Exception as e:
             logger.warning(f"request_chain_sync falló para {peer_address}: {e}")
@@ -558,10 +596,13 @@ class P2PNode:
         if self.blockchain is None:
             return False
         with self._sync_lock:
-            chain = self.request_chain_sync(peer_address)
+            response = self._fetch_chain(peer_address)
+            chain = response.get("data") if response is not None else None
             if not chain:
                 return False
-            ok, reason = self.blockchain.replace_chain(chain)
+            certificates = response.get("certificates")
+            ok, reason = (self.blockchain.replace_chain(chain, certificates) if certificates
+                          else self.blockchain.replace_chain(chain))
         if ok:
             logger.info(f"Sincronizado con {peer_address}: altura {self.blockchain.height}")
         else:
@@ -582,7 +623,7 @@ class P2PNode:
         except Exception:
             self._mark_failed(peer)
             return
-        if reply.get("type") != MSG_SYNC_RESPONSE or reply.get("genesis_hash") != self.genesis_hash:
+        if reply.get("type") != MSG_SYNC_RESPONSE or self._incompatible(reply):
             self._mark_failed(peer)
             return
         self._register_peer(peer.host, peer.port, reply)
@@ -621,14 +662,20 @@ class P2PNode:
         self._mark_seen(msg["id"])   # no re-procesar nuestro propio mensaje
         return msg
 
-    def broadcast_block(self, block_dict: dict) -> int:
-        return self._broadcast(self._new_message(MSG_BLOCK, block_dict))
+    def broadcast_block(self, block_dict: dict, certificate: Optional[dict] = None) -> int:
+        message = self._new_message(MSG_BLOCK, block_dict)
+        if certificate is not None:
+            message["certificate"] = certificate      # modo pbft (P1-1)
+        return self._broadcast(message)
 
     def broadcast_transaction(self, tx_dict: dict) -> int:
         return self._broadcast(self._new_message(MSG_TRANSACTION, tx_dict))
 
-    def broadcast_pbft(self, pbft_dict: dict) -> int:
-        return self._broadcast(self._new_message(MSG_PBFT, pbft_dict))
+    def send_pbft(self, host: str, port: int, pbft_msg: dict, timeout: float = 2.0) -> None:
+        """Entrega directa (sin gossip ni respuesta) de un mensaje PBFT a una réplica."""
+        with socket.create_connection((host, port), timeout=timeout) as conn:
+            conn.settimeout(timeout)
+            self._send_framed(conn, {"type": MSG_PBFT, "data": pbft_msg})
 
     def _broadcast(self, message: dict) -> int:
         # `origin`: a quién pedir la cadena si el bloque no extiende la punta del receptor.
