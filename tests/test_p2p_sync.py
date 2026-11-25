@@ -233,3 +233,66 @@ def test_handshake_registra_al_par_antes_de_responder(red):
     a._send_framed = espia
     assert b.connect_to_peer(HOST, a.port)
     assert visto and all(visto)
+
+
+def _minar_local(node, n):
+    for _ in range(n):
+        ok, motivo = node.blockchain.add_block(mine_candidate(node.blockchain))
+        assert ok, motivo
+
+
+def test_bloques_competidores_simultaneos_no_se_bloquean_mutuamente(red):
+    """P0-5: dos nodos que reciben a la vez el bloque del otro no esperan al timeout.
+
+    Antes, NEW_BLOCK llamaba a sync_with dentro del hilo que atiende la conexión:
+    ambos nodos se pedían la cadena a la vez y se bloqueaban hasta el timeout (10 s).
+    """
+    import threading
+    a = red.nodo("a", sync_interval=60, timeout=10.0)
+    b = red.nodo("b", sync_interval=60, timeout=10.0)
+    a.add_peer(HOST, b.port)
+    b.add_peer(HOST, a.port)
+    assert _esperar(lambda: all(p.is_active for n in (a, b) for p in n.peers.values()))
+    # Cadenas divergentes (se mina tras conectar, sin sync previo); B con más trabajo.
+    _minar_local(a, 2)
+    _minar_local(b, 3)
+    barrera = threading.Barrier(2)
+
+    def difundir(n):
+        barrera.wait()
+        n.broadcast_block(n.blockchain.last_block.to_dict())
+
+    t0 = time.perf_counter()
+    hilos = [threading.Thread(target=difundir, args=(n,)) for n in (a, b)]
+    for h in hilos:
+        h.start()
+    for h in hilos:
+        h.join(15)
+    assert _esperar(_alcanzo(a, b), timeout=15)
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 3.0, f"convergencia tardó {elapsed:.1f} s (bloqueo mutuo hasta el timeout)"
+    assert a.blockchain.height == 3
+
+
+def test_rafaga_de_bloques_no_lanza_hilos_de_sync_sin_limite(red, monkeypatch):
+    """Una ráfaga de 50 NEW_BLOCK sobre el mismo par genera una sync en vuelo, no 50."""
+    import threading
+    a = red.nodo("a", sync_interval=60)
+    lanzados = []
+    soltar = threading.Event()
+
+    def sync_lenta(addr):
+        lanzados.append(addr)
+        soltar.wait(5)
+        return False
+
+    monkeypatch.setattr(a, "sync_with", sync_lenta)
+    for _ in range(50):
+        a._sync_en_segundo_plano("127.0.0.1:9")
+    assert _esperar(lambda: len(lanzados) == 1)
+    time.sleep(0.2)
+    assert len(lanzados) == 1
+    soltar.set()
+    # Lo coalescido produce, como mucho, una pasada adicional.
+    assert _esperar(lambda: not a._sync_bg)
+    assert len(lanzados) <= 2

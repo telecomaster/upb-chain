@@ -235,6 +235,8 @@ class P2PNode:
         self._seen_messages: Set[str] = set()
         self._seen_lock = threading.Lock()
         self._sync_lock = threading.Lock()
+        self._sync_bg_lock = threading.Lock()
+        self._sync_bg: Dict[str, bool] = {}   # par -> hay otra pasada pendiente
         self._running = False
         self._stop_event = threading.Event()
 
@@ -632,7 +634,32 @@ class P2PNode:
         port = int(origin.get("port") or 0)
         if host and port and not self._is_self(host, port):
             logger.info(f"Bloque #{block.header.index} no extiende la punta: sincronizando con {host}:{port}")
-            self.sync_with(f"{host}:{port}")
+            self._sync_en_segundo_plano(f"{host}:{port}")
+
+    def _sync_en_segundo_plano(self, peer_address: str) -> None:
+        """Sincroniza fuera del hilo que atiende la conexión (evita bloqueo mutuo).
+
+        Una sola sincronización en vuelo por par: si llegan más NEW_BLOCK mientras
+        corre, se coalescen en una pasada adicional (no se lanzan hilos sin límite).
+        """
+        with self._sync_bg_lock:
+            if peer_address in self._sync_bg:
+                self._sync_bg[peer_address] = True
+                return
+            self._sync_bg[peer_address] = False
+        self._spawn(self._bucle_sync, peer_address)
+
+    def _bucle_sync(self, peer_address: str) -> None:
+        while True:
+            try:
+                self.sync_with(peer_address)
+            except Exception:
+                logger.exception(f"Error sincronizando con {peer_address}")
+            with self._sync_bg_lock:
+                if not self._sync_bg.get(peer_address) or self._stop_event.is_set():
+                    self._sync_bg.pop(peer_address, None)
+                    return
+                self._sync_bg[peer_address] = False
 
     @staticmethod
     def _notify(callback: Optional[Callable], *args) -> None:

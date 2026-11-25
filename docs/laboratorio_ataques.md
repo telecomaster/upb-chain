@@ -98,11 +98,12 @@ no para ganar el consenso.
 | `pbft` | Es r0, primario de la vista 0, y firma dos PRE-PREPARE distintos para la altura 1 (A a r1; B a r2 y r3; luego el otro a cada una). | Cada réplica honesta detecta los dos mensajes firmados (prueba de falla bizantina), no hay quórum, cambio de vista y el nuevo primario re-propone el bloque que llegó a "prepared": como máximo **un** bloque confirmado. | 3 alertas `PBFT_EQUIVOCATION`, vista ≥ 1 con primario ≠ r0, `bloques_distintos_confirmados_en_altura_1 = 1`. |
 | `pow` | Mina dos bloques válidos para la altura 1 y entrega uno a cada nodo honesto. | No existe la noción de equivocación: ambos bloques son válidos, las puntas divergen (empate de trabajo) hasta el siguiente bloque, que provoca un reorg de 1. | Sin alertas de equivocación; `CHAIN_REORG` en el nodo que pierde. |
 
-Observación del laboratorio (PoW): con dos bloques compitiendo, cada nodo honesto, al recibir el
-bloque del otro, le pide la cadena **dentro del mismo hilo de la conexión**; si los dos lo hacen a
-la vez se esperan mutuamente hasta el `timeout` del P2P (10 s) y recién entonces convergen. En
-este portátil el escenario tardó unos 12 s por esa espera. Es un defecto del nodo P2P anotado como
-trabajo pendiente, no del laboratorio.
+Hallazgo del laboratorio (PoW), corregido en P0-5: con dos bloques compitiendo, cada nodo honesto,
+al recibir el bloque del otro, le pedía la cadena **dentro del mismo hilo de la conexión**; si los
+dos lo hacían a la vez se esperaban mutuamente hasta el `timeout` del P2P (10 s). Ahora el nodo
+sincroniza en un hilo aparte (`_sync_en_segundo_plano`), con una sola sincronización en vuelo por
+par (las ráfagas de NEW_BLOCK se coalescen). En este portátil el escenario pasó de ~12.4 s a
+~3.5 s de pared (incluye el arranque de los nodos). Prueba: `tests/test_p2p_sync.py`.
 
 ## Nota de seguridad
 
