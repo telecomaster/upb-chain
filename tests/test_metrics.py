@@ -3,7 +3,7 @@ import re
 import time
 
 import pytest
-from tests.cliente_asgi import ClienteASGI
+from api.cliente_asgi import ClienteASGI
 
 from blockchain.core.transaction import Transaction, TransactionType
 from blockchain.core.wallet import Wallet

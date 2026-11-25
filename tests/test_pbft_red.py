@@ -9,7 +9,7 @@ import socket
 import time
 
 import pytest
-from tests.cliente_asgi import ClienteASGI
+from api.cliente_asgi import ClienteASGI
 
 from blockchain.consensus.pbft import PRE_PREPARE, sign_message
 from blockchain.core.block import Block, BlockHeader

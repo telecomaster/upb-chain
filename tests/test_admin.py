@@ -1,6 +1,6 @@
 """P1-9: endpoints de administración protegidos y CORS restringido."""
 import pytest
-from tests.cliente_asgi import ClienteASGI
+from api.cliente_asgi import ClienteASGI
 
 from tests.helpers import make_app
 

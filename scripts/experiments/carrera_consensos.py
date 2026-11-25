@@ -148,7 +148,7 @@ def _minero(node, fin):
 def correr(modo, n_tx=40, tasa=10.0, semilla=7, bits=14, limite=180.0, convergencia=10.0,
            conexion=20.0):
     """Ejecuta un modo y devuelve ``(resumen, filas)``."""
-    from tests.cliente_asgi import ClienteASGI
+    from api.cliente_asgi import ClienteASGI
     plan = _carga(n_tx, tasa, semilla)
     with tempfile.TemporaryDirectory(prefix=f"carrera-{modo}-",
                                      ignore_cleanup_errors=True) as tmp, \

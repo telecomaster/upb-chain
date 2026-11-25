@@ -2,7 +2,7 @@
 import time
 
 import pytest
-from tests.cliente_asgi import ClienteASGI
+from api.cliente_asgi import ClienteASGI
 
 from api.app import NodeState, app as app_global
 from config import ConfigError, build_settings
