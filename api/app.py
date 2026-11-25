@@ -386,6 +386,13 @@ async def root():
         return "<h1>UPB-Chain API — <a href='/docs'>Documentación</a></h1>"
 
 
+@router.get("/billetera", response_class=HTMLResponse)
+async def billetera():
+    """Billetera web del estudiante (P2-1): firma en el navegador, la llave no llega al servidor."""
+    with open("dashboard/templates/billetera.html", encoding="utf-8") as f:
+        return f.read()
+
+
 @router.get("/health")
 async def health(node: NodeState = Depends(get_node)):
     return {
@@ -530,6 +537,9 @@ async def get_pending(node: NodeState = Depends(get_node)):
 
 @router.post("/transactions")
 async def create_transaction(request: TransactionRequest, node: NodeState = Depends(get_node)):
+    """Admite una TX. ADVERTENCIA: ``private_key_hex`` hace que el servidor firme; es solo
+    educativo y está en desuso. Use la billetera web (/billetera) y envíe ``signature``,
+    ``public_key``, ``nonce`` y ``timestamp`` firmados en el cliente (P2-1)."""
     try:
         tx_type = TransactionType(request.type)
     except ValueError:
@@ -664,7 +674,10 @@ async def mint_tokens(request: MintRequest, node: NodeState = Depends(get_node))
 
 @router.post("/tokens/transfer")
 async def transfer_tokens(request: TransferRequest, node: NodeState = Depends(get_node)):
-    """Transfiere tokens (TOKEN_TRANSFER). 400 si falta saldo para amount + fee."""
+    """Transfiere tokens (TOKEN_TRANSFER). 400 si falta saldo para amount + fee.
+
+    ADVERTENCIA: recibe ``private_key_hex`` (firma en el servidor, solo educativo, en desuso);
+    para uso real firme en el navegador con /billetera y use POST /transactions."""
     try:
         tx = create_transfer_transaction(
             sender=request.sender,

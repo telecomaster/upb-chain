@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Billetera UPB-Chain</title>
+<link rel="stylesheet" href="/static/billetera.css">
+</head>
+<body>
+<main>
+  <h1>Billetera UPB-Chain</h1>
+  <p class="nota">Tu llave privada se genera y se guarda <b>en este navegador</b>, cifrada con tu contraseña.
+    Las transacciones se firman aquí; el nodo solo recibe la firma.</p>
+  <p id="estado" role="status"></p>
+
+  <section id="sec-acceso">
+    <h2>Tu llave</h2>
+    <label>Contraseña
+      <input id="clave" type="password" autocomplete="new-password" minlength="8">
+    </label>
+    <div class="fila">
+      <button id="btn-crear">Crear billetera</button>
+      <button id="btn-abrir">Abrir guardada</button>
+      <button id="btn-borrar" class="peligro">Olvidar</button>
+    </div>
+    <details>
+      <summary>Importar / exportar llave</summary>
+      <label>Llave privada (64 hex)
+        <input id="llave-import" type="password" autocomplete="off">
+      </label>
+      <button id="btn-importar">Importar y guardar</button>
+      <button id="btn-exportar">Mostrar mi llave privada</button>
+      <code id="llave-export" class="oculto"></code>
+    </details>
+  </section>
+
+  <section id="sec-cuenta" class="oculto">
+    <h2>Tu cuenta</h2>
+    <p>Dirección: <code id="direccion"></code></p>
+    <p>Saldo: <b id="saldo">-</b> puntos · próximo nonce: <span id="nonce">-</span></p>
+    <button id="btn-refrescar">Actualizar</button>
+    <h3>Insignias</h3><ul id="insignias"></ul>
+    <h3>Credenciales</h3><ul id="credenciales"></ul>
+  </section>
+
+  <section id="sec-tx" class="oculto">
+    <h2>Enviar transacción</h2>
+    <label>Tipo
+      <select id="tipo">
+        <option value="transfer">Transferir puntos</option>
+        <option value="redeem">Canjear puntos</option>
+        <option value="vote">Votar</option>
+        <option value="data">Registrar dato</option>
+      </select>
+    </label>
+    <label id="l-dest">Destinatario (dirección)<input id="destino" autocomplete="off"></label>
+    <label id="l-monto">Monto (entero)<input id="monto" type="number" min="1" step="1"></label>
+    <label id="l-item">Ítem (opcional)<input id="item" autocomplete="off"></label>
+    <label id="l-eleccion">Elección<input id="eleccion" autocomplete="off"></label>
+    <label id="l-opcion">Opción<input id="opcion" autocomplete="off"></label>
+    <label id="l-dato">Dato (texto)<input id="dato" autocomplete="off"></label>
+    <label>Comisión (entero, se quema)<input id="comision" type="number" min="0" step="1" value="0"></label>
+    <button id="btn-enviar">Firmar y enviar</button>
+    <pre id="resultado"></pre>
+  </section>
+  <p class="nota"><a href="/">Volver al panel</a></p>
+</main>
+<script type="module" src="/static/billetera.js"></script>
+</body>
+</html>

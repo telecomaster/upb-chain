@@ -1,0 +1,13 @@
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;margin:0;background:#f4f6f8;color:#1b2430}
+main{max-width:640px;margin:0 auto;padding:16px}
+section{background:#fff;border-radius:8px;padding:12px 16px;margin:12px 0;box-shadow:0 1px 3px #0002}
+label{display:block;margin:8px 0;font-size:.9rem}
+input,select{display:block;width:100%;padding:10px;font-size:1rem;margin-top:4px}
+button{padding:10px 14px;font-size:1rem;margin:4px 4px 4px 0;cursor:pointer}
+.peligro{color:#a00}
+.fila{display:flex;flex-wrap:wrap}
+.oculto{display:none}
+.nota{font-size:.85rem;color:#556}
+code,pre{word-break:break-all;white-space:pre-wrap;font-size:.8rem}
+#estado{min-height:1.2em;font-weight:600}

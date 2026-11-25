@@ -79,6 +79,7 @@ overstate what works).
 - Tests that need their own node build it with `tests.helpers.make_app(tmp_path, ...)` (`create_app` + `Settings`), never by patching module globals; two apps in one process are independent.
 - Always pass `encoding="utf-8"` to `open()` (Windows defaults to cp1252).
 - Keep it free of deprecated patterns (FastAPI `lifespan`, Pydantic v2, no `utcnow`).
+- Firma en el servidor (endpoints con `private_key_hex`) es solo educativa y está en desuso; la firma real va en el navegador (`/billetera`, `dashboard/static/wallet-core.js`, test cruzado con `node` en `tests/test_billetera.py`).
 - Never commit `venv/`, `.env`, `data/`, wallets or private keys. Wallet endpoints return private keys
   by design (educational); never expose the API beyond a trusted LAN.
 - Remote: upstream is `telecomaster/upb-chain`; collaborators without push access use a fork.
