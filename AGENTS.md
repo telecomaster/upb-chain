@@ -23,19 +23,22 @@ overstate what works).
   `venv\Scripts\python.exe` (Linux/RPi: `venv/bin/python`).
 - Add dependencies with `uv pip install --python venv\Scripts\python.exe <pkg>` and record them in
   `requirements.txt`.
-- Config: copy `.env.example` to `.env`. Note: `.env` is not loaded by the app yet and `DATA_DIR` is
-  ignored (roadmap P0-7), so two local nodes currently share `data/chain/chain.json`.
+- Config: copy `.env.example` to `.env`; all env vars are read in one place, `config.py` (`load_settings()`,
+  environment variables win over `.env`). Each node needs its own `DATA_DIR` and ports.
 
 ## Commands
 
-- Tests: `venv\Scripts\python.exe -m pytest tests -q` (baseline: 78 passed, 1 xfailed, ~4 s)
+- Tests: `venv\Scripts\python.exe -m pytest tests -q` (must stay fully green; baseline count changes as jobs land)
 - Run a node (from repo root, paths are relative):
   `venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8000`
   Dashboard `/`, Swagger `/docs`, health `/health`. P2P listens on 8001. No auto-reload unless `--reload`.
+  Second local node (PowerShell):
+  `$env:NODE_ID="node_2"; $env:DATA_DIR="data/node_2"; $env:NODE_PORT="8011"; $env:PEERS="127.0.0.1:8001"; venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8010`
 - Demo without server: `venv\Scripts\python.exe scripts\demo.py`
 
 ## Layout
 
+- `config.py` settings from env/.env
 - `blockchain/core` block, chain (persistence, fork resolution), transaction, wallet (ECDSA secp256k1)
 - `blockchain/consensus` proof_of_work, pbft · `blockchain/network` P2P node (`sync.py`, `discovery.py` are unwired)
 - `blockchain/contracts/credential.py` credential issue/verify/revoke (in-memory today)
