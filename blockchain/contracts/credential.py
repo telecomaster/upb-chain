@@ -358,6 +358,38 @@ class CredentialContract(ReplayState):
             return None
         return self._generate_id(tx.get("sender", ""), tx.get("recipient", ""), payload)
 
+    def credential_summary(self, credential_id: str, pending: Iterable[dict] = ()) -> dict:
+        """Resumen público de una credencial (sin nota, nombre ni metadatos).
+
+        Deriva de ``credential_status``: estado, bloque, confirmaciones y, si
+        fue revocada, bloque y TX de revocación.
+        """
+        st = self.credential_status(credential_id, pending=pending)
+        cred = st.get("credential") or {}
+        return {
+            "credential_id": credential_id,
+            "status": st["status"], "verdict": st["verdict"], "valid": st["valid"],
+            "issuer_address": cred.get("issuer_address"),
+            "student_address": cred.get("student_address"),
+            "credential_type": cred.get("credential_type"),
+            "degree": cred.get("degree"), "issue_date": cred.get("issue_date"),
+            "block_index": st["block_index"], "confirmations": st["confirmations"],
+            "tx_id": st.get("tx_id"),
+            "revocation_block": cred.get("revocation_block"),
+            "revocation_tx": cred.get("revocation_tx") or None,
+            "revocation_reason": cred.get("revocation_reason"),
+            "pending_revocation": st.get("pending_revocation", False),
+        }
+
+    def issuer_credential_ids(self, issuer_address: str, pending: Iterable[dict] = ()) -> List[str]:
+        """IDs de las credenciales de un emisor: confirmadas y pendientes (mempool)."""
+        ids = [i for i, c in self._credentials.items() if c.issuer_address == issuer_address]
+        for tx in pending:
+            cid = self.credential_id_of_tx(tx)
+            if cid and tx.get("sender") == issuer_address and cid not in ids:
+                ids.append(cid)
+        return ids
+
     def is_registered_issuer(self, address: str) -> bool:
         return address in self._issuer_registry
 

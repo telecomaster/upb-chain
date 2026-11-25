@@ -617,6 +617,28 @@
         Consultar Credenciales
       </button>
       <div id="student-creds" style="margin-top:8px; font-size:11px; color:var(--upb-text);"></div>
+
+      <div class="gold-divider" style="margin:16px 0;"/>
+
+      <div class="section-title">Revocar Credencial</div>
+      <input id="revoke-id" class="upb-input" placeholder="ID de credencial"/>
+      <input id="revoke-addr" class="upb-input" style="margin-top:6px;" placeholder="Dirección del emisor (o autoridad)"/>
+      <input id="revoke-key" type="password" autocomplete="off" class="upb-input" style="margin-top:6px;" placeholder="Llave privada del emisor"/>
+      <input id="revoke-reason" class="upb-input" style="margin-top:6px;" placeholder="Motivo"/>
+      <button id="revoke-btn" onclick="revokeCredential()" class="btn-outline" style="width:100%; margin-top:8px; padding:9px;">
+        Revocar en Blockchain
+      </button>
+      <pre id="revoke-result" style="margin-top:8px; font-size:11px; white-space:pre-wrap;"></pre>
+
+      <div class="gold-divider" style="margin:16px 0;"/>
+
+      <div class="section-title">Historial de Credenciales</div>
+      <input id="history-addr" class="upb-input" placeholder="Dirección del emisor o del estudiante"/>
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <button onclick="loadCredentialHistory('issuer')" class="btn-outline" style="flex:1; padding:9px;">Por emisor</button>
+        <button onclick="loadCredentialHistory('student')" class="btn-outline" style="flex:1; padding:9px;">Por estudiante</button>
+      </div>
+      <div id="history-list" style="margin-top:8px; font-size:11px; color:var(--upb-text);"></div>
     </div>
 
   </div>
@@ -959,6 +981,63 @@ async function verifyCredential() {
     el.style.color = '#f87171';
     el.textContent = `✗ CREDENCIAL ${data.verdict || 'INVÁLIDA'}\n\nRazón: ${data.reason}`;
   }
+}
+
+async function revokeCredential() {
+  const el = document.getElementById('revoke-result');
+  const body = {
+    credential_id: document.getElementById('revoke-id').value.trim(),
+    revoker_address: document.getElementById('revoke-addr').value.trim(),
+    private_key_hex: document.getElementById('revoke-key').value.trim(),
+    reason: document.getElementById('revoke-reason').value.trim(),
+  };
+  if (!body.credential_id || !body.revoker_address || !body.private_key_hex) {
+    el.style.color = '#f87171';
+    el.textContent = '✗ Completa ID, dirección y llave privada.';
+    return;
+  }
+  const { ok, data } = await fetchJSON('/credentials/revoke', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  el.style.color = ok ? '#4ade80' : '#f87171';
+  el.textContent = ok
+    ? `✓ Revocación enviada (TX ${data.tx_id}). Pendiente de minado.`
+    : `✗ ${(data && data.detail) || 'Error al revocar'}`;
+}
+
+const _BADGES = { CONFIRMED: ['VÁLIDA', '#4ade80'], PENDING: ['PENDIENTE', '#fbbf24'],
+                  REVOKED: ['REVOCADA', '#f87171'], EXPIRED: ['EXPIRADA', '#f87171'] };
+
+async function loadCredentialHistory(kind) {
+  const addr = document.getElementById('history-addr').value.trim();
+  const el = document.getElementById('history-list');
+  if (!addr) return;
+  const { ok, data } = await fetchJSON(`/credentials/${kind}/${encodeURIComponent(addr)}`);
+  let items = ok && data ? data.credentials || [] : [];
+  if (kind === 'student') {
+    // /credentials/student devuelve datos completos; se pide el resumen público de cada una.
+    const res = await Promise.all(items.map(c => fetchJSON(`/credentials/${c.credential_id}/history`)));
+    items = res.filter(r => r.ok).map(r => r.data);
+  }
+  el.textContent = '';
+  if (!items.length) { el.textContent = 'Sin credenciales para esta dirección.'; return; }
+  items.forEach(c => {
+    const [txt, color] = _BADGES[c.status] || [c.status, '#9ca3af'];
+    const row = document.createElement('div');
+    row.style.cssText = 'padding:6px 0; border-bottom:1px solid var(--upb-border);';
+    const badge = document.createElement('span');
+    badge.textContent = txt;
+    badge.style.cssText = `color:${color}; font-weight:700; margin-right:8px;`;
+    const link = document.createElement('a');
+    link.href = `/verify/${c.credential_id}`; link.target = '_blank';
+    link.textContent = c.credential_id.slice(0, 12) + '…';
+    const info = document.createElement('span');
+    info.textContent = ` ${c.degree || ''} · bloque ${c.block_index ?? '—'} · ${c.confirmations} conf.` +
+      (c.revocation_block != null ? ` · revocada en bloque ${c.revocation_block}` : '');
+    row.append(badge, link, info);
+    el.appendChild(row);
+  });
 }
 
 async function lookupStudent() {

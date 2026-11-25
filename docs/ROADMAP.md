@@ -95,7 +95,7 @@ Flujos de trabajo y orden de dependencias:
   que quiera. Paso previo a ZKP.
 - [x] **P1-3 Verificación por QR.** `GET /credentials/{id}/qr` (PNG) apuntando a una página pública
   `http` de verificación (estado, bloque, confirmaciones, emisor). `qrcode` ya está en requirements.
-- [ ] **P1-4 Revocación e historial en el dashboard.** Formularios y el guion de TAREAS 3.1
+- [x] **P1-4 Revocación e historial en el dashboard.** Formularios y el guion de TAREAS 3.1
   (5 emitidas, 1 revocada).
 - [ ] **P1-5 Monitor de seguridad conectado.** Llamar `on_block`, `on_invalid_block`,
   `on_chain_reorg`, `on_unknown_peer`; aplicar (no solo alertar) el límite de 100 TX/min; alertas en

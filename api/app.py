@@ -659,6 +659,34 @@ async def verify_page(credential_id: str):
     return HTMLResponse(body, status_code=404 if st["status"] == "NOT_FOUND" else 200)
 
 
+@app.get("/credentials/issuer/{address}")
+async def get_issuer_credentials(address: str):
+    """Credenciales de un emisor (confirmadas y pendientes), solo resumen público."""
+    pending = [t.to_dict() for t in blockchain.mempool]
+    ids = credential_contract.issuer_credential_ids(address, pending=pending)
+    items = [credential_contract.credential_summary(i, pending=pending) for i in ids]
+    return {"issuer_address": address, "count": len(items), "credentials": items}
+
+
+@app.get("/credentials/{credential_id}/history")
+async def credential_history(credential_id: str):
+    """Historial: emitida en el bloque X, revocada en el bloque Y (derivado del contrato)."""
+    pending = [t.to_dict() for t in blockchain.mempool]
+    r = credential_contract.credential_summary(credential_id, pending=pending)
+    if r["status"] == "NOT_FOUND":
+        raise HTTPException(404, "Credencial no encontrada")
+    if r["block_index"] is not None:
+        eventos = [{"event": "ISSUED", "block": r["block_index"], "tx_id": r["tx_id"]}]
+    else:
+        eventos = [{"event": "ISSUE_PENDING", "block": None, "tx_id": r["tx_id"]}]
+    if r["revocation_block"] is not None:
+        eventos.append({"event": "REVOKED", "block": r["revocation_block"],
+                        "tx_id": r["revocation_tx"], "reason": r["revocation_reason"]})
+    elif r["pending_revocation"]:
+        eventos.append({"event": "REVOKE_PENDING", "block": None, "tx_id": None})
+    return {**r, "events": eventos}
+
+
 @app.get("/credentials/student/{address}")
 async def get_student_credentials(address: str):
     return {"credentials": credential_contract.get_student_credentials(address)}
