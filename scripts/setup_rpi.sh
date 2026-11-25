@@ -70,7 +70,7 @@ Type=simple
 User=pi
 WorkingDirectory=$PROJECT_DIR
 EnvironmentFile=$PROJECT_DIR/.env
-ExecStart=$PROJECT_DIR/venv/bin/uvicorn api.app:app --host 0.0.0.0 --port $API_PORT --workers 2
+ExecStart=$PROJECT_DIR/venv/bin/uvicorn api.app:app --host 0.0.0.0 --port $API_PORT --workers 1
 Restart=on-failure
 RestartSec=5s
 StandardOutput=journal
@@ -81,6 +81,7 @@ SyslogIdentifier=upbchain-$NODE_ID
 WantedBy=multi-user.target
 EOF
 
+# Un solo worker por nodo: varios procesos = varias cadenas y choque en el puerto P2P.
 systemctl daemon-reload
 systemctl enable upbchain
 systemctl start upbchain

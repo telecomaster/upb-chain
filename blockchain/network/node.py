@@ -61,7 +61,7 @@ class Peer:
 
     def to_dict(self) -> dict:
         return {
-            "host": self.host,
+            "host": self.advertise_host,
             "port": self.port,
             "node_id": self.node_id,
             "last_seen": self.last_seen,
@@ -81,10 +81,14 @@ class P2PNode:
         on_new_block: Optional[Callable] = None,
         on_new_tx: Optional[Callable] = None,
         on_pbft_message: Optional[Callable] = None,
+        advertise_host: Optional[str] = None,
     ):
         self.node_id = node_id
         self.host = host
         self.port = port
+        # Dirección que se anuncia a los pares (NODE_ADVERTISE_HOST); por defecto, host.
+        # TODO(P0-5): usar también al guardar/propagar pares conocidos.
+        self.advertise_host = advertise_host or host
         self.peers: Dict[str, Peer] = {}
         self._seen_messages: Set[str] = set()
         self._running = False
@@ -262,7 +266,7 @@ class P2PNode:
         response = {
             "type": MSG_HANDSHAKE,
             "node_id": self.node_id,
-            "host": self.host,
+            "host": self.advertise_host,
             "port": self.port,
         }
         self._send_framed(conn, response)
@@ -291,7 +295,7 @@ class P2PNode:
             handshake = {
                 "type": MSG_HANDSHAKE,
                 "node_id": self.node_id,
-                "host": self.host,
+                "host": self.advertise_host,
                 "port": self.port,
             }
             self._send_framed(conn, handshake)

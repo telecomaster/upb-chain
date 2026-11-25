@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from config import load_settings, configure_logging
 from blockchain.core.chain import Blockchain
 from blockchain.core.transaction import Transaction, TransactionType, create_credential_transaction
 from blockchain.core.wallet import Wallet
@@ -27,19 +28,20 @@ from security.monitor import SecurityMonitor
 from security.attacks.simulator import full_security_analysis
 from security.crypto_utils import generate_keypair, benchmark_crypto
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+settings = load_settings()
+configure_logging(settings.log_level)
 logger = logging.getLogger("upb_chain.api")
 
 # ── Estado global de la aplicación ───────────────────────────────────────────
 
-NODE_ID    = os.getenv("NODE_ID", "node_1")
-NODE_HOST  = os.getenv("NODE_HOST", "0.0.0.0")
-NODE_PORT  = int(os.getenv("NODE_PORT", "8001"))
-API_PORT   = int(os.getenv("API_PORT", "8000"))
-PEERS      = os.getenv("PEERS", "").split(",") if os.getenv("PEERS") else []
+NODE_ID    = settings.node_id
+NODE_HOST  = settings.node_host
+NODE_PORT  = settings.node_port
+API_PORT   = settings.api_port
+PEERS      = settings.peers
 
-blockchain      = Blockchain(node_id=NODE_ID)
-pow_engine      = ProofOfWork(difficulty=4)
+blockchain      = Blockchain(node_id=NODE_ID, data_dir=settings.data_dir)
+pow_engine      = ProofOfWork(difficulty=settings.mining_difficulty)
 credential_contract = CredentialContract()
 tx_anomaly_detector = TransactionAnomalyDetector()
 block_anomaly_detector = BlockAnomalyDetector()
@@ -57,6 +59,7 @@ p2p = P2PNode(
     node_id=NODE_ID,
     host=NODE_HOST,
     port=NODE_PORT,
+    advertise_host=settings.node_advertise_host or None,
     on_new_block=lambda b: blockchain.add_block(__import__("blockchain.core.block", fromlist=["Block"]).Block.from_dict(b)),
     on_new_tx=lambda t: blockchain.add_transaction(Transaction.from_dict(t)),
     on_pbft_message=lambda m: logger.info(f"PBFT msg recibido: {m}"),

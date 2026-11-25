@@ -66,7 +66,7 @@ Flujos de trabajo y orden de dependencias:
   `PENDING`/`CONFIRMED` con bloque y confirmaciones; endpoint de revocación firmado; registro de
   emisores por TX de administración firmada con la llave de autoridad del génesis.
   *Listo cuando:* emitir → minar → reiniciar → verificar da VÁLIDA en ambos nodos; tras revocar, REVOCADA.
-- [ ] **P0-7 Configuración de despliegue.** `setup_rpi.sh` usa `--workers 2` (dos cadenas en dos
+- [x] **P0-7 Configuración de despliegue.** `setup_rpi.sh` usa `--workers 2` (dos cadenas en dos
   procesos, ambos en el puerto 8001); `.env` no se carga; `DATA_DIR`, `MINING_DIFFICULTY`,
   `LOG_LEVEL` se ignoran. Un worker por nodo, `load_dotenv`, cablear las variables, agregar
   `NODE_ADVERTISE_HOST`. *Listo cuando:* dos nodos locales usan directorios separados y un reinicio
