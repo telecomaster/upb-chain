@@ -34,10 +34,10 @@ async def test_pagina_pendiente_valida_y_revocada(client):
 
 @pytest.mark.asyncio
 async def test_pagina_no_expone_notas_ni_nombre(client):
-    _, cid = await _emitida(client, grade=97)
+    _, cid = await _emitida(client, grade=87.25)  # con punto: no aparece por azar en ids hex
     await _minar_api(client)
     t = (await client.get(f"/verify/{cid}")).text
-    assert "Carla Rojas" not in t and "97" not in t
+    assert "Carla Rojas" not in t and "87.25" not in t
 
 
 @pytest.mark.asyncio
