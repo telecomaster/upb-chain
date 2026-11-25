@@ -74,7 +74,8 @@ class ChainAnalytics:
     def _avg_block_time(self, chain: List[dict]) -> float:
         if len(chain) < 2:
             return 0.0
-        times = [b["header"]["timestamp"] for b in chain if "header" in b]
+        # Se excluye el génesis (índice 0): su timestamp no es un intervalo de minado
+        times = [b["header"]["timestamp"] for b in chain[1:] if "header" in b]
         if len(times) < 2:
             return 0.0
         intervals = [times[i] - times[i - 1] for i in range(1, len(times))]

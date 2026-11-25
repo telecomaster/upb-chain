@@ -206,6 +206,8 @@ def demo():
 
     attack_results = full_security_analysis(node_count=2, honest_hash_rate=70, attacker_hash_rate=30)
     for attack_name, result in attack_results.items():
+        if attack_name == "_summary":
+            continue  # resumen consolidado, no es un escenario de ataque
         status = "VULNERABLE" if result["success"] else "PROTEGIDO"
         print(f"  [{status}] {attack_name.replace('_',' ').upper()}")
         recs = result.get("recommendations", [])

@@ -54,7 +54,9 @@ class FiftyOnePercentAttack:
 
         success_rate = successes / iterations
         elapsed = time.perf_counter() - start
-        success = attacker_share > 0.5
+        # Con q >= p la simulación reorganiza siempre (_can_reorg devuelve True),
+        # así que el éxito reportado debe incluir el caso 50 %.
+        success = attacker_share >= 0.5
 
         return AttackResult(
             attack_type="51% Attack",
@@ -523,11 +525,13 @@ def full_security_analysis(
     risk_sum   = 0.0
     weight_sum = 0.0
     with_mitigation = 0
+    any_success = False
     total_scenarios = len(_weights)
 
     for key, weight in _weights.items():
         r = results.get(key, {})
         risk_value = 1.0 if r.get("success", False) else 0.0
+        any_success = any_success or bool(r.get("success", False))
         risk_sum   += risk_value * weight
         weight_sum += weight
 
@@ -543,7 +547,9 @@ def full_security_analysis(
     overall_risk_score  = round(risk_sum / weight_sum, 4) if weight_sum > 0 else 0.0
     mitigation_coverage = round(with_mitigation / total_scenarios, 4)
 
+    # `success` del resumen: al menos un escenario resultó vulnerable (mismo contrato que AttackResult)
     results["_summary"] = {
+        "success":             any_success,
         "overall_risk_score":  overall_risk_score,
         "mitigation_coverage": mitigation_coverage,
         "risk_label": (
