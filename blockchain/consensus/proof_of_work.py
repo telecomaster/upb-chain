@@ -4,6 +4,7 @@ Implementa SHA-256 con dificultad variable y métricas de rendimiento.
 """
 import hashlib
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -28,6 +29,7 @@ class ProofOfWork:
         self.difficulty = difficulty
         self.target_prefix = "0" * difficulty
         self._stats: list[MiningResult] = []
+        self.last_difficulty = difficulty  # última dificultad usada al minar
 
     def mine(
         self,
@@ -35,17 +37,23 @@ class ProofOfWork:
         max_nonce: int = 10_000_000,
         timeout: Optional[float] = 120.0,
         difficulty: Optional[int] = None,
+        stop_event: Optional[threading.Event] = None,
     ) -> Optional[MiningResult]:
-        """Mina `block`. Si se pasa `difficulty` (la esperada por la cadena) se usa
-        en lugar de self.difficulty, para que el bloque pase la validación (P0-3)."""
+        """Mina `block`. `difficulty` es la que dicta la regla de la cadena
+        (`Blockchain._calculate_difficulty()`); si se omite se usa la del
+        constructor (sólo uso autónomo: demos y benchmarks). No se muta el
+        estado del motor. Si `stop_event` se activa, el minado aborta (None)."""
         start = time.perf_counter()
-        if difficulty is not None:
-            self.difficulty = difficulty
-            self.target_prefix = "0" * difficulty
-        block.header.difficulty = self.difficulty
+        diff = self.difficulty if difficulty is None else difficulty
+        prefix = "0" * diff
+        self.last_difficulty = diff
+        block.header.difficulty = diff
         nonce = 0
 
         while nonce < max_nonce:
+            if stop_event is not None and nonce % 256 == 0 and stop_event.is_set():
+                logger.info("Minado abortado por stop_event")
+                return None
             if timeout and (time.perf_counter() - start) > timeout:
                 logger.warning("Mining timeout alcanzado")
                 return None
@@ -53,7 +61,7 @@ class ProofOfWork:
             block.header.nonce = nonce
             block.hash = block.compute_hash()
 
-            if block.hash.startswith(self.target_prefix):
+            if block.hash.startswith(prefix):
                 elapsed = time.perf_counter() - start
                 hash_rate = nonce / elapsed if elapsed > 0 else 0
                 result = MiningResult(
@@ -159,7 +167,8 @@ class ProofOfWork:
             "min_time_s": min(times),
             "max_time_s": max(times),
             "avg_hash_rate": sum(rates) / len(rates),
-            "current_difficulty": self.difficulty,
+            "difficulty": self.last_difficulty,
+            "current_difficulty": self.last_difficulty,
         }
 
 

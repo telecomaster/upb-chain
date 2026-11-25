@@ -1,0 +1,121 @@
+"""Tests de P0-4: minado fuera del event loop, un solo minado a la vez y
+dificultad dictada por la regla de la cadena."""
+import asyncio
+import os
+import time
+
+os.environ.setdefault("NODE_PORT", "0")
+
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+
+from blockchain.core.chain import Blockchain
+from tests.helpers import mine_and_add
+
+
+@pytest_asyncio.fixture
+async def client():
+    import api.app as appmod
+    async with AsyncClient(transport=ASGITransport(app=appmod.app),
+                           base_url="http://test") as ac:
+        yield ac
+
+
+def _lento(monkeypatch, segundos):
+    """Hace que el PoW tarde `segundos` (dentro del thread de minado)."""
+    import api.app as appmod
+    real = appmod.pow_engine.mine
+
+    def mine(block, **kw):
+        time.sleep(segundos)
+        return real(block, **kw)
+
+    monkeypatch.setattr(appmod.pow_engine, "mine", mine)
+
+
+@pytest.mark.asyncio
+async def test_health_responde_durante_el_minado(client, tmp_path, monkeypatch):
+    import api.app as appmod
+    monkeypatch.setattr(appmod, "blockchain",
+                        Blockchain("n", str(tmp_path / "a"), initial_difficulty=1))
+    _lento(monkeypatch, 1.0)
+    minado = asyncio.create_task(
+        client.post("/blocks/mine", json={"miner_address": "M"}))
+    await asyncio.sleep(0.2)
+    t0 = time.perf_counter()
+    r = await client.get("/health")
+    assert r.status_code == 200
+    assert time.perf_counter() - t0 < 0.5
+    assert not minado.done()  # el minado seguía en curso
+    assert (await minado).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_dos_minados_concurrentes_uno_409(client, tmp_path, monkeypatch):
+    import api.app as appmod
+    bc = Blockchain("n", str(tmp_path / "b"), initial_difficulty=1)
+    monkeypatch.setattr(appmod, "blockchain", bc)
+    _lento(monkeypatch, 0.6)
+    t1 = asyncio.create_task(client.post("/blocks/mine", json={"miner_address": "M"}))
+    await asyncio.sleep(0.2)
+    r2 = await client.post("/blocks/mine", json={"miner_address": "M"})
+    assert r2.status_code == 409
+    assert (await t1).status_code == 200
+    assert len(bc.chain) == 2
+
+
+@pytest.mark.asyncio
+async def test_punta_cambia_durante_minado_da_409(client, tmp_path, monkeypatch):
+    import api.app as appmod
+    bc = Blockchain("n", str(tmp_path / "c"), initial_difficulty=1)
+    monkeypatch.setattr(appmod, "blockchain", bc)
+    real = appmod.pow_engine.mine
+
+    def mine(block, **kw):
+        res = real(block, **kw)
+        mine_and_add(bc)  # "llega un bloque de un peer" mientras se minaba
+        return res
+
+    monkeypatch.setattr(appmod.pow_engine, "mine", mine)
+    r = await client.post("/blocks/mine", json={"miner_address": "M"})
+    assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_minado_usa_dificultad_de_la_cadena(client, tmp_path, monkeypatch):
+    import api.app as appmod
+    bc = Blockchain("n", str(tmp_path / "d"), initial_difficulty=2)
+    monkeypatch.setattr(appmod, "blockchain", bc)
+    # Un valor fijo distinto en el motor no debe influir.
+    monkeypatch.setattr(appmod.pow_engine, "difficulty", 5)
+    r = await client.post("/blocks/mine", json={"miner_address": "M"})
+    assert r.status_code == 200
+    blk = r.json()["block"]
+    assert blk["header"]["difficulty"] == bc.expected_difficulty(bc.chain[:-1]) == 2
+    assert blk["hash"].startswith("00")
+
+
+def _cadena_con_intervalos(tmp_path, nombre, intervalo, n=12):
+    """Cadena de `n` bloques con timestamps construidos (sin esperas reales)."""
+    bc = Blockchain("n", str(tmp_path / nombre), initial_difficulty=3,
+                    min_difficulty=1, max_difficulty=8, difficulty_window=10)
+    bc.target_block_time = 10
+    t = bc.chain[0].header.timestamp
+    for _ in range(n):
+        t += intervalo
+        blk = bc.create_candidate_block()
+        blk.header.timestamp = t
+        blk.header.difficulty = bc.expected_difficulty(bc.chain)
+        blk.hash = blk.compute_hash()
+        bc.chain.append(blk)  # sólo se mide la regla; no se valida PoW aquí
+    return bc
+
+
+def test_dificultad_sube_con_bloques_rapidos_y_baja_con_lentos(tmp_path):
+    rapida = _cadena_con_intervalos(tmp_path, "r", 1)
+    lenta = _cadena_con_intervalos(tmp_path, "l", 60)
+    assert rapida._calculate_difficulty() > rapida.initial_difficulty
+    assert lenta._calculate_difficulty() < lenta.initial_difficulty
+    ok = _cadena_con_intervalos(tmp_path, "o", 10)
+    assert ok._calculate_difficulty() == ok.chain[-1].header.difficulty

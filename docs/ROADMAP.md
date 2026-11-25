@@ -52,7 +52,7 @@ Flujos de trabajo y orden de dependencias:
   Validar dificultad esperada, rango de timestamp, cada TX, sin TX repetidas en la cadena. Separar
   "admisión al mempool" (expira en 1 h) de "validez de consenso" (para que resincronizar no rechace
   bloques viejos). *Listo cuando:* un bloque con dificultad 0 se rechaza y la cadena se revalida al cargar.
-- [ ] **P0-4 Dificultad adaptativa y minado sin bloquear la API.** `ProofOfWork(difficulty=4)`
+- [x] **P0-4 Dificultad adaptativa y minado sin bloquear la API.** `ProofOfWork(difficulty=4)`
   sobrescribe la dificultad del encabezado y `/blocks/mine` bloquea el event loop. Tomar la dificultad
   de `chain._calculate_difficulty()`, minar en un thread pool con un lock.
   *Listo cuando:* `/health` responde durante el minado y la dificultad tiende a ~10 s por bloque.

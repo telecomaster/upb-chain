@@ -2,8 +2,10 @@
 API REST de UPB-Chain — FastAPI.
 Expone endpoints para bloques, transacciones, credenciales, análisis y seguridad.
 """
+import asyncio
 import logging
 import os
+import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -42,7 +44,10 @@ PEERS      = settings.peers
 
 blockchain      = Blockchain(node_id=NODE_ID, data_dir=settings.data_dir,
                               initial_difficulty=settings.mining_difficulty)
-pow_engine      = ProofOfWork(difficulty=settings.mining_difficulty)
+# La dificultad NO vive aquí: la dicta Blockchain._calculate_difficulty() (P0-4).
+pow_engine      = ProofOfWork()
+mining_lock     = asyncio.Lock()        # un solo minado a la vez (409 si ya hay uno)
+mining_stop     = threading.Event()     # se activa al apagar el nodo para abortar el PoW
 credential_contract = CredentialContract()
 tx_anomaly_detector = TransactionAnomalyDetector()
 block_anomaly_detector = BlockAnomalyDetector()
@@ -76,6 +81,7 @@ async def lifespan(app: FastAPI):
             p2p.connect_to_peer(host, int(port))
     logger.info(f"UPB-Chain nodo {NODE_ID} iniciado")
     yield
+    mining_stop.set()
     p2p.stop()
     logger.info("Nodo detenido")
 
@@ -160,7 +166,8 @@ async def health():
 async def stats():
     chain_stats = blockchain.get_stats()
     network_stats = p2p.get_network_stats()
-    pow_stats = pow_engine.get_mining_stats()
+    pow_stats = {**pow_engine.get_mining_stats(),
+                 "difficulty": blockchain._calculate_difficulty()}
     threat = security_monitor.get_threat_summary()
     return {
         "chain": chain_stats,
@@ -206,13 +213,23 @@ async def get_block(index: int):
 
 @app.post("/blocks/mine")
 async def mine_block(request: MineRequest, background_tasks: BackgroundTasks):
-    candidate = blockchain.create_candidate_block()
-    result = pow_engine.mine(candidate, difficulty=candidate.header.difficulty)
-    if not result:
-        raise HTTPException(500, "Mining falló o timeout alcanzado")
-    ok, reason = blockchain.add_block(result.block)
-    if not ok:
-        raise HTTPException(400, reason)
+    if mining_lock.locked():
+        raise HTTPException(409, "minado en curso")
+    async with mining_lock:
+        mining_stop.clear()
+        candidate = blockchain.create_candidate_block()
+        # La dificultad sale de la regla de la cadena, nunca de un valor fijo.
+        difficulty = candidate.header.difficulty
+        # El PoW corre en un thread para no bloquear el event loop.
+        result = await asyncio.to_thread(
+            pow_engine.mine, candidate, difficulty=difficulty, stop_event=mining_stop
+        )
+        if not result:
+            raise HTTPException(500, "Mining falló, timeout o abortado")
+        ok, reason = blockchain.add_block(result.block)
+        if not ok:
+            # Típico: llegó un bloque de un peer y la punta cambió durante el minado.
+            raise HTTPException(409, f"Bloque minado ya no es válido: {reason}")
     p2p.broadcast_block(result.block.to_dict())
     return {
         "block": result.block.to_dict(),
