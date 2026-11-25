@@ -180,10 +180,10 @@ async def test_registro_de_emisor_no_autorizado_rechazado(client, nodo):
 
     # TX ISSUER_REGISTER firmada por alguien que no es la autoridad.
     tx = create_issuer_register_transaction(intruso.address, emisor.address, "UPB",
-                                            intruso.private_key_hex)
+                                            intruso.private_key_hex, nonce=1)
     r = await client.post("/transactions", json={
         "type": tx.type.value, "sender": tx.sender, "recipient": tx.recipient,
-        "payload": tx.payload, "fee": tx.fee, "timestamp": tx.timestamp,
+        "payload": tx.payload, "fee": tx.fee, "nonce": tx.nonce, "timestamp": tx.timestamp,
         "signature": tx.signature, "public_key": tx.public_key,
     })
     assert r.status_code == 400
@@ -259,16 +259,17 @@ def test_dos_nodos_derivan_el_mismo_estado(tmp_path):
     a.register_state_listener(ca)
 
     ok, why = a.add_transaction(create_issuer_register_transaction(
-        autoridad.address, emisor.address, "UPB", autoridad.private_key_hex))
+        autoridad.address, emisor.address, "UPB", autoridad.private_key_hex, nonce=1))
     assert ok, why
     txs = [create_credential_transaction(emisor.address, Wallet.generate().address,
-                                         _datos(), emisor.private_key_hex) for _ in range(3)]
+                                         _datos(), emisor.private_key_hex, nonce=n)
+           for n in (1, 2, 3)]
     for tx in txs:
         assert a.add_transaction(tx)[0]
     _minar(a)
     cid = ca.credential_id_of_tx(txs[0].to_dict())
     assert a.add_transaction(create_revoke_transaction(emisor.address, cid, "x",
-                                                       emisor.private_key_hex))[0]
+                                                       emisor.private_key_hex, nonce=4))[0]
     _minar(a)
     assert ca.get_stats()["total_credentials"] == 3 and ca.get_stats()["revoked"] == 1
 

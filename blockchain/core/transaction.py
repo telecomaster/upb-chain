@@ -18,7 +18,8 @@ class TransactionType(str, Enum):
     ISSUER_REGISTER     = "ISSUER_REGISTER"     # admin: alta de emisor, firmada por la autoridad (P0-6)
     VOTE                = "VOTE"
     DATA_RECORD         = "DATA_RECORD"
-    TOKEN_TRANSFER      = "TOKEN_TRANSFER"
+    TOKEN_TRANSFER      = "TOKEN_TRANSFER"      # payload {"amount": int}; mueve saldo (P0-9)
+    TOKEN_MINT          = "TOKEN_MINT"          # admin: emisión de tokens, firmada por la autoridad (P0-9)
     SMART_CONTRACT      = "SMART_CONTRACT"
 
 
@@ -31,8 +32,9 @@ class Transaction:
     timestamp: float = field(default_factory=time.time)
     signature: str = ""
     tx_id: str = ""
-    fee: float = 0.0
+    fee: int = 0            # en unidad mínima (entero, P0-9); se quema al confirmarse
     public_key: str = ""
+    nonce: int = 0          # n.º de TX del sender: debe ser nonce_confirmado + 1 (P0-9)
 
     def __post_init__(self):
         if not self.tx_id:
@@ -46,6 +48,7 @@ class Transaction:
             "payload": self.payload,
             "timestamp": self.timestamp,
             "fee": self.fee,
+            "nonce": self.nonce,
         }, sort_keys=True)
         return hashlib.sha256(content.encode()).hexdigest()
 
@@ -71,6 +74,7 @@ class Transaction:
             "payload": self.payload,
             "timestamp": self.timestamp,
             "fee": self.fee,
+            "nonce": self.nonce,
             "public_key": self.public_key,
         }, sort_keys=True)
 
@@ -84,6 +88,7 @@ class Transaction:
             "timestamp": self.timestamp,
             "signature": self.signature,
             "fee": self.fee,
+            "nonce": self.nonce,
             "public_key": self.public_key,
         }
 
@@ -96,8 +101,9 @@ class Transaction:
             payload=data["payload"],
             timestamp=data["timestamp"],
             signature=data.get("signature", ""),
-            fee=data.get("fee", 0.0),
+            fee=data.get("fee", 0),
             public_key=data.get("public_key", ""),
+            nonce=data.get("nonce", 0),
         )
         tx.tx_id = data["tx_id"]
         return tx
@@ -129,6 +135,11 @@ class Transaction:
             return False, "Recipient vacío"
         if not self.payload:
             return False, "Payload vacío"
+        # Montos enteros (P0-9): bool es subclase de int en Python, se excluye.
+        if not _is_int(self.fee) or self.fee < 0:
+            return False, "fee debe ser un entero >= 0 (unidad mínima)"
+        if not _is_int(self.nonce) or self.nonce < 0:
+            return False, "nonce debe ser un entero >= 0"
         return self._check_authentication()
 
     def _check_authentication(self) -> tuple[bool, str]:
@@ -158,13 +169,21 @@ class Transaction:
         return True, "OK"
 
 
+def _is_int(value) -> bool:
+    """Entero de verdad: ``True``/``1.0`` no cuentan (consenso sin floats, P0-9)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 # ── Constructores de alto nivel ───────────────────────────────────────────────
+# Todos reciben ``nonce`` (P0-9): el siguiente nonce del firmante. La API lo
+# obtiene con ``Blockchain.next_nonce(address)`` (confirmadas + mempool).
 
 def create_credential_transaction(
     issuer_address: str,
     student_address: str,
     credential_data: dict,
     private_key_hex: str,
+    nonce: int = 0,
 ) -> Transaction:
     required = {"student_name", "degree", "issue_date"}
     missing = required - set(credential_data.keys())
@@ -181,6 +200,7 @@ def create_credential_transaction(
                 json.dumps(credential_data, sort_keys=True).encode()
             ).hexdigest(),
         },
+        nonce=nonce,
     )
     tx.sign(private_key_hex)
     return tx
@@ -191,6 +211,7 @@ def create_revoke_transaction(
     credential_id: str,
     reason: str,
     private_key_hex: str,
+    nonce: int = 0,
 ) -> Transaction:
     """TX CREDENTIAL_REVOKE firmada (P0-6): solo vale si la firma el emisor o la autoridad."""
     tx = Transaction(
@@ -198,6 +219,7 @@ def create_revoke_transaction(
         sender=revoker_address,
         recipient="CREDENTIAL_CONTRACT",
         payload={"credential_id": credential_id, "reason": reason},
+        nonce=nonce,
     )
     tx.sign(private_key_hex)
     return tx
@@ -208,6 +230,7 @@ def create_issuer_register_transaction(
     issuer_address: str,
     institution_code: str,
     private_key_hex: str,
+    nonce: int = 0,
 ) -> Transaction:
     """TX de administración ISSUER_REGISTER (P0-6), firmada por la autoridad del génesis."""
     tx = Transaction(
@@ -215,6 +238,7 @@ def create_issuer_register_transaction(
         sender=authority_address,
         recipient=issuer_address,
         payload={"issuer_address": issuer_address, "institution_code": institution_code},
+        nonce=nonce,
     )
     tx.sign(private_key_hex)
     return tx
@@ -225,6 +249,7 @@ def create_data_record_transaction(
     recipient: str,
     data_dict: dict,
     private_key_hex: str,
+    nonce: int = 0,
 ) -> Transaction:
     """Crea una transacción de tipo DATA_RECORD con hash de integridad del payload.
 
@@ -251,6 +276,7 @@ def create_data_record_transaction(
                 json.dumps(data_dict, sort_keys=True).encode()
             ).hexdigest(),
         },
+        nonce=nonce,
     )
     tx.sign(private_key_hex)
     return tx
@@ -261,12 +287,60 @@ def create_vote_transaction(
     proposal_id: str,
     vote: bool,
     private_key_hex: str,
+    nonce: int = 0,
 ) -> Transaction:
     tx = Transaction(
         type=TransactionType.VOTE,
         sender=voter_address,
         recipient="VOTING_CONTRACT",
         payload={"proposal_id": proposal_id, "vote": vote},
+        nonce=nonce,
+    )
+    tx.sign(private_key_hex)
+    return tx
+
+
+def create_mint_transaction(
+    authority_address: str,
+    recipient: str,
+    amount: int,
+    private_key_hex: str,
+    nonce: int = 0,
+) -> Transaction:
+    """TX TOKEN_MINT (P0-9): crea ``amount`` unidades para ``recipient``.
+
+    Solo es válida si la firma la autoridad del génesis (ver ``AccountState``).
+    """
+    tx = Transaction(
+        type=TransactionType.TOKEN_MINT,
+        sender=authority_address,
+        recipient=recipient,
+        payload={"amount": amount},
+        nonce=nonce,
+    )
+    tx.sign(private_key_hex)
+    return tx
+
+
+def create_transfer_transaction(
+    sender: str,
+    recipient: str,
+    amount: int,
+    private_key_hex: str,
+    nonce: int = 0,
+    fee: int = 0,
+) -> Transaction:
+    """TX TOKEN_TRANSFER (P0-9): mueve ``amount`` de ``sender`` a ``recipient``.
+
+    Válida si ``amount > 0`` y el saldo del sender cubre ``amount + fee``.
+    """
+    tx = Transaction(
+        type=TransactionType.TOKEN_TRANSFER,
+        sender=sender,
+        recipient=recipient,
+        payload={"amount": amount},
+        fee=fee,
+        nonce=nonce,
     )
     tx.sign(private_key_hex)
     return tx

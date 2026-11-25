@@ -40,7 +40,8 @@ overstate what works).
 
 - `config.py` settings from env/.env
 - `blockchain/core` block, chain (persistence, fork resolution), transaction, wallet (ECDSA secp256k1),
-  state (`ReplayState`: estado = reproducción de las TXs confirmadas; base para contratos y cuentas)
+  state (`ReplayState`: estado = reproducción de las TXs confirmadas; `AccountState` (P0-9): saldo y
+  nonce por dirección, montos enteros, regla de consenso — cada TX firmada lleva `nonce` = confirmado + 1)
 - `blockchain/consensus` proof_of_work, pbft · `blockchain/network` P2P node (sincronización y peers en `node.py`)
 - `blockchain/contracts/credential.py` credential issue/verify/revoke, derived from the chain (P0-6);
   issuers registered by `ISSUER_REGISTER` TXs signed by the genesis authority (key in `data/keys/authority.json`, never committed)

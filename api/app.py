@@ -19,7 +19,7 @@ from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, Q
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from config import load_settings, configure_logging
 from blockchain.core.chain import Blockchain
@@ -28,7 +28,9 @@ from blockchain.core.transaction import (
     TransactionType,
     create_credential_transaction,
     create_issuer_register_transaction,
+    create_mint_transaction,
     create_revoke_transaction,
+    create_transfer_transaction,
 )
 from blockchain.core.wallet import Wallet, derive_address, public_key_from_private
 from blockchain.consensus.proof_of_work import ProofOfWork
@@ -60,10 +62,13 @@ def build_node_state(data_dir: str, node_id: str, authority_address: Optional[st
     """Carga la cadena y deriva de ella el estado del contrato de credenciales (P0-6).
 
     El contrato se registra como observador de la cadena: se reproduce ahora
-    (arranque) y luego en cada bloque nuevo o reemplazo de cadena.
+    (arranque) y luego en cada bloque nuevo o reemplazo de cadena. El estado de
+    cuentas (P0-9) lo posee la propia cadena (``chain.accounts``) y usa la misma
+    autoridad (la única que puede firmar TOKEN_MINT).
     """
     chain = Blockchain(node_id=node_id, data_dir=data_dir,
-                       initial_difficulty=initial_difficulty)
+                       initial_difficulty=initial_difficulty,
+                       authority_address=authority_address)
     contract = CredentialContract(authority_address=authority_address)
     chain.register_state_listener(contract)
     return chain, contract
@@ -190,7 +195,11 @@ class TransactionRequest(BaseModel):
     recipient: str
     payload: dict
     private_key_hex: Optional[str] = None
-    fee: float = 0.0
+    fee: int = Field(0, ge=0)       # entero, unidad mínima (P0-9)
+    # Nonce del sender (P0-9). Si el servidor firma (private_key_hex) y se omite,
+    # usa el siguiente (GET /accounts/{address}); una TX firmada por el cliente
+    # debe traerlo, porque forma parte del mensaje firmado.
+    nonce: Optional[int] = Field(None, ge=0)
     # Alternativa a private_key_hex: TX firmada por el cliente.
     signature: Optional[str] = None
     public_key: Optional[str] = None
@@ -218,6 +227,19 @@ class RevokeRequest(BaseModel):
     revoker_address: str
     private_key_hex: str
     reason: str = ""
+
+
+class MintRequest(BaseModel):
+    recipient: str
+    amount: int = Field(gt=0)       # entero, unidad mínima (P0-9)
+
+
+class TransferRequest(BaseModel):
+    sender: str
+    recipient: str
+    amount: int = Field(gt=0)
+    private_key_hex: str
+    fee: int = Field(0, ge=0)
 
 
 class PruneMempoolRequest(BaseModel):
@@ -340,12 +362,18 @@ async def create_transaction(request: TransactionRequest):
     except ValueError:
         raise HTTPException(422, f"Tipo de transacción inválido: {request.type}")
 
+    nonce = request.nonce
+    if nonce is None:
+        if request.signature:
+            raise HTTPException(400, "Falta el nonce de la TX firmada por el cliente")
+        nonce = blockchain.next_nonce(request.sender)
     tx = Transaction(
         type=tx_type,
         sender=request.sender,
         recipient=request.recipient,
         payload=request.payload,
         fee=request.fee,
+        nonce=nonce,
     )
     if request.signature:
         # TX firmada por el cliente: el servidor sólo verifica.
@@ -384,13 +412,16 @@ async def get_transaction(tx_id: str):
     return tx
 
 
+@app.get("/accounts/{address}")
+async def get_account(address: str):
+    """Cuenta de ``address`` (P0-9): saldo y nonce confirmados y ``next_nonce``
+    (el que debe firmar su próxima TX, contando las pendientes del mempool)."""
+    return blockchain.account_info(address)
+
+
 @app.get("/chain/balance/{address}")
 async def get_address_balance(address: str):
-    """Retorna el balance neto de fees de una dirección sobre todos los bloques confirmados.
-
-    balance = Σ fees recibidas (recipient == address)
-            − Σ fees pagadas   (sender    == address)
-    """
+    """Saldo confirmado (entero, unidad mínima) y total de fees quemadas (P0-9)."""
     balance = blockchain.get_balance(address)
     total_fees = blockchain.total_fees
     return {
@@ -411,10 +442,49 @@ async def prune_mempool(request: PruneMempoolRequest):
     }
 
 
+# ── Endpoints: tokens (P0-9) ──────────────────────────────────────────────────
+
+@app.post("/tokens/mint", dependencies=[Depends(require_admin)])
+async def mint_tokens(request: MintRequest):
+    """Emite tokens con una TX TOKEN_MINT firmada por la autoridad del génesis.
+
+    Solo funciona en el nodo con la llave de autoridad (como /credentials/issuers).
+    """
+    if authority_wallet is None:
+        raise HTTPException(503, "Este nodo no tiene la llave de autoridad configurada")
+    tx = create_mint_transaction(
+        authority_address=authority_wallet.address,
+        recipient=request.recipient,
+        amount=request.amount,
+        private_key_hex=authority_wallet.private_key_hex,
+        nonce=blockchain.next_nonce(authority_wallet.address),
+    )
+    _submit_contract_tx(tx)
+    return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce}
+
+
+@app.post("/tokens/transfer")
+async def transfer_tokens(request: TransferRequest):
+    """Transfiere tokens (TOKEN_TRANSFER). 400 si falta saldo para amount + fee."""
+    try:
+        tx = create_transfer_transaction(
+            sender=request.sender,
+            recipient=request.recipient,
+            amount=request.amount,
+            private_key_hex=request.private_key_hex,
+            nonce=blockchain.next_nonce(request.sender),
+            fee=request.fee,
+        )
+    except Exception:
+        raise HTTPException(400, "Llave privada inválida")
+    _submit_contract_tx(tx)
+    return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce}
+
+
 # ── Endpoints: credenciales ───────────────────────────────────────────────────
 
 def _submit_contract_tx(tx: Transaction) -> None:
-    """Admite una TX del contrato al mempool (firma + reglas del contrato) o lanza 400."""
+    """Admite una TX al mempool (firma, cuentas y reglas del contrato) o lanza 400."""
     ok, reason = blockchain.add_transaction(tx)
     if not ok:
         raise HTTPException(400, reason)
@@ -435,6 +505,7 @@ async def register_issuer(request: RegisterIssuerRequest):
         issuer_address=request.issuer_address,
         institution_code=request.institution_code,
         private_key_hex=authority_wallet.private_key_hex,
+        nonce=blockchain.next_nonce(authority_wallet.address),
     )
     _submit_contract_tx(tx)
     return {"status": "PENDING", "tx_id": tx.tx_id}
@@ -453,6 +524,7 @@ async def issue_credential(request: CredentialRequest):
             student_address=request.student_address,
             credential_data=request.credential_data,
             private_key_hex=request.private_key_hex,
+            nonce=blockchain.next_nonce(request.issuer_address),
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -488,6 +560,7 @@ async def revoke_credential(request: RevokeRequest):
             credential_id=request.credential_id,
             reason=request.reason,
             private_key_hex=request.private_key_hex,
+            nonce=blockchain.next_nonce(request.revoker_address),
         )
     except Exception:
         raise HTTPException(400, "Llave privada inválida")

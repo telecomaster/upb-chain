@@ -74,9 +74,16 @@ Flujos de trabajo y orden de dependencias:
 - [x] **P0-8 Test de integración multinodo.** 2 (idealmente 4) nodos en puertos locales: minar en A
   y ver en B, partir y reunir la red, emitir en A y verificar en B. *Listo cuando:* corre en la suite y
   falla con el código actual.
-- [ ] **P0-9 Estado de cuentas.** Base para tokens y protección contra replay: saldo y `nonce` por
+- [x] **P0-9 Estado de cuentas.** Base para tokens y protección contra replay: saldo y `nonce` por
   dirección, montos enteros (unidad mínima; hoy `fee` es float), chequeo de saldo. Misma capa de
   "estado = reproducción de la cadena" que P0-6. *Listo cuando:* una TX repetida o sin saldo se rechaza.
+  Hecho: `AccountState` en `state.py` (lo posee `Blockchain.accounts`); `nonce` firmado en toda TX
+  (`nonce == confirmado + 1`, incluye credenciales); `fee` entera y quemada; `TOKEN_MINT` solo de la
+  autoridad del génesis (sin cambiar `GENESIS_HASH`); un bloque con una TX sin saldo o nonce
+  incorrecto se rechaza entero. API: `GET /accounts/{address}`, `POST /tokens/mint`,
+  `POST /tokens/transfer`; `POST /transactions` acepta `nonce` (obligatorio si firma el cliente).
+  Cadenas guardadas con TXs anteriores a P0-9 ya no validan (el `tx_id` incluye `nonce`): borrar
+  `data/chain`.
 
 ## P1 — Funcionalidad prevista que no funciona
 

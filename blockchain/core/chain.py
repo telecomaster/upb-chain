@@ -43,6 +43,7 @@ from threading import Lock
 from typing import Callable, Dict, List, Optional, Tuple
 
 from blockchain.core.block import GENESIS_HASH, Block, BlockHeader
+from blockchain.core.state import AccountState
 from blockchain.core.transaction import Transaction, TransactionType
 
 logger = logging.getLogger("upb_chain.core")
@@ -62,6 +63,7 @@ class Blockchain:
         max_difficulty: int = 8,
         target_block_time: float = 10.0,
         difficulty_window: int = 10,
+        authority_address: Optional[str] = None,
     ):
         self.node_id = node_id
         # Parámetros de la regla de dificultad (parte del consenso: deben ser
@@ -78,12 +80,18 @@ class Blockchain:
         self.chain: List[Block] = []
         self.mempool: List[Transaction] = []
         self._lock = Lock()
+        # Estado de cuentas (P0-9): saldo y nonce por dirección. Es parte del
+        # CONSENSO (un bloque que lo viola se rechaza), por eso lo posee la
+        # cadena y es siempre el primer estado derivado. ``authority_address``
+        # es quien puede firmar TOKEN_MINT (por defecto, la del génesis).
+        self.accounts = AccountState(authority_address)
         # Estados derivados de la cadena (P0-6), p. ej. el contrato de credenciales.
-        self._state_listeners: List = []
+        self._state_listeners: List = [self.accounts]
         # Avisos de reorganización para red/log (P0-5): ver add_reorg_listener().
         self.on_chain_reorg: List[Callable[[int, List[Block], List[Block]], None]] = []
 
         self._load_or_init()
+        self.accounts.rebuild(self.chain)
 
     # ── Inicialización ────────────────────────────────────────────────────────
 
@@ -232,15 +240,38 @@ class Blockchain:
             self._confirmed_ids.update(tx.get("tx_id") for tx in block.transactions)
             for listener in self._state_listeners:
                 listener.apply_block(block)
-            # Remueve transacciones confirmadas del mempool
+            # Remueve del mempool las TXs confirmadas y las que ya no pueden
+            # confirmarse (P0-9): p. ej. otra TX del mismo sender ocupó su nonce.
             confirmed_ids = {tx.get("tx_id") for tx in block.transactions}
-            self.mempool = [t for t in self.mempool if t.tx_id not in confirmed_ids]
+            self.mempool = self._still_valid(
+                [t for t in self.mempool if t.tx_id not in confirmed_ids])
             self._save_to_disk()
         logger.info(f"Bloque #{block.header.index} añadido (hash={block.hash[:12]}…)")
         return True, "OK"
 
+    def _still_valid(self, txs: List[Transaction]) -> List[Transaction]:
+        """Las TXs de ``txs`` (en orden) que el estado de cuentas aceptaría una tras otra."""
+        dicts = [t.to_dict() for t in txs]
+        keep = {d["tx_id"] for d in self.accounts.filter_valid(dicts)}
+        return [t for t in txs if t.tx_id in keep]
+
+    def next_nonce(self, address: str) -> int:
+        """Nonce que debe firmar la próxima TX de ``address`` (confirmadas + mempool, P0-9)."""
+        with self._lock:
+            return self.accounts.next_nonce(address, [t.to_dict() for t in self.mempool])
+
+    def account_info(self, address: str) -> dict:
+        """Saldo, nonce confirmado y próximo nonce de ``address`` (P0-9)."""
+        with self._lock:
+            return self.accounts.account_info(address, [t.to_dict() for t in self.mempool])
+
     def create_candidate_block(self, transactions: Optional[List[Transaction]] = None) -> Block:
-        txs = transactions or self.get_pending_transactions(50)
+        # Del mempool solo se toman TXs válidas para las cuentas (P0-9): si no,
+        # una TX caducada (nonce ya usado) haría inválido el bloque entero.
+        if not transactions:
+            with self._lock:   # la red puede estar aplicando un bloque en otro hilo
+                transactions = self._still_valid(list(self.mempool))[:50]
+        txs = transactions
         tx_dicts = [t.to_dict() for t in txs]
         merkle_root = Block.compute_merkle_root(tx_dicts)
         header = BlockHeader(
@@ -259,17 +290,20 @@ class Blockchain:
         """Valida `block` como siguiente bloque de la cadena actual."""
         return self._validate_block_at(
             block, self.chain, set(self._confirmed_ids),
-            now if now is not None else time.time(),
+            now if now is not None else time.time(), self.accounts,
         )
 
     def _validate_block_at(
-        self, block: Block, prefix: List[Block], seen_ids: set, now: float
+        self, block: Block, prefix: List[Block], seen_ids: set, now: float,
+        accounts: AccountState, commit: bool = False,
     ) -> Tuple[bool, str]:
         """Validez de CONSENSO de `block` dado `prefix` = chain[:h] (h = block.index).
 
-        Determinista: depende sólo de (block, prefix, seen_ids, now). `seen_ids`
-        se actualiza con los tx_id del bloque si es válido. `now` sólo acota el
-        timestamp futuro. La expiración de 1 h del mempool NO aplica aquí.
+        Determinista: depende sólo de (block, prefix, seen_ids, accounts, now).
+        `seen_ids` se actualiza con los tx_id del bloque si es válido. `accounts`
+        es el estado de cuentas tras `prefix` (P0-9): con ``commit=True`` se le
+        aplica el bloque si es válido. `now` sólo acota el timestamp futuro. La
+        expiración de 1 h del mempool NO aplica aquí.
         """
         h = block.header
         prev = prefix[-1]
@@ -307,6 +341,10 @@ class Blockchain:
             if tx.tx_id in seen_ids or tx.tx_id in new_ids:
                 return False, f"Transacción duplicada {tx.tx_id[:8]}…"
             new_ids.add(tx.tx_id)
+        # Cuentas (P0-9): nonce y saldo, en el orden del bloque.
+        ok, reason = accounts.check_block(block, commit=commit)
+        if not ok:
+            return False, reason
         seen_ids.update(new_ids)
         return True, "OK"
 
@@ -317,8 +355,11 @@ class Blockchain:
             return False, reason
         now = now if now is not None else time.time()
         seen = self._collect_ids(chain[:1])
+        accounts = AccountState(self.accounts.authority_address)  # se reproduce aquí mismo
+        accounts.rebuild(chain[:1])
         for i in range(1, len(chain)):
-            ok, reason = self._validate_block_at(chain[i], chain[:i], seen, now)
+            ok, reason = self._validate_block_at(chain[i], chain[:i], seen, now,
+                                                 accounts, commit=True)
             if not ok:
                 return False, f"Bloque {i}: {reason}"
         return True, "Cadena válida"
@@ -360,34 +401,13 @@ class Blockchain:
     # ── Nuevos métodos de consulta ────────────────────────────────────────────
 
     @property
-    def total_fees(self) -> float:
-        """Suma todas las fees de transacciones en bloques confirmados."""
-        return round(
-            sum(
-                tx.get("fee", 0.0)
-                for block in self.chain
-                for tx in block.transactions
-            ),
-            8,
-        )
+    def total_fees(self) -> int:
+        """Fees quemadas en bloques confirmados (enteros, unidad mínima; P0-9)."""
+        return self.accounts.burned_fees
 
-    def get_balance(self, address: str) -> float:
-        """Retorna el balance neto de fees para una dirección.
-
-        balance = Σ fees recibidas (recipient == address)
-                − Σ fees pagadas   (sender    == address)
-
-        Complejidad: O(H * n) donde H = altura, n = TXs por bloque.
-        """
-        balance = 0.0
-        for block in self.chain:
-            for tx in block.transactions:
-                fee = float(tx.get("fee", 0.0))
-                if tx.get("sender") == address:
-                    balance -= fee
-                if tx.get("recipient") == address:
-                    balance += fee
-        return round(balance, 8)
+    def get_balance(self, address: str) -> int:
+        """Saldo confirmado de ``address`` según el estado de cuentas (P0-9)."""
+        return self.accounts.balance_of(address)
 
     def get_block_by_hash(self, block_hash: str) -> Optional[Block]:
         """Busca un bloque por su hash. Retorna None si no se encuentra.

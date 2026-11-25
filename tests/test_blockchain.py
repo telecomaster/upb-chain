@@ -63,6 +63,7 @@ class TestBlockchain:
             sender=wallet.address,
             recipient="DEST",
             payload={"data": "test"},
+            nonce=1,
         )
         tx.sign(wallet.private_key_hex)
         ok, reason = chain.add_transaction(tx)
@@ -75,6 +76,7 @@ class TestBlockchain:
             sender=wallet.address,
             recipient="DEST",
             payload={"data": "test"},
+            nonce=1,
         )
         tx.sign(wallet.private_key_hex)
         chain.add_transaction(tx)
@@ -88,6 +90,7 @@ class TestBlockchain:
             sender=wallet.address,
             recipient="DEST",
             payload={"data": "test"},
+            nonce=1,
         )
         tx.sign(wallet.private_key_hex)
         chain.add_transaction(tx)
@@ -106,6 +109,7 @@ class TestBlockchain:
             sender=wallet.address,
             recipient="DEST",
             payload={"data": "test"},
+            nonce=1,
         )
         tx.sign(wallet.private_key_hex)
         chain.add_transaction(tx)
@@ -126,44 +130,36 @@ class TestBlockchain:
         strict=False,
         reason="Fee-based mempool ordering no está implementado; mempool usa FIFO",
     )
-    def test_mempool_sorted_by_fee(self, chain, wallet):
+    def test_mempool_sorted_by_fee(self, tmp_path):
         """TXs con mayor fee deben procesarse primero en el bloque candidato.
 
         La implementación actual usa orden FIFO (sin prioridad por fee).
         Este test documenta el comportamiento esperado y estará marcado como
         XFAIL hasta que se implemente la priorización por fee en el mempool.
+        Fees enteras (P0-9): cada remitente recibe saldo con TOKEN_MINT para pagarlas.
         """
-        low_fee_tx = Transaction(
-            type=TransactionType.DATA_RECORD,
-            sender=wallet.address,
-            recipient="DEST",
-            payload={"data": "low_fee_tx"},
-            fee=0.001,
-        )
-        high_fee_tx = Transaction(
-            type=TransactionType.DATA_RECORD,
-            sender=wallet.address,
-            recipient="DEST",
-            payload={"data": "high_fee_tx"},
-            fee=10.0,
-        )
-        med_fee_tx = Transaction(
-            type=TransactionType.DATA_RECORD,
-            sender=wallet.address,
-            recipient="DEST",
-            payload={"data": "med_fee_tx"},
-            fee=1.0,
-        )
+        from blockchain.core.transaction import create_mint_transaction
+        autoridad = Wallet.generate()
+        bc = Blockchain("fee_node", str(tmp_path / "fees"), initial_difficulty=1,
+                        authority_address=autoridad.address)
+        remitentes = [Wallet.generate() for _ in range(3)]
+        for i, w in enumerate(remitentes, start=1):
+            ok, why = bc.add_transaction(create_mint_transaction(
+                autoridad.address, w.address, 100, autoridad.private_key_hex, nonce=i))
+            assert ok, why
+        assert mine_and_add(bc)[0]
         # Insertamos en orden: bajo → alto → medio
-        low_fee_tx.sign(wallet.private_key_hex)
-        chain.add_transaction(low_fee_tx)
-        high_fee_tx.sign(wallet.private_key_hex)
-        chain.add_transaction(high_fee_tx)
-        med_fee_tx.sign(wallet.private_key_hex)
-        chain.add_transaction(med_fee_tx)
+        for w, fee in zip(remitentes, (1, 10, 5)):
+            tx = Transaction(type=TransactionType.DATA_RECORD, sender=w.address,
+                             recipient="DEST", payload={"data": f"fee_{fee}"},
+                             fee=fee, nonce=1)
+            tx.sign(w.private_key_hex)
+            ok, why = bc.add_transaction(tx)
+            assert ok, why
 
-        candidate = chain.create_candidate_block()
-        fees = [tx.get("fee", 0.0) for tx in candidate.transactions]
+        candidate = bc.create_candidate_block()
+        fees = [tx.get("fee", 0) for tx in candidate.transactions]
+        assert len(fees) == 3
 
         # Las fees en el bloque deben estar ordenadas de mayor a menor
         assert fees == sorted(fees, reverse=True), (
@@ -182,6 +178,7 @@ class TestBlockchain:
             sender=w.address,
             recipient="DEST",
             payload={"data": "persistence_test"},
+            nonce=1,
         )
         tx.sign(w.private_key_hex)
         bc1.add_transaction(tx)

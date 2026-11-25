@@ -97,18 +97,21 @@ def demo():
         student_address=student_wallet.address,
         credential_data=credential_data,
         private_key_hex=university_wallet.private_key_hex,
+        nonce=chain.next_nonce(university_wallet.address),   # P0-9: 1.ª TX del emisor
     )
     tx_vote = Transaction(
         type=TransactionType.VOTE,
         sender=student_wallet.address,
         recipient="VOTING_CONTRACT",
         payload={"proposal_id": "prop_001", "vote": True},
+        nonce=chain.next_nonce(student_wallet.address),
     )
     tx_data = Transaction(
         type=TransactionType.DATA_RECORD,
         sender=university_wallet.address,
         recipient="REGISTRY",
         payload={"record": "Acta de grado 2025-11"},
+        nonce=2,   # 2.ª TX de la universidad (la credencial usa el nonce 1)
     )
     tx_vote.sign(student_wallet.private_key_hex)
     tx_data.sign(university_wallet.private_key_hex)

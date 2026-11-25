@@ -16,12 +16,13 @@ from blockchain.core.wallet import Wallet
 from tests.helpers import mine_and_add, mine_candidate
 
 
-def _tx(wallet, n=0, timestamp=None):
+def _tx(wallet, n=0, timestamp=None, nonce=1):
     tx = Transaction(
         type=TransactionType.DATA_RECORD,
         sender=wallet.address,
         recipient="DEST",
         payload={"n": n},
+        nonce=nonce,
     )
     if timestamp is not None:
         tx.timestamp = timestamp
@@ -75,7 +76,7 @@ def test_hash_que_no_cumple_objetivo_rechazado(tmp_path, w):
 def test_replace_chain_rechaza_dificultad_0(tmp_path, w):
     a, b = _nuevo(tmp_path, "a"), _nuevo(tmp_path, "b")
     for i in range(2):
-        a.add_transaction(_tx(w, i))
+        a.add_transaction(_tx(w, i, nonce=i + 1))
         assert mine_and_add(a)[0]
     falsa = [x.to_dict() for x in a.chain]
     falsa[1]["header"]["difficulty"] = 0
@@ -225,7 +226,7 @@ async def test_api_minar_y_no_aceptar_tx_ya_confirmada(client, tmp_path, monkeyp
     tx = _tx(w, 7)
     body = {
         "type": tx.type.value, "sender": tx.sender, "recipient": tx.recipient,
-        "payload": tx.payload, "fee": tx.fee, "timestamp": tx.timestamp,
+        "payload": tx.payload, "fee": tx.fee, "nonce": tx.nonce, "timestamp": tx.timestamp,
         "signature": tx.signature, "public_key": tx.public_key,
     }
     r = await client.post("/transactions", json=body)

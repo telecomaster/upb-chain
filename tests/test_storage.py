@@ -23,6 +23,7 @@ def _tx(wallet, n=0):
         sender=wallet.address,
         recipient="DEST",
         payload={"n": n},
+        nonce=1,  # wallet nueva: primera TX (P0-9)
     )
     tx.sign(wallet.private_key_hex)
     return tx

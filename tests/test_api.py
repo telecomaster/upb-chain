@@ -120,7 +120,7 @@ async def test_post_transaction_valid_returns_tx_id_and_pending(client):
         "sender": wallet["address"],
         "recipient": "UPB_INTEGRATION_DEST",
         "payload": {"data": f"integration_test_{time.time_ns()}"},
-        "fee": 0.0,
+        "fee": 0,
         "private_key_hex": wallet["private_key"],
     }
     response = await client.post("/transactions", json=payload)
@@ -224,7 +224,7 @@ def _signed_tx(wallet, sender=None, **kw):
         sender=sender or wallet.address,
         recipient="UPB_AUTH_DEST",
         payload={"data": f"auth_{time.time_ns()}"},
-        **kw,
+        **{"nonce": 1, **kw},
     )
     tx.sign(wallet.private_key_hex)
     return tx
@@ -233,7 +233,7 @@ def _signed_tx(wallet, sender=None, **kw):
 def _post_body(tx):
     return {
         "type": tx.type.value, "sender": tx.sender, "recipient": tx.recipient,
-        "payload": tx.payload, "fee": tx.fee, "timestamp": tx.timestamp,
+        "payload": tx.payload, "fee": tx.fee, "nonce": tx.nonce, "timestamp": tx.timestamp,
         "signature": tx.signature, "public_key": tx.public_key,
     }
 
@@ -241,7 +241,7 @@ def _post_body(tx):
 @pytest.mark.asyncio
 async def test_post_transaction_client_signed_accepted(client):
     from blockchain.core.wallet import Wallet
-    tx = _signed_tx(Wallet.generate(), fee=0.5)
+    tx = _signed_tx(Wallet.generate())
     r = await client.post("/transactions", json=_post_body(tx))
     assert r.status_code == 200, r.text
     assert r.json()["tx_id"] == tx.tx_id
@@ -283,9 +283,11 @@ async def test_post_transaction_forged_sender_rejected(client):
 @pytest.mark.asyncio
 async def test_post_transaction_tampered_fee_or_amount_rejected(client):
     from blockchain.core.wallet import Wallet
-    tx = _signed_tx(Wallet.generate(), fee=0.1)
+    tx = _signed_tx(Wallet.generate())
     body = _post_body(tx)
-    r = await client.post("/transactions", json={**body, "fee": 99.0})
+    r = await client.post("/transactions", json={**body, "fee": 99})
+    assert r.status_code == 400
+    r = await client.post("/transactions", json={**body, "nonce": 2})
     assert r.status_code == 400
     r = await client.post("/transactions", json={**body, "payload": {**tx.payload, "amount": 5}})
     assert r.status_code == 400

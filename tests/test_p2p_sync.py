@@ -165,7 +165,7 @@ def test_tx_se_propaga_al_mempool_del_par(red):
     assert _esperar(lambda: any(p.is_active for p in a.peers.values()))
     w = Wallet.generate()
     tx = Transaction(type=TransactionType.DATA_RECORD, sender=w.address,
-                     recipient="DEST", payload={"x": 1})
+                     recipient="DEST", payload={"x": 1}, nonce=1)
     tx.sign(w.private_key_hex)
     assert a.blockchain.add_transaction(tx)[0]
     a.broadcast_transaction(tx.to_dict())

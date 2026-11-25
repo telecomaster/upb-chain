@@ -192,9 +192,19 @@ class TestTransactionAuthentication:
     def test_signed_valid(self):
         from blockchain.core.wallet import Wallet
         w = Wallet.generate()
-        tx = self._tx(w, fee=1.0)
+        tx = self._tx(w, fee=1, nonce=1)
         tx.sign(w.private_key_hex)
         assert tx.is_valid() == (True, "OK")
+
+    def test_fee_float_or_bool_invalid(self):
+        """P0-9: montos enteros en la unidad mínima; ni floats ni bool."""
+        from blockchain.core.wallet import Wallet
+        w = Wallet.generate()
+        for fee in (0.5, 1.0, True):
+            tx = self._tx(w, fee=fee, nonce=1)
+            tx.sign(w.private_key_hex)
+            ok, motivo = tx.is_valid()
+            assert not ok and "fee" in motivo
 
     def test_unsigned_invalid(self):
         from blockchain.core.wallet import Wallet
@@ -210,12 +220,15 @@ class TestTransactionAuthentication:
     def test_tampered_fee_and_payload_invalid(self):
         from blockchain.core.wallet import Wallet
         w = Wallet.generate()
-        tx = self._tx(w, fee=1.0)
+        tx = self._tx(w, fee=1, nonce=1)
         tx.sign(w.private_key_hex)
-        tx.fee = 0.0
+        tx.fee = 0
         assert not tx.is_valid()[0]
-        tx.fee = 1.0
+        tx.fee = 1
         assert tx.is_valid()[0]
+        tx.nonce = 2                      # el nonce también va firmado (P0-9)
+        assert not tx.is_valid()[0]
+        tx.nonce = 1
         tx.payload = {"d": 2}
         assert not tx.is_valid()[0]
 

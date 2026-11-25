@@ -14,12 +14,13 @@ from tests.helpers import mine_and_add, mine_candidate
 pytestmark = pytest.mark.unit
 
 
-def _tx(wallet, n=0):
+def _tx(wallet, n=0, nonce=1):
     tx = Transaction(
         type=TransactionType.DATA_RECORD,
         sender=wallet.address,
         recipient="DEST",
         payload={"n": n},
+        nonce=nonce,
     )
     tx.sign(wallet.private_key_hex)
     return tx
@@ -113,8 +114,8 @@ def test_cadena_malformada_se_rechaza(tmp_path):
 
 
 def test_txs_huerfanas_vuelven_al_mempool_y_hook(tmp_path):
-    w = Wallet.generate()
-    t_comun, t_huerfana = _tx(w, 1), _tx(w, 2)
+    # Remitentes distintos: cada uno con su propia secuencia de nonce (P0-9).
+    t_comun, t_huerfana = _tx(Wallet.generate(), 1), _tx(Wallet.generate(), 2)
     a, b = _nuevo(tmp_path, "a"), _nuevo(tmp_path, "b")
 
     # B mina un bloque propio con la TX huérfana; t_comun queda en su mempool.
@@ -182,7 +183,7 @@ class _EstadoDePrueba(ReplayState):
 def test_reorg_reconstruye_estados_y_readmite_por_check_transaction(tmp_path):
     w = Wallet.generate()
     a, b = _nuevo(tmp_path, "a"), _nuevo(tmp_path, "b")
-    t_ok, t_vetada = _tx(w, 1), _tx(w, 99)
+    t_ok, t_vetada = _tx(w, 1, nonce=1), _tx(w, 99, nonce=2)
     assert b.add_transaction(t_ok)[0]
     assert b.add_transaction(t_vetada)[0]     # aún sin estado registrado
     mine_and_add(b)

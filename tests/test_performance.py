@@ -83,6 +83,7 @@ def test_validate_chain_50_blocks_under_2_seconds(tmp_path, _shared_wallet):
             sender=wallet.address,
             recipient="DEST",
             payload={"i": i, "data": "perf_block"},
+            nonce=i + 1,
         )
         tx.sign(wallet.private_key_hex)
         bc.add_transaction(tx)

@@ -68,6 +68,7 @@ def funded_chain(tmp_path):
                     "data": f"block_{block_idx}_tx_{tx_idx}",
                     "value": block_idx * 10 + tx_idx,
                 },
+                nonce=block_idx * 2 + tx_idx + 1,   # secuencia del sender (P0-9)
             )
             tx.sign(w.private_key_hex)
             bc.add_transaction(tx)
