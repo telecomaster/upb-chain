@@ -16,6 +16,7 @@ from blockchain.core.transaction import Transaction, TransactionType
 from blockchain.core.wallet import Wallet
 from blockchain.consensus.proof_of_work import ProofOfWork
 from security.crypto_utils import benchmark_crypto
+from tests.helpers import mine_and_add
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +71,8 @@ def test_validate_chain_50_blocks_under_2_seconds(tmp_path, _shared_wallet):
     bc = Blockchain(
         node_id="perf_validate",
         data_dir=str(tmp_path / "perf_validate"),
+        initial_difficulty=1,
+        max_difficulty=1,  # bloques minados en ráfaga: evitar que la dificultad suba
     )
     wallet = _shared_wallet
 
@@ -83,8 +86,8 @@ def test_validate_chain_50_blocks_under_2_seconds(tmp_path, _shared_wallet):
         )
         tx.sign(wallet.private_key_hex)
         bc.add_transaction(tx)
-        candidate = bc.create_candidate_block()
-        bc.add_block(candidate)
+        ok, reason = mine_and_add(bc)
+        assert ok, reason
 
     assert bc.height == 50, f"Altura esperada 50, obtenida {bc.height}"
 

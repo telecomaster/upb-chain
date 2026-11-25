@@ -6,11 +6,12 @@ from blockchain.core.block import Block, BlockHeader
 from blockchain.core.chain import Blockchain
 from blockchain.core.transaction import Transaction, TransactionType
 from blockchain.core.wallet import Wallet
+from tests.helpers import mine_and_add
 
 
 @pytest.fixture
 def chain(tmp_path):
-    return Blockchain(node_id="test_node", data_dir=str(tmp_path / "chain"))
+    return Blockchain(node_id="test_node", data_dir=str(tmp_path / "chain"), initial_difficulty=1)
 
 
 @pytest.fixture
@@ -108,8 +109,8 @@ class TestBlockchain:
         )
         tx.sign(wallet.private_key_hex)
         chain.add_transaction(tx)
-        candidate = chain.create_candidate_block()
-        chain.add_block(candidate)
+        ok, reason = mine_and_add(chain)
+        assert ok, reason
 
         # Tamper
         chain.chain[1].transactions[0]["data"] = "tampered"
@@ -174,7 +175,7 @@ class TestBlockchain:
         data_dir = str(tmp_path / "persist_chain")
 
         # Crear cadena con un bloque adicional
-        bc1 = Blockchain(node_id="persist_test", data_dir=data_dir)
+        bc1 = Blockchain(node_id="persist_test", data_dir=data_dir, initial_difficulty=1)
         w = Wallet.generate()
         tx = Transaction(
             type=TransactionType.DATA_RECORD,
@@ -184,14 +185,13 @@ class TestBlockchain:
         )
         tx.sign(w.private_key_hex)
         bc1.add_transaction(tx)
-        candidate = bc1.create_candidate_block()
-        ok, reason = bc1.add_block(candidate)
+        ok, reason = mine_and_add(bc1)
         assert ok, reason
         height_before = bc1.height
         last_hash_before = bc1.last_block.hash
 
         # Recargar desde disco con una nueva instancia
-        bc2 = Blockchain(node_id="persist_test", data_dir=data_dir)
+        bc2 = Blockchain(node_id="persist_test", data_dir=data_dir, initial_difficulty=1)
         assert bc2.height == height_before, (
             f"Altura tras recarga: {bc2.height}, esperada: {height_before}"
         )

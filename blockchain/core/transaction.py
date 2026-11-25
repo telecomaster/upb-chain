@@ -106,16 +106,28 @@ class Transaction:
         return time.time() - self.timestamp
 
     def is_valid(self) -> tuple[bool, str]:
+        """ADMISIÓN AL MEMPOOL: validez de consenso + frescura (no futura, no expirada).
+
+        La expiración de 1 h es política local del mempool; NO es regla de consenso
+        (si lo fuera, resincronizar bloques viejos fallaría). Ver is_consensus_valid().
+        """
+        if self.timestamp > time.time() + 60:
+            return False, "Timestamp en el futuro"
+        if self.age_seconds() > 3600:
+            return False, "Transacción expirada (antigüedad > 3600 s)"
+        return self.is_consensus_valid()
+
+    def is_consensus_valid(self) -> tuple[bool, str]:
+        """VALIDEZ DE CONSENSO (TX dentro de un bloque): sin dependencia del reloj.
+
+        Campos obligatorios + autenticación (firma, llave, sender, tx_id).
+        """
         if not self.sender:
             return False, "Sender vacío"
         if not self.recipient:
             return False, "Recipient vacío"
         if not self.payload:
             return False, "Payload vacío"
-        if self.timestamp > time.time() + 60:
-            return False, "Timestamp en el futuro"
-        if self.age_seconds() > 3600:
-            return False, "Transacción expirada (antigüedad > 3600 s)"
         return self._check_authentication()
 
     def _check_authentication(self) -> tuple[bool, str]:

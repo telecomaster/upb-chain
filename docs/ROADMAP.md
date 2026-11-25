@@ -48,7 +48,7 @@ Flujos de trabajo y orden de dependencias:
   llave pública. Agregar `public_key`, comprobar `address == derive(public_key)` y la firma ECDSA,
   rechazar TXs sin firma, incluir `fee` en el mensaje firmado.
   *Listo cuando:* una TX falsificada o sin firma recibe 400.
-- [ ] **P0-3 Validación completa de bloques.** `chain.py:_validate_block` no revisa PoW ni TXs.
+- [x] **P0-3 Validación completa de bloques.** `chain.py:_validate_block` no revisa PoW ni TXs.
   Validar dificultad esperada, rango de timestamp, cada TX, sin TX repetidas en la cadena. Separar
   "admisión al mempool" (expira en 1 h) de "validez de consenso" (para que resincronizar no rechace
   bloques viejos). *Listo cuando:* un bloque con dificultad 0 se rechaza y la cadena se revalida al cargar.

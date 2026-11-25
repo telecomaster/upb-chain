@@ -47,8 +47,29 @@ logger = logging.getLogger("upb_chain.core")
 
 
 class Blockchain:
-    def __init__(self, node_id: str, data_dir: str = "data/chain"):
+    # Ventana de timestamps para la mediana (estilo Bitcoin) y tolerancia al futuro.
+    MEDIAN_WINDOW = 11
+    MAX_FUTURE_SECONDS = 2 * 3600
+
+    def __init__(
+        self,
+        node_id: str,
+        data_dir: str = "data/chain",
+        initial_difficulty: int = 4,
+        min_difficulty: int = 1,
+        max_difficulty: int = 8,
+        target_block_time: float = 10.0,
+        difficulty_window: int = 10,
+    ):
         self.node_id = node_id
+        # Parámetros de la regla de dificultad (parte del consenso: deben ser
+        # iguales en todos los nodos de la red).
+        self.initial_difficulty = initial_difficulty
+        self.min_difficulty = min_difficulty
+        self.max_difficulty = max_difficulty
+        self.target_block_time = target_block_time
+        self.difficulty_window = difficulty_window
+        self._confirmed_ids: set = set()
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -78,7 +99,16 @@ class Blockchain:
         ok, reason = self._check_genesis(chain)
         if not ok:
             raise ValueError(f"{path}: {reason}")
+        # Revalidar TODA la cadena al cargar (P0-3): un archivo manipulado se rechaza.
+        ok, reason = self._validate_blocks(chain)
+        if not ok:
+            raise ValueError(f"{path}: cadena inválida en disco: {reason}")
         self.chain = chain
+        self._confirmed_ids = self._collect_ids(chain)
+
+    @staticmethod
+    def _collect_ids(chain: List[Block]) -> set:
+        return {tx.get("tx_id") for b in chain for tx in b.transactions}
 
     @staticmethod
     def _check_genesis(chain: List[Block]) -> Tuple[bool, str]:
@@ -110,6 +140,8 @@ class Blockchain:
         valid, reason = tx.is_valid()
         if not valid:
             return False, reason
+        if tx.tx_id in self._confirmed_ids:
+            return False, "Transacción ya confirmada en la cadena"
         if any(t.tx_id == tx.tx_id for t in self.mempool):
             return False, "Transacción duplicada"
         with self._lock:
@@ -128,6 +160,7 @@ class Blockchain:
             if not valid:
                 return False, reason
             self.chain.append(block)
+            self._confirmed_ids.update(tx.get("tx_id") for tx in block.transactions)
             # Remueve transacciones confirmadas del mempool
             confirmed_ids = {tx.get("tx_id") for tx in block.transactions}
             self.mempool = [t for t in self.mempool if t.tx_id not in confirmed_ids]
@@ -141,7 +174,7 @@ class Blockchain:
         merkle_root = Block.compute_merkle_root(tx_dicts)
         header = BlockHeader(
             index=self.height + 1,
-            timestamp=time.time(),
+            timestamp=max(time.time(), self.last_block.header.timestamp + 0.001),
             previous_hash=self.last_block.hash,
             merkle_root=merkle_root,
             difficulty=self._calculate_difficulty(),
@@ -151,30 +184,76 @@ class Blockchain:
 
     # ── Validación ────────────────────────────────────────────────────────────
 
-    def _validate_block(self, block: Block) -> Tuple[bool, str]:
-        if block.header.index != self.height + 1:
-            return False, f"Índice incorrecto: esperado {self.height + 1}, recibido {block.header.index}"
-        if block.header.previous_hash != self.last_block.hash:
+    def _validate_block(self, block: Block, now: Optional[float] = None) -> Tuple[bool, str]:
+        """Valida `block` como siguiente bloque de la cadena actual."""
+        return self._validate_block_at(
+            block, self.chain, set(self._confirmed_ids),
+            now if now is not None else time.time(),
+        )
+
+    def _validate_block_at(
+        self, block: Block, prefix: List[Block], seen_ids: set, now: float
+    ) -> Tuple[bool, str]:
+        """Validez de CONSENSO de `block` dado `prefix` = chain[:h] (h = block.index).
+
+        Determinista: depende sólo de (block, prefix, seen_ids, now). `seen_ids`
+        se actualiza con los tx_id del bloque si es válido. `now` sólo acota el
+        timestamp futuro. La expiración de 1 h del mempool NO aplica aquí.
+        """
+        h = block.header
+        prev = prefix[-1]
+        if h.index != len(prefix):
+            return False, f"Índice incorrecto: esperado {len(prefix)}, recibido {h.index}"
+        if h.previous_hash != prev.hash:
             return False, "Hash previo no coincide"
         if block.compute_hash() != block.hash:
             return False, "Hash del bloque inválido"
-        merkle = Block.compute_merkle_root(block.transactions)
-        if merkle != block.header.merkle_root:
+        expected = self.expected_difficulty(prefix)
+        if h.difficulty != expected:
+            return False, f"Dificultad incorrecta: esperada {expected}, recibida {h.difficulty}"
+        if not block.hash.startswith("0" * h.difficulty):
+            return False, "Proof of Work insuficiente: el hash no cumple la dificultad"
+        if Block.compute_merkle_root(block.transactions) != h.merkle_root:
             return False, "Merkle root inválido"
+        # Timestamp: estrictamente mayor que la mediana de los últimos bloques
+        # y no más de MAX_FUTURE_SECONDS en el futuro respecto a `now`.
+        recent = sorted(b.header.timestamp for b in prefix[-self.MEDIAN_WINDOW:])
+        median = recent[len(recent) // 2]
+        if h.timestamp <= median:
+            return False, "Timestamp no es posterior a la mediana de los bloques previos"
+        if h.timestamp > now + self.MAX_FUTURE_SECONDS:
+            return False, "Timestamp demasiado en el futuro"
+        # Transacciones: autenticación (sin expiración) y sin duplicados.
+        new_ids = set()
+        for raw in block.transactions:
+            try:
+                tx = Transaction.from_dict(raw)
+            except (KeyError, ValueError, TypeError, AttributeError):
+                return False, "Transacción malformada en el bloque"
+            ok, reason = tx.is_consensus_valid()
+            if not ok:
+                return False, f"Transacción {str(raw.get('tx_id'))[:8]}… inválida: {reason}"
+            if tx.tx_id in seen_ids or tx.tx_id in new_ids:
+                return False, f"Transacción duplicada {tx.tx_id[:8]}…"
+            new_ids.add(tx.tx_id)
+        seen_ids.update(new_ids)
         return True, "OK"
 
-    def validate_chain(self) -> Tuple[bool, str]:
-        for i in range(1, len(self.chain)):
-            current = self.chain[i]
-            previous = self.chain[i - 1]
-            if current.header.previous_hash != previous.hash:
-                return False, f"Bloque {i}: hash previo roto"
-            if current.compute_hash() != current.hash:
-                return False, f"Bloque {i}: hash inválido"
-            merkle = Block.compute_merkle_root(current.transactions)
-            if merkle != current.header.merkle_root:
-                return False, f"Bloque {i}: Merkle root inválido"
+    def _validate_blocks(self, chain: List[Block], now: Optional[float] = None) -> Tuple[bool, str]:
+        """Valida una cadena completa: génesis fijo + cada bloque 1..n (P0-3)."""
+        ok, reason = self._check_genesis(chain)
+        if not ok:
+            return False, reason
+        now = now if now is not None else time.time()
+        seen = self._collect_ids(chain[:1])
+        for i in range(1, len(chain)):
+            ok, reason = self._validate_block_at(chain[i], chain[:i], seen, now)
+            if not ok:
+                return False, f"Bloque {i}: {reason}"
         return True, "Cadena válida"
+
+    def validate_chain(self, now: Optional[float] = None) -> Tuple[bool, str]:
+        return self._validate_blocks(self.chain, now)
 
     # ── Consultas de estado ───────────────────────────────────────────────────
 
@@ -269,18 +348,39 @@ class Blockchain:
 
     # ── Ajuste de dificultad ──────────────────────────────────────────────────
 
-    def _calculate_difficulty(self, target_time: float = 10.0, window: int = 10) -> int:
-        if len(self.chain) < window:
-            return 4
-        recent = self.chain[-window:]
+    def expected_difficulty(self, prefix: List[Block]) -> int:
+        """Dificultad exigida al bloque de altura h = len(prefix), dada chain[:h].
+
+        Función pura de los bloques anteriores y de los parámetros de la cadena.
+        - Génesis: dificultad 0 (fija).
+        - Mientras no haya `difficulty_window` bloques posteriores al génesis
+          (h <= window): `initial_difficulty`.
+        - Después: se miden los últimos `window` bloques (sin incluir el génesis,
+          cuyo timestamp es artificial). tiempo medio < target/2 -> +1;
+          > target*2 -> -1; si no, igual. Siempre acotada a [min, max].
+        """
+        h = len(prefix)
+        if h == 0:
+            return 0
+        w = self.difficulty_window
+        if h <= w:
+            return self.initial_difficulty
+        recent = prefix[-w:]
         elapsed = recent[-1].header.timestamp - recent[0].header.timestamp
-        avg_time = elapsed / (window - 1) if elapsed > 0 else target_time
-        current_diff = self.last_block.header.difficulty
-        if avg_time < target_time * 0.5:
-            return min(current_diff + 1, 8)
-        if avg_time > target_time * 2.0:
-            return max(current_diff - 1, 1)
-        return current_diff
+        intervals = w - 1
+        current = prefix[-1].header.difficulty
+        # avg = elapsed / intervals, comparado sin dividir.
+        if elapsed < self.target_block_time * 0.5 * intervals:
+            nxt = current + 1
+        elif elapsed > self.target_block_time * 2.0 * intervals:
+            nxt = current - 1
+        else:
+            nxt = current
+        return max(self.min_difficulty, min(self.max_difficulty, nxt))
+
+    def _calculate_difficulty(self) -> int:
+        """Dificultad esperada del PRÓXIMO bloque (la que debe usar el minado)."""
+        return self.expected_difficulty(self.chain)
 
     # ── Reemplazo de cadena (fork resolution) ────────────────────────────────
 
@@ -288,18 +388,13 @@ class Blockchain:
         candidate = [Block.from_dict(b) for b in new_chain]
         if len(candidate) <= len(self.chain):
             return False, "Cadena recibida no es más larga"
-        temp = Blockchain.__new__(Blockchain)
-        temp.chain = candidate
-        temp.mempool = []
-        temp._lock = Lock()
         # TODO(P0-5): rehacer replace_chain (trabajo acumulado, TXs huérfanas).
-        valid, reason = self._check_genesis(candidate)
-        if valid:
-            valid, reason = temp.validate_chain()
+        valid, reason = self._validate_blocks(candidate)
         if not valid:
             return False, f"Cadena recibida inválida: {reason}"
         with self._lock:
             self.chain = candidate
+            self._confirmed_ids = self._collect_ids(candidate)
             self._save_to_disk()
         logger.info(f"Cadena reemplazada: ahora altura {self.height}")
         return True, "OK"

@@ -34,8 +34,14 @@ class ProofOfWork:
         block: Block,
         max_nonce: int = 10_000_000,
         timeout: Optional[float] = 120.0,
+        difficulty: Optional[int] = None,
     ) -> Optional[MiningResult]:
+        """Mina `block`. Si se pasa `difficulty` (la esperada por la cadena) se usa
+        en lugar de self.difficulty, para que el bloque pase la validación (P0-3)."""
         start = time.perf_counter()
+        if difficulty is not None:
+            self.difficulty = difficulty
+            self.target_prefix = "0" * difficulty
         block.header.difficulty = self.difficulty
         nonce = 0
 

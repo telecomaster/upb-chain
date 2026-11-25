@@ -40,7 +40,8 @@ NODE_PORT  = settings.node_port
 API_PORT   = settings.api_port
 PEERS      = settings.peers
 
-blockchain      = Blockchain(node_id=NODE_ID, data_dir=settings.data_dir)
+blockchain      = Blockchain(node_id=NODE_ID, data_dir=settings.data_dir,
+                              initial_difficulty=settings.mining_difficulty)
 pow_engine      = ProofOfWork(difficulty=settings.mining_difficulty)
 credential_contract = CredentialContract()
 tx_anomaly_detector = TransactionAnomalyDetector()
@@ -206,7 +207,7 @@ async def get_block(index: int):
 @app.post("/blocks/mine")
 async def mine_block(request: MineRequest, background_tasks: BackgroundTasks):
     candidate = blockchain.create_candidate_block()
-    result = pow_engine.mine(candidate)
+    result = pow_engine.mine(candidate, difficulty=candidate.header.difficulty)
     if not result:
         raise HTTPException(500, "Mining falló o timeout alcanzado")
     ok, reason = blockchain.add_block(result.block)

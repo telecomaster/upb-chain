@@ -6,6 +6,7 @@ from pathlib import Path
 
 from blockchain.core.chain import Blockchain
 from config import load_settings
+from tests.helpers import mine_and_add
 
 RAIZ = Path(__file__).resolve().parent.parent
 
@@ -52,12 +53,12 @@ def test_env_se_carga_sin_pisar_el_entorno(tmp_path):
 
 def test_reinicio_conserva_la_cadena(tmp_path):
     d = str(tmp_path / "nodo")
-    c1 = Blockchain(node_id="n", data_dir=d)
-    ok, motivo = c1.add_block(c1.create_candidate_block())
+    c1 = Blockchain(node_id="n", data_dir=d, initial_difficulty=1)
+    ok, motivo = mine_and_add(c1)
     assert ok, motivo
     altura = c1.height
     assert altura >= 1
-    assert Blockchain(node_id="n", data_dir=d).height == altura
+    assert Blockchain(node_id="n", data_dir=d, initial_difficulty=1).height == altura
 
 
 def test_load_settings_valores(monkeypatch):
