@@ -21,7 +21,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, BackgroundTasks, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -55,6 +55,9 @@ from blockchain.consensus.proof_of_work import ProofOfWork
 from blockchain.consensus.pbft import PBFTConfigError, PBFTReplica, PBFTTransport, ReplicaSet
 from blockchain.contracts.credential import CredentialState, credential_id_of_tx
 from blockchain.contracts import vc_export
+from blockchain.contracts import programs
+from blockchain.vm import AsmError, assemble, disassemble
+from blockchain.vm.asm import address_to_int
 from blockchain.contracts.tokens import (
     MAX_REASON, TOKEN_NAME, TOKEN_SYMBOL, is_semester, semester_of,
 )
@@ -483,6 +486,50 @@ class BadgeRequest(BaseModel):
 
 class PruneMempoolRequest(BaseModel):
     max_age_seconds: int = 3600
+
+
+# P2-11: argumentos y storage aceptan enteros o direcciones "UPB…" (se pasan a entero).
+VmWord = Union[int, str]
+
+
+class VmDeployRequest(BaseModel):
+    sender: str
+    private_key_hex: str               # firma en el servidor: educativo, en desuso (P2-1)
+    code: Optional[str] = None         # bytecode en hex…
+    source: Optional[str] = None       # …o texto .upbasm (se ensambla en el servidor)
+    storage: List[List[VmWord]] = []   # storage inicial [[clave, valor], …]
+    gas_limit: Optional[int] = Field(None, gt=0)   # por defecto, el gas del despliegue
+    gas_price: int = Field(programs.MIN_GAS_PRICE, ge=programs.MIN_GAS_PRICE)
+    fee: int = Field(0, ge=0)
+
+
+class VmCallRequest(BaseModel):
+    sender: str
+    private_key_hex: str               # firma en el servidor: educativo, en desuso (P2-1)
+    contract: str
+    args: List[VmWord] = []
+    value: int = Field(0, ge=0)
+    gas_limit: int = Field(5_000, gt=0)
+    gas_price: int = Field(programs.MIN_GAS_PRICE, ge=programs.MIN_GAS_PRICE)
+    fee: int = Field(0, ge=0)
+
+
+class VmSimulateRequest(BaseModel):
+    contract: Optional[str] = None     # contrato desplegado (usa su código, storage y saldo)…
+    code: Optional[str] = None         # …o bytecode en hex…
+    source: Optional[str] = None       # …o texto .upbasm
+    storage: List[List[VmWord]] = []   # solo con code/source
+    balance: int = Field(0, ge=0)      # solo con code/source
+    caller: Optional[str] = None       # dirección UPB (por defecto, 0)
+    args: List[VmWord] = []
+    value: int = Field(0, ge=0)
+    gas_limit: int = Field(5_000, gt=0)
+    block_height: Optional[int] = Field(None, ge=0)   # por defecto, la del próximo bloque
+    trace: bool = True
+
+
+class VmAssembleRequest(BaseModel):
+    source: str
 
 
 # ── Endpoints: información general ───────────────────────────────────────────
@@ -1465,6 +1512,187 @@ async def get_election(election_id: str, node: NodeState = Depends(get_node)):
         "pending_votes": pending,
         "height": node.blockchain.contracts.height,
     }
+
+
+# ── Endpoints: contratos de estudiantes sobre la VM de pila (P2-11) ──────────
+# Desplegar y llamar con ``private_key_hex`` firma en el servidor (educativo, en
+# desuso como en P2-1): para uso real, firmar en el cliente y usar POST /transactions
+# con type CONTRACT_DEPLOY/CONTRACT_CALL (ver docs/vm.md).
+
+_VM_WARNING = ("Firma en el servidor con private_key_hex: solo educativo y en desuso (P2-1). "
+               "Firme en el cliente y use POST /transactions.")
+
+
+def _vm_word(value: VmWord) -> int:
+    """Entero de 256 bits o dirección UPB → entero; 400 si no sirve."""
+    try:
+        word = address_to_int(value) if isinstance(value, str) else value
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not 0 <= word < 1 << 256:
+        raise HTTPException(400, f"{value} no cabe en 256 bits sin signo")
+    return word
+
+
+def _vm_storage(pairs: List[List[VmWord]]) -> List[List[int]]:
+    if any(len(p) != 2 for p in pairs):
+        raise HTTPException(400, "storage: cada elemento es [clave, valor]")
+    return [[_vm_word(k), _vm_word(v)] for k, v in pairs]
+
+
+def _vm_code(code: Optional[str], source: Optional[str]) -> str:
+    """Bytecode hex desde ``code`` o ``source`` (exactamente uno); 400 si no ensambla."""
+    if (code is None) == (source is None):
+        raise HTTPException(400, "Envíe code (hex) o source (.upbasm), uno de los dos")
+    if source is not None:
+        try:
+            return assemble(source).hex()
+        except AsmError as e:
+            raise HTTPException(400, f"Error de ensamblado: {e}")
+    return code.lower()
+
+
+def _vm_state(node: NodeState) -> "programs.VmState":
+    return node.blockchain.contract_state("vm")
+
+
+@router.post("/vm/assemble")
+async def vm_assemble(request: VmAssembleRequest):
+    """Ensambla texto .upbasm → bytecode hex y su desensamblado (cómputo puro)."""
+    code = _vm_code(None, request.source)
+    return {"code": code, "size": len(code) // 2, "disassembly": disassemble(bytes.fromhex(code))}
+
+
+@router.post("/contracts/vm/deploy")
+async def vm_deploy(request: VmDeployRequest, node: NodeState = Depends(get_node)):
+    """Despliega un contrato (CONTRACT_DEPLOY). 400 si el bytecode está mal formado o falta saldo.
+
+    ADVERTENCIA: firma en el servidor con ``private_key_hex`` (educativo, en desuso)."""
+    code = _vm_code(request.code, request.source)
+    storage = _vm_storage(request.storage)
+    payload = {"code": code, "gas_limit": request.gas_limit or programs.deploy_gas(code, storage),
+               "gas_price": request.gas_price}
+    if storage:
+        payload["storage"] = storage
+    nonce = node.blockchain.next_nonce(request.sender)
+    address = programs.contract_address(request.sender, nonce)
+    tx = Transaction(type=TransactionType.CONTRACT_DEPLOY, sender=request.sender,
+                     recipient=address, payload=payload, fee=request.fee, nonce=nonce)
+    _signed(lambda: tx.sign(request.private_key_hex))
+    _submit_contract_tx(node, tx)
+    return {"status": "PENDING", "tx_id": tx.tx_id, "address": address, "nonce": nonce,
+            "gas": programs.deploy_gas(code, storage), "warning": _VM_WARNING}
+
+
+@router.post("/contracts/vm/call")
+async def vm_call(request: VmCallRequest, node: NodeState = Depends(get_node)):
+    """Llama a un contrato (CONTRACT_CALL). El resultado (ok/revert/error, gas) queda en
+    ``GET /contracts/vm/receipts/{tx_id}`` cuando se mina. Una llamada que falla al
+    ejecutarse es VÁLIDA y cobra gas; 400 solo si la TX es inválida (ver docs/vm.md).
+
+    ADVERTENCIA: firma en el servidor con ``private_key_hex`` (educativo, en desuso)."""
+    payload = {"args": [_vm_word(a) for a in request.args], "value": request.value,
+               "gas_limit": request.gas_limit, "gas_price": request.gas_price}
+    tx = Transaction(type=TransactionType.CONTRACT_CALL, sender=request.sender,
+                     recipient=request.contract, payload=payload, fee=request.fee,
+                     nonce=node.blockchain.next_nonce(request.sender))
+    _signed(lambda: tx.sign(request.private_key_hex))
+    _submit_contract_tx(node, tx)
+    return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce, "warning": _VM_WARNING}
+
+
+@router.post("/vm/simulate")
+async def vm_simulate(request: VmSimulateRequest, node: NodeState = Depends(get_node)):
+    """Ejecución de prueba (dry-run): NO cambia ningún estado ni crea TXs.
+
+    Devuelve estado final, gas usado (incluye el fijo de la llamada), valor de
+    retorno, storage resultante, logs, transferencias y la traza (acotada)."""
+    if request.contract is not None:
+        if request.code is not None or request.source is not None:
+            raise HTTPException(400, "Con contract no se envía code ni source")
+        entry = _vm_state(node).contract(request.contract)
+        if entry is None:
+            raise HTTPException(404, "Contrato inexistente")
+        code, storage, balance = entry["code"], dict(entry["storage"]), entry["balance"]
+    else:
+        code = _vm_code(request.code, request.source)
+        storage, balance = {k: v for k, v in _vm_storage(request.storage)}, request.balance
+    if not programs.CALL_BASE_GAS <= request.gas_limit <= programs.MAX_GAS_LIMIT:
+        raise HTTPException(400, f"gas_limit entre {programs.CALL_BASE_GAS} y {programs.MAX_GAS_LIMIT}")
+    try:
+        programs.validate_code(bytes.fromhex(code))
+    except ValueError as e:
+        raise HTTPException(400, f"bytecode inválido: {e}")
+    height = request.block_height
+    if height is None:
+        height = node.blockchain.height + 1
+    result = programs.call_code(
+        code, storage=storage, caller=_vm_word(request.caller) if request.caller else 0,
+        value=request.value, args=tuple(_vm_word(a) for a in request.args),
+        block_height=height, balance=balance, gas_limit=request.gas_limit,
+        trace=request.trace)
+    return {
+        "status": result.status, "error": result.error, "gas_used": result.gas_used,
+        "return_value": result.return_value, "steps": result.steps,
+        "storage": [[k, v] for k, v in result.storage.items()] if result.ok else None,
+        "logs": result.logs,
+        "transfers": [[programs.int_to_address(t), a] for t, a in result.transfers],
+        "trace": result.trace, "trace_truncated": result.steps > len(result.trace),
+        "block_height": height,
+    }
+
+
+@router.get("/contracts/vm")
+async def vm_list(node: NodeState = Depends(get_node)):
+    """Contratos desplegados (confirmados)."""
+    state = _vm_state(node)
+    return {"height": node.blockchain.contracts.height, "gas_burned": state.gas_burned,
+            "contracts": [{"address": a, "creator": c["creator"], "size": len(c["code"]) // 2,
+                           "balance": c["balance"], "calls": c["calls"],
+                           "deployed_at": c["deployed_at"]}
+                          for a, c in state.contracts.items()]}
+
+
+@router.get("/contracts/vm/receipts/{tx_id}")
+async def vm_receipt(tx_id: str, node: NodeState = Depends(get_node)):
+    """Recibo de una TX de contrato confirmada: estado, gas usado y cobrado, retorno."""
+    receipt = _vm_state(node).receipts.get(tx_id)
+    if receipt is None:
+        raise HTTPException(404, "Sin recibo: la TX no existe o aún no está en un bloque")
+    return {"tx_id": tx_id, **receipt}
+
+
+@router.get("/contracts/vm/{address}")
+async def vm_contract(address: str, node: NodeState = Depends(get_node)):
+    """Código (hex y desensamblado), storage, saldo y últimos logs de un contrato."""
+    state = _vm_state(node)
+    entry = state.contract(address)
+    if entry is None:
+        raise HTTPException(404, "Contrato inexistente")
+    return {"address": address,
+            **{k: entry[k] for k in ("creator", "code", "balance", "calls", "deployed_at")},
+            "disassembly": disassemble(bytes.fromhex(entry["code"])),
+            "storage": [[k, v] for k, v in entry["storage"].items()],
+            "logs": state.logs.get(address, []),
+            "height": node.blockchain.contracts.height}
+
+
+@router.get("/contracts/vm/{address}/storage/{key}")
+async def vm_storage_slot(address: str, key: int, node: NodeState = Depends(get_node)):
+    """Una casilla del storage (0 si no existe)."""
+    entry = _vm_state(node).contract(address)
+    if entry is None:
+        raise HTTPException(404, "Contrato inexistente")
+    return {"address": address, "key": key, "value": entry["storage"].get(key, 0)}
+
+
+@router.get("/contracts/vm/{address}/logs")
+async def vm_logs(address: str, node: NodeState = Depends(get_node)):
+    """Últimos logs del contrato (``programs.MAX_LOGS_KEPT``)."""
+    state = _vm_state(node)
+    if state.contract(address) is None:
+        raise HTTPException(404, "Contrato inexistente")
+    return {"address": address, "logs": state.logs.get(address, [])}
 
 
 # ── Endpoints: IA ─────────────────────────────────────────────────────────────

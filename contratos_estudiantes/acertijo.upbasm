@@ -1,0 +1,55 @@
+; Acertijo: los primeros N que lo resuelven reciben un premio (P2-11).
+;
+; Storage inicial (al desplegar):
+;   storage[HASH_RESPUESTA] = HASH(respuesta)   (calcularlo con: upbasm.py hash 42)
+;   storage[PREMIO]         = PUPB por ganador
+;   storage[CUPOS]          = N, cuántos premios quedan
+;
+; Uso:
+;   sin argumentos   deposita fondos (CALLVALUE) para pagar los premios
+;   ARG 0 = intento  si HASH(intento) = HASH_RESPUESTA, quien llama no ganó antes
+;                    y quedan cupos: gana PREMIO
+;
+; Ojo (para discutir en clase): el intento viaja en claro en la TX, así que
+; cualquiera que mire el mempool puede copiar la respuesta y adelantarse
+; ("front-running"). Ejercicio: rediseñarlo con compromiso y revelación.
+
+.const HASH_RESPUESTA 0
+.const PREMIO 1
+.const CUPOS 2
+.const GANADORES 0x100000000000000000000000000000000   ; storage[GANADORES + dirección] = 1
+
+    NARGS
+    ISZERO
+    JUMPI fondear
+    SLOAD CUPOS
+    ISZERO
+    JUMPI agotado
+    ARG 0
+    HASH
+    SLOAD HASH_RESPUESTA
+    EQ
+    ISZERO
+    JUMPI incorrecta
+    CALLER
+    ADD GANADORES       ; clave
+    DUP 1
+    SLOAD
+    JUMPI ya_gano       ; storage[clave] ≠ 0
+    PUSH 1
+    SWAP 1              ; 1 clave
+    SSTORE              ; marca al ganador
+    SLOAD CUPOS
+    SUB 1
+    SSTORE CUPOS        ; un cupo menos
+    SLOAD PREMIO        ; monto
+    CALLER              ; destino
+    TRANSFER            ; si el contrato no tiene fondos, error: nada cambia
+    CALLER
+    LOG                 ; registra al ganador
+    STOP
+
+fondear:        STOP
+agotado:        REVERT 20
+incorrecta:     REVERT 21
+ya_gano:        REVERT 22

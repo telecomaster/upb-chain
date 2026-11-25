@@ -29,6 +29,16 @@ Tipos con efecto sobre saldos:
                     y lo QUEMA (sale de la oferta). Que el recipient sea una
                     dirección de canje registrada lo exige el contrato ``tokens``.
 
+    CONTRACT_DEPLOY/CONTRACT_CALL (P2-11) saldo >= fee + value + gas_limit * gas_price.
+                    Al aplicar se cobra el gas USADO (se quema, como el fee),
+                    ``value`` pasa al contrato solo si la llamada terminó bien y
+                    los TRANSFER del contrato se acreditan a sus destinos. El
+                    resultado sale de ``programs.execute_call`` sobre
+                    ``ctx.view("vm")`` (ver ``blockchain/contracts/programs.py``).
+                    Los saldos de los contratos los lleva el contrato ``vm``:
+                    Σ saldos + Σ saldos de contratos = total_supply. Por eso
+                    TOKEN_TRANSFER/TOKEN_MINT a una dirección "UPC…" son inválidas.
+
 Los demás tipos (credenciales, DATA_RECORD, VOTE, …) solo consumen nonce y fee.
 Este contrato es siempre el primero del registro: lo posee la cadena
 (``Blockchain.accounts``) porque el nonce ordena las TXs de cada firmante.
@@ -37,6 +47,10 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, Optional, Tuple
 
 from blockchain.contracts.base import Contract, TxContext, is_int, tx_type_of
+from blockchain.contracts.programs import (
+    check_payload, gas_charged, is_contract_address, max_cost,
+)
+from blockchain.vm.asm import int_to_address
 
 
 @dataclass
@@ -56,6 +70,7 @@ class Accounts:
 
 
 _MOVES_BALANCE = ("TOKEN_TRANSFER", "TOKEN_MINT", "TOKEN_REDEEM")
+_CONTRACT_TXS = ("CONTRACT_DEPLOY", "CONTRACT_CALL")   # P2-11
 
 
 class AccountContract(Contract):
@@ -91,6 +106,15 @@ class AccountContract(Contract):
         amount = self._amount(tx)
         if tx_type in _MOVES_BALANCE and (not is_int(amount) or amount <= 0):
             return False, "amount debe ser un entero > 0 (unidad mínima)"
+        if tx_type in ("TOKEN_TRANSFER", "TOKEN_MINT") and is_contract_address(tx.get("recipient")):
+            return False, "Para enviar PUPB a un contrato use CONTRACT_CALL con value"
+        if tx_type in _CONTRACT_TXS:
+            if ctx.view("vm") is None:
+                return False, "La VM de contratos no está registrada en este nodo"
+            ok, reason = check_payload(tx)
+            if not ok:
+                return False, reason
+            amount = max_cost(tx)   # peor caso: value + todo el gas_limit
         if tx_type == "TOKEN_MINT":
             # Con el contrato de tokens registrado, él autoriza (P1-12).
             if sender != self.authority_address and ctx.view("tokens") is None:
@@ -109,6 +133,8 @@ class AccountContract(Contract):
         state.balances[sender] = state.balance_of(sender) - fee
         state.total_supply -= fee
         state.burned_fees += fee
+        if tx_type in _CONTRACT_TXS:
+            return self._apply_contract_tx(state, tx, ctx)
         amount = tx["payload"]["amount"] if tx_type in _MOVES_BALANCE else 0
         if tx_type == "TOKEN_MINT":
             state.total_supply += amount
@@ -132,6 +158,22 @@ class AccountContract(Contract):
                 if award is not None:
                     state.balances[recipient] = state.balance_of(recipient) + award["amount"]
                     state.total_supply += award["amount"]
+        return state
+
+    @staticmethod
+    def _apply_contract_tx(state: Accounts, tx: dict, ctx: TxContext) -> Accounts:
+        """Gas quemado, ``value`` al contrato y TRANSFER a sus destinos (P2-11)."""
+        sender, payload = tx["sender"], tx["payload"]
+        gas, result = gas_charged(ctx.view("vm"), tx, ctx)
+        cost = gas * payload["gas_price"]
+        state.balances[sender] -= cost
+        state.total_supply -= cost
+        state.burned_fees += cost
+        if result is not None and result.ok:
+            state.balances[sender] -= payload.get("value", 0)   # lo guarda el contrato
+            for to, amount in result.transfers:                 # salen del contrato
+                address = int_to_address(to)
+                state.balances[address] = state.balance_of(address) + amount
         return state
 
     # ── Vistas para la API (no son reglas de consenso) ────────────────────────

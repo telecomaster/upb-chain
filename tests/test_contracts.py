@@ -90,7 +90,7 @@ def test_la_cadena_pone_siempre_las_cuentas_primero(tmp_path):
     bc = Blockchain("n", str(tmp_path / "n"), contracts=[VotingContract()])
     assert bc.contracts.names == ["accounts", "voting"]
     assert Blockchain("m", str(tmp_path / "m")).contracts.names == \
-        ["accounts", "credentials", "voting", "tokens", "badges"]
+        ["accounts", "credentials", "voting", "tokens", "badges", "vm"]
 
 
 @pytest.mark.unit
@@ -294,6 +294,6 @@ async def test_api_votacion_doble_voto_400_y_recuento(client):
 async def test_api_lista_contratos(client):
     r = (await client.get("/contracts")).json()
     assert [c["name"] for c in r["contracts"]] == ["accounts", "credentials", "voting",
-                                                   "tokens", "badges"]
+                                                   "tokens", "badges", "vm"]
     assert r["contracts"][0]["handled_types"] is None
     assert r["contracts"][2]["handled_types"] == ["ELECTION_CREATE", "VOTE"]

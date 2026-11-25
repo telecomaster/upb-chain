@@ -1,0 +1,109 @@
+; Colecta con plazo (crowdfunding / escrow) (P2-11).
+;
+; Storage inicial (al desplegar):
+;   storage[BENEFICIARIO] = dirección que cobra si se llega a la meta
+;   storage[META]         = PUPB a reunir
+;   storage[PLAZO]        = altura de bloque en que se cierra la colecta
+;
+; Funciones (ARG 0):
+;   1 aportar      antes del plazo, con value > 0
+;   2 cobrar       el beneficiario, desde el plazo, si TOTAL >= META: recibe todo
+;   3 reembolsar   cualquiera, desde el plazo, si TOTAL < META: recupera su aporte
+;
+; El "reloj" es BLOCKHEIGHT: la altura del bloque, igual en todos los nodos.
+; Los aportes se guardan en storage[APORTES + dirección] (las direcciones tienen
+; 128 bits, así que nunca chocan con las casillas 0..3).
+
+.const BENEFICIARIO 0
+.const META 1
+.const PLAZO 2
+.const TOTAL 3
+.const APORTES 0x100000000000000000000000000000000     ; 2^128
+
+    ARG 0               ; selector de función
+    DUP 1
+    EQ 1
+    JUMPI aportar
+    DUP 1
+    EQ 2
+    JUMPI cobrar
+    DUP 1
+    EQ 3
+    JUMPI reembolsar
+    REVERT 1            ; función desconocida
+
+aportar:
+    BLOCKHEIGHT
+    SLOAD PLAZO
+    LT                  ; altura < plazo ?
+    ISZERO
+    JUMPI cerrada
+    CALLVALUE
+    ISZERO
+    JUMPI sin_valor
+    CALLER
+    ADD APORTES         ; clave = APORTES + quien llama
+    DUP 1
+    SLOAD               ; clave aporte_anterior
+    CALLVALUE
+    ADD                 ; clave aporte_nuevo
+    SWAP 1              ; aporte_nuevo clave
+    SSTORE
+    SLOAD TOTAL
+    CALLVALUE
+    ADD
+    SSTORE TOTAL        ; TOTAL += value
+    CALLVALUE
+    LOG
+    STOP
+
+cobrar:
+    CALLER
+    SLOAD BENEFICIARIO
+    EQ
+    ISZERO
+    JUMPI no_autorizado
+    BLOCKHEIGHT
+    SLOAD PLAZO
+    LT
+    JUMPI abierta       ; todavía no llegó el plazo
+    SLOAD TOTAL
+    SLOAD META
+    LT
+    JUMPI sin_meta      ; no se llegó a la meta: no hay cobro
+    BALANCE             ; monto: todo lo que tiene el contrato
+    SLOAD BENEFICIARIO  ; destino
+    TRANSFER
+    STOP
+
+reembolsar:
+    BLOCKHEIGHT
+    SLOAD PLAZO
+    LT
+    JUMPI abierta
+    SLOAD TOTAL
+    SLOAD META
+    LT
+    ISZERO
+    JUMPI con_meta      ; se llegó a la meta: no hay reembolsos
+    CALLER
+    ADD APORTES         ; clave
+    DUP 1
+    SLOAD               ; clave monto
+    DUP 1
+    ISZERO
+    JUMPI sin_aporte
+    CALLER              ; clave monto destino
+    TRANSFER            ; devuelve el aporte; pila: clave
+    PUSH 0
+    SWAP 1              ; 0 clave
+    SSTORE              ; storage[clave] = 0 (borra la casilla)
+    STOP
+
+cerrada:        REVERT 10
+sin_valor:      REVERT 11
+no_autorizado:  REVERT 12
+abierta:        REVERT 13
+sin_meta:       REVERT 14
+con_meta:       REVERT 15
+sin_aporte:     REVERT 16

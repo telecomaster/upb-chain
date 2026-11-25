@@ -156,10 +156,14 @@ Flujos de trabajo y orden de dependencias:
 - [x] **P2-8** Docker Compose con 4 nodos y CI en GitHub Actions.
 - [x] **P2-9** Configuración tipada (`pydantic-settings`) y app factory en lugar de globales (desbloquea P0-8).
 - [x] **P2-10** Métricas Prometheus y tablero Grafana (`GET /metrics`, perfil `monitoring` de compose).
-- [ ] **P2-11** Contratos desplegables por estudiantes: `CONTRACT_DEPLOY`/`CONTRACT_CALL` sobre una VM de
+- [x] **P2-11** Contratos desplegables por estudiantes: `CONTRACT_DEPLOY`/`CONTRACT_CALL` sobre una VM de
   pila hecha a mano (~500 líneas) con gas pagado en puntos de testnet. Nunca ejecutar Python del
   estudiante con `exec()`. Para Solidity, laboratorios aparte en una testnet pública (Sepolia), no
-  compatibilidad EVM.
+  compatibilidad EVM. Hecho: `blockchain/vm/` (VM + ensamblador `.upbasm`), contrato `vm`
+  (`blockchain/contracts/programs.py`, último en `default_contracts`), `scripts/upbasm.py`,
+  ejemplos en `contratos_estudiantes/`, `docs/vm.md`. Una llamada que hace REVERT o se queda sin
+  gas es VÁLIDA y cobra gas (regla tipo Ethereum, ver `docs/vm.md`). Fuera de alcance: los
+  laboratorios de Solidity/Sepolia, llamadas entre contratos y deploy/call desde la billetera web.
 - [x] **P2-12** Canjes (entradas, impresiones, turnos de laboratorio), premios automáticos por contrato
   y votación ponderada. Hecho: `CATALOG_ITEM` + `TOKEN_REDEEM` con `item_id` (precio, stock, recibo), `AWARD_RULE` (premio automático al emitir credencial; sin presupuesto se omite el premio sin invalidar el bloque), `ELECTION_CREATE` (ventana por altura; pesos `one_per_address`, `by_badge`, saldo con foto y tope). Ver `docs/contratos.md`. Orden de contratos sin cambios.
 

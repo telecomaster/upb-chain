@@ -28,6 +28,8 @@ class TransactionType(str, Enum):
     AWARD_RULE          = "AWARD_RULE"          # admin: premio automático al emitir una credencial (P2-12)
     ELECTION_CREATE     = "ELECTION_CREATE"     # configuración de una elección ponderada (P2-12)
     SMART_CONTRACT      = "SMART_CONTRACT"
+    CONTRACT_DEPLOY     = "CONTRACT_DEPLOY"     # despliega bytecode de la VM de pila (P2-11)
+    CONTRACT_CALL       = "CONTRACT_CALL"       # llama a un contrato desplegado con gas en PUPB (P2-11)
 
 
 @dataclass

@@ -1,0 +1,20 @@
+; Contador (P2-11): el "hola mundo" de los contratos.
+; Cada llamada suma 1 a storage[CUENTA], o ARG 0 si la llamada trae argumentos.
+; Registra el nuevo valor con LOG y lo devuelve con RETURN.
+
+.const CUENTA 0
+
+    NARGS               ; ¿trae argumentos?
+    JUMPI con_arg       ; azúcar: PUSH con_arg + JUMPI (salta si NARGS ≠ 0)
+    PUSH 1              ; incremento por defecto
+    JUMP sumar
+con_arg:
+    ARG 0               ; incremento pedido
+sumar:
+    SLOAD CUENTA        ; pila: incremento cuenta
+    ADD                 ; pila: nueva
+    DUP 1               ; pila: nueva nueva
+    SSTORE CUENTA       ; storage[CUENTA] = nueva; pila: nueva
+    DUP 1
+    LOG                 ; queda en los logs del contrato
+    RETURN              ; devuelve la nueva cuenta

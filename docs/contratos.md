@@ -299,4 +299,6 @@ misma elección responde 400, y un bloque que lo contenga se rechaza.
    nodos van a ejecutar.
 
 Lo que **no** va en un contrato: llamadas a la red, al disco o a servicios externos; código del
-estudiante ejecutado con `exec()` (los contratos desplegables son P2-11, sobre una VM propia).
+estudiante ejecutado con `exec()` (los contratos desplegables son P2-11, sobre una VM propia:
+ver `docs/vm.md`; ahí una llamada que hace REVERT o se queda sin gas es válida y cobra gas,
+única excepción a "TX inválida ⇒ bloque inválido").

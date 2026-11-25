@@ -13,6 +13,7 @@ def default_contracts(authority_address: Optional[str] = None) -> List:
     """Contratos de aplicación de la red. El de cuentas lo agrega la cadena, primero."""
     from blockchain.contracts.badges import BadgeContract
     from blockchain.contracts.credential import CredentialContract
+    from blockchain.contracts.programs import ProgramContract
     from blockchain.contracts.tokens import TokenContract
     from blockchain.contracts.voting import VotingContract
     return [
@@ -20,4 +21,5 @@ def default_contracts(authority_address: Optional[str] = None) -> List:
         VotingContract(authority_address),  # P2-12: elecciones ponderadas (lee badges/accounts)
         TokenContract(authority_address),   # P1-12: lee emisores de "credentials"
         BadgeContract(),                    # P1-12: ídem
+        ProgramContract(),                  # P2-11: VM de pila ("vm"); va al final
     ]

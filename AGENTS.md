@@ -62,7 +62,10 @@ overstate what works).
   `accounts.py` saldo y nonce (P0-9, cada TX firmada lleva `nonce` = confirmado + 1, montos enteros),
   `credential.py` credential issue/verify/revoke (P0-6; issuers registered by `ISSUER_REGISTER` TXs
   signed by the genesis authority, key in `data/keys/authority.json`, never committed),
-  `voting.py` contrato de referencia (un voto por dirección y elección)
+  `voting.py` contrato de referencia (un voto por dirección y elección),
+  `programs.py` contrato `vm` (P2-11: `CONTRACT_DEPLOY`/`CONTRACT_CALL`, gas en PUPB)
+- `blockchain/vm` (P2-11, guía en `docs/vm.md`): VM de pila (`machine.py`) y ensamblador `.upbasm`
+  (`asm.py`); CLI `scripts/upbasm.py`, ejemplos en `contratos_estudiantes/`. Nunca `exec()`
 - `ai/anomaly/detector.py`, `ai/analytics/chain_stats.py`
 - `security/` crypto_utils, monitor, hardening (checklist de solo lectura en `GET /security/hardening`),
   `attacks/` simulator, eclipse (usado por el simulador y `POST /security/eclipse-simulation`)
