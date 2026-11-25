@@ -21,6 +21,8 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional
 
+from blockchain.core.merkle import leaf_hash, merkle_root_from_leaves
+
 # ── Constantes del génesis (P0-1) ─────────────────────────────────────────────
 # Cambiar CUALQUIERA de estas constantes cambia GENESIS_HASH y vuelve
 # incompatibles las cadenas existentes (es una nueva red).
@@ -88,23 +90,7 @@ class Block:
         Complejidad: O(n log n) tiempo, O(n) espacio.
         Ref: Merkle (1988) — permite pruebas de inclusión en O(log n).
         """
-        if not transactions:
-            return hashlib.sha256(b"").hexdigest()
-
-        tx_hashes = [
-            hashlib.sha256(json.dumps(tx, sort_keys=True).encode()).hexdigest()
-            for tx in transactions
-        ]
-
-        while len(tx_hashes) > 1:
-            if len(tx_hashes) % 2 != 0:
-                tx_hashes.append(tx_hashes[-1])
-            tx_hashes = [
-                hashlib.sha256((tx_hashes[i] + tx_hashes[i + 1]).encode()).hexdigest()
-                for i in range(0, len(tx_hashes), 2)
-            ]
-
-        return tx_hashes[0]
+        return merkle_root_from_leaves([leaf_hash(tx) for tx in transactions])
 
     @classmethod
     def create_genesis(cls, node_id: str = "genesis") -> "Block":

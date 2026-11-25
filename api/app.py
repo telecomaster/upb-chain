@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from config import load_settings, configure_logging
 from blockchain.core.chain import Blockchain
+from blockchain.core.merkle import build_proof, leaf_hash
 from blockchain.core.transaction import (
     Transaction,
     TransactionType,
@@ -402,6 +403,26 @@ async def create_transaction(request: TransactionRequest):
         "status": "pending",
         "anomaly": anomaly.to_dict(),
     }
+
+
+@app.get("/tx/{tx_id}/proof")
+async def get_tx_proof(tx_id: str):
+    """Prueba de inclusión Merkle de una TX confirmada (P2-2)."""
+    for block in blockchain.chain:
+        for i, tx in enumerate(block.transactions):
+            if tx.get("tx_id") == tx_id:
+                hojas = [leaf_hash(t) for t in block.transactions]
+                return {
+                    "tx_id": tx_id,
+                    "block_index": block.header.index,
+                    "block_hash": block.hash,
+                    "merkle_root": block.header.merkle_root,
+                    "leaf": hojas[i],
+                    "proof": build_proof(hojas, i),
+                }
+    if any(t.tx_id == tx_id for t in blockchain.mempool):
+        raise HTTPException(404, "Transacción pendiente: aún no está en un bloque, sin prueba")
+    raise HTTPException(404, "Transacción no encontrada")
 
 
 @app.get("/transactions/{tx_id}")
