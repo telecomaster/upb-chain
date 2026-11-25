@@ -86,7 +86,7 @@ Flujos de trabajo y orden de dependencias:
 - [ ] **P1-2 Datos personales fuera de la cadena.** Hoy nombre y nota quedan en claro en un registro
   inmutable. En cadena solo hash con sal (o raíz Merkle de campos con sal); el estudiante revela lo
   que quiera. Paso previo a ZKP.
-- [ ] **P1-3 Verificación por QR.** `GET /credentials/{id}/qr` (PNG) apuntando a una página pública
+- [x] **P1-3 Verificación por QR.** `GET /credentials/{id}/qr` (PNG) apuntando a una página pública
   `http` de verificación (estado, bloque, confirmaciones, emisor). `qrcode` ya está en requirements.
 - [ ] **P1-4 Revocación e historial en el dashboard.** Formularios y el guion de TAREAS 3.1
   (5 emitidas, 1 revocada).

@@ -607,6 +607,7 @@
         Verificar en Blockchain
       </button>
       <pre id="verify-result" style="margin-top:12px; font-size:11px; white-space:pre-wrap; line-height:1.6;"></pre>
+      <div id="verify-qr" style="margin-top:12px; text-align:center;"></div>
 
       <div class="gold-divider" style="margin:16px 0;"/>
 
@@ -899,6 +900,7 @@ async function generateWalletAndIssue() {
       `Estado:     Pendiente de minado\n\n` +
       `Guarda el ID para verificación posterior.`;
     document.getElementById('verify-id').value = issued.credential_id;
+    showQr(issued.credential_id);
   } else {
     resultEl.style.color = '#f87171';
     resultEl.textContent = '✗ Error: ' + (issued?.detail || 'desconocido');
@@ -906,9 +908,17 @@ async function generateWalletAndIssue() {
   loadStats();
 }
 
+function showQr(id) {
+  const box = document.getElementById('verify-qr');
+  const safe = encodeURIComponent(id);
+  box.innerHTML = `<img src="/credentials/${safe}/qr" alt="QR de verificación" style="width:160px;background:#fff;padding:6px;border-radius:6px"/>` +
+    `<div style="margin-top:6px"><a href="/verify/${safe}" target="_blank" style="color:var(--upb-gold)">Abrir página pública de verificación</a></div>`;
+}
+
 async function verifyCredential() {
   const id = document.getElementById('verify-id').value.trim();
   if (!id) return;
+  showQr(id);
   const { ok, data } = await fetchJSON(`/credentials/verify/${id}`);
   const el = document.getElementById('verify-result');
   if (!ok || !data) { el.style.color='#f87171'; el.textContent='✗ Error de conexión'; return; }

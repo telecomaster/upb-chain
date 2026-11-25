@@ -3,6 +3,8 @@ API REST de UPB-Chain — FastAPI.
 Expone endpoints para bloques, transacciones, credenciales, análisis y seguridad.
 """
 import asyncio
+import html
+import io
 import json
 import logging
 import os
@@ -12,10 +14,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, Tuple
 
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
 from config import load_settings, configure_logging
@@ -472,6 +474,68 @@ async def verify_credential(credential_id: str):
     REVOKED, EXPIRED o NOT_FOUND. ``valid`` es true solo si está CONFIRMED."""
     pending = [t.to_dict() for t in blockchain.mempool]
     return credential_contract.credential_status(credential_id, pending=pending)
+
+
+# ── Verificación pública por QR (P1-3) ────────────────────────────────────────
+
+def _estado_publico(credential_id: str) -> dict:
+    """Misma lógica de estado que ``/credentials/verify/{id}`` (sin duplicarla)."""
+    pending = [t.to_dict() for t in blockchain.mempool]
+    return credential_contract.credential_status(credential_id, pending=pending)
+
+
+def _url_verificacion(request: Request, credential_id: str) -> str:
+    """URL pública de la página de verificación (PUBLIC_BASE_URL o la del request)."""
+    base = settings.public_base_url or str(request.base_url)
+    return f"{base.rstrip('/')}/verify/{credential_id}"
+
+
+@app.get("/credentials/{credential_id}/qr")
+async def credential_qr(credential_id: str, request: Request):
+    """PNG con un QR que apunta a la página pública ``/verify/{id}``."""
+    if _estado_publico(credential_id)["status"] == "NOT_FOUND":
+        raise HTTPException(404, "Credencial no encontrada")
+    import qrcode
+    img = qrcode.make(_url_verificacion(request, credential_id))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return Response(content=buf.getvalue(), media_type="image/png")
+
+
+_VERIFY_COLORS = {"CONFIRMED": "#15803d", "PENDING": "#b45309", "REVOKED": "#b91c1c",
+                  "EXPIRED": "#b91c1c", "NOT_FOUND": "#4b5563"}
+
+_VERIFY_PAGE = """<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verificación de credencial UPB</title>
+<style>body{{font-family:system-ui,sans-serif;margin:0;background:#f3f4f6;color:#111}}
+main{{max-width:480px;margin:0 auto;padding:16px}}
+.card{{background:#fff;border-radius:12px;padding:20px;box-shadow:0 1px 4px #0002}}
+.v{{font-size:1.8rem;font-weight:700;color:{color};margin:0 0 4px}}
+dl{{margin:16px 0 0}}dt{{font-size:.75rem;color:#6b7280;margin-top:10px}}
+dd{{margin:0;word-break:break-all}}</style></head>
+<body><main><div class="card">
+<p style="margin:0;color:#6b7280">UPB-Chain · Verificación de credencial</p>
+<h1 class="v">{verdict}</h1><p>{reason}</p><dl>{rows}</dl></div></main></body></html>"""
+
+
+@app.get("/verify/{credential_id}", response_class=HTMLResponse)
+async def verify_page(credential_id: str):
+    """Página pública y móvil de verificación. No expone notas ni datos personales."""
+    st = _estado_publico(credential_id)
+    cred = st.get("credential") or {}
+    campos = [("ID", credential_id), ("Emisor", cred.get("issuer_address")),
+              ("Tipo", cred.get("credential_type")), ("Título", cred.get("degree")),
+              ("Fecha de emisión", cred.get("issue_date")),
+              ("Bloque", st.get("block_index")),
+              ("Confirmaciones", st.get("confirmations") if cred else None)]
+    rows = "".join(f"<dt>{html.escape(k)}</dt><dd>{html.escape(str(v))}</dd>"
+                   for k, v in campos if v is not None and v != "")
+    body = _VERIFY_PAGE.format(
+        color=_VERIFY_COLORS.get(st["status"], "#4b5563"),
+        verdict=html.escape(st["verdict"]), reason=html.escape(st["reason"]), rows=rows)
+    return HTMLResponse(body, status_code=404 if st["status"] == "NOT_FOUND" else 200)
 
 
 @app.get("/credentials/student/{address}")
