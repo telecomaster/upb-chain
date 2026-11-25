@@ -1,0 +1,13 @@
+[run]
+source = .
+omit =
+    venv/*
+    tests/*
+    scripts/*
+    conftest.py
+    contratos_estudiantes/*
+    data/*
+    .claude/*
+
+[report]
+skip_empty = true
