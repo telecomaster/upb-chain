@@ -171,6 +171,7 @@ Flujos de trabajo y orden de dependencias:
 
 1. **Laboratorio de ataques en vivo:** un nodo malicioso real intenta doble gasto, reorg del 51 % y
    Sybil; con `CONSENSUS=pbft` el mismo ataque falla frente al tribunal.
+   *Hecho: `security/attacks/laboratorio.py` + `scripts/laboratorio_ataques.py` (doble gasto, barrido de reorg medido en proceso, Sybil con/sin TLS, equivocación; ver `docs/laboratorio_ataques.md`); faltan las recompensas (P1-12).*
 2. **Carrera de consensos:** la misma carga en PoW y PBFT, latencia/TPS/CPU lado a lado (figuras OE-2).
    *Arnés hecho en P1-1 (`scripts/experiments/carrera_consensos.py`, medido en un portátil); falta correrlo en las RPi.*
 3. **Anclaje público:** sellar el hash de la cabeza en Bitcoin con OpenTimestamps cada N bloques.
