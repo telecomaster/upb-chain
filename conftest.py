@@ -5,9 +5,28 @@ Alcances (scope):
 - function  → fixture se recrea para cada función de test (aislamiento total)
 - module    → fixture se comparte dentro de un módulo (ahorra tiempo de setup caro)
 """
-import pytest
+import atexit
+import os
+import shutil
+import tempfile
 
-from blockchain.core.chain import Blockchain
+# ── Aislamiento del estado de import-time ──────────────────────────────────────
+# tests/test_api.py importa api.app, que crea el estado global del nodo al
+# cargarse (config.load_settings). Sin esto, la suite leería y escribiría la
+# cadena real (data/chain/chain.json) y la llave de autoridad real
+# (data/keys/authority.json) del desarrollador. Pytest importa este conftest
+# antes que cualquier test, así que basta con fijar las variables aquí.
+# Se asigna (no setdefault) para que un .env o variable de entorno local no
+# se filtre a los tests.
+_DATOS_TEST = tempfile.mkdtemp(prefix="upbchain-tests-")
+os.environ["DATA_DIR"] = _DATOS_TEST
+# Ruta dentro del directorio temporal que no existe: la llave real nunca se carga.
+os.environ["AUTHORITY_KEY_FILE"] = os.path.join(_DATOS_TEST, "authority_no_existe.json")
+atexit.register(shutil.rmtree, _DATOS_TEST, ignore_errors=True)
+
+import pytest  # noqa: E402
+
+from blockchain.core.chain import Blockchain  # noqa: E402
 from blockchain.core.transaction import Transaction, TransactionType
 from blockchain.core.wallet import Wallet
 from blockchain.contracts.credential import CredentialContract
