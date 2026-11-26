@@ -1474,12 +1474,12 @@ async function loadConsensusMetrics() {
   document.getElementById('pow-difficulty').textContent =
     mining.difficulty_bits != null ? mining.difficulty_bits + ' bits' : '—';
 
-  const hr = mining.hash_rate ?? mining.hashrate ?? null;
+  const hr = mining.avg_hash_rate ?? null;   // /stats.mining: avg_hash_rate (H/s) y avg_time_s
   document.getElementById('pow-hashrate').textContent = hr != null
     ? (hr >= 1000 ? (hr / 1000).toFixed(1) + ' kH/s' : Math.round(hr) + ' H/s')
     : '— H/s';
 
-  const bt = mining.avg_block_time ?? mining.avg_block_time_s ?? null;
+  const bt = mining.avg_time_s ?? null;
   document.getElementById('pow-blocktime').textContent =
     bt != null ? parseFloat(bt).toFixed(1) + ' s' : '— s';
 
