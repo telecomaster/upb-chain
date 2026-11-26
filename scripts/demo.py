@@ -270,4 +270,6 @@ def demo():
 
 
 if __name__ == "__main__":
+    if hasattr(sys.stdout, "reconfigure"):  # redirigido en Windows sería cp1252
+        sys.stdout.reconfigure(encoding="utf-8")
     demo()

@@ -12,6 +12,7 @@ Uso (desde la raíz del repo):
 Cambiar la dirección de la autoridad cambia el hash del génesis: es una red
 nueva y las cadenas existentes dejan de ser compatibles.
 """
+import argparse
 import sys
 from pathlib import Path
 
@@ -21,7 +22,10 @@ from blockchain.core.wallet import Wallet  # noqa: E402
 
 
 def main() -> None:
-    ruta = Path(sys.argv[1] if len(sys.argv) > 1 else "data/keys/authority.json")
+    ap = argparse.ArgumentParser(description="Genera la llave de la autoridad UPB")
+    ap.add_argument("ruta", nargs="?", default="data/keys/authority.json",
+                    help="archivo de salida (por defecto data/keys/authority.json)")
+    ruta = Path(ap.parse_args().ruta)
     if ruta.exists():
         sys.exit(f"{ruta} ya existe; no se sobrescribe una llave de autoridad.")
     ruta.parent.mkdir(parents=True, exist_ok=True)
