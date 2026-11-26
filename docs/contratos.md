@@ -294,7 +294,8 @@ GET /contracts/voting/{election_id}
    "voters": [...], "pending_votes": 0, "height": 7}
 ```
 
-Para votar no hace falta un endpoint nuevo: `POST /transactions` con `type=VOTE` y payload
+Para votar no hace falta un endpoint nuevo: `POST /transactions` con `type=VOTE`, `recipient`
+no vacío (p. ej. `"VOTING_CONTRACT"`; vacío da 400 "Recipient vacío") y payload
 `{"election_id": "consejo", "choice": "lista-A"}`. Un segundo voto de la misma dirección en la
 misma elección responde 400, y un bloque que lo contenga se rechaza.
 

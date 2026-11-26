@@ -242,7 +242,8 @@ está en desuso (ver Notas de seguridad).
 curl -X POST http://localhost:8000/wallet/generate
 
 # 2. Registrar emisor (admin; el nodo necesita data/keys/authority.json,
-#    se crea con scripts/crear_llave_autoridad.py)
+#    se crea con scripts/crear_llave_autoridad.py; su dirección debe ser la del génesis,
+#    GENESIS_AUTHORITY_ADDRESS: una llave nueva responde 503 hasta cambiarla ahí y en GENESIS_HASH)
 curl -X POST http://localhost:8000/credentials/issuers \
   -H "Content-Type: application/json" \
   -d '{"issuer_address": "UPB...", "institution_code": "UPB"}'
