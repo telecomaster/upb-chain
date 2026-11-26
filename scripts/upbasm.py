@@ -130,4 +130,7 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    for _f in (sys.stdout, sys.stderr):  # flechas y tildes con salida redirigida en Windows
+        if hasattr(_f, "reconfigure"):
+            _f.reconfigure(encoding="utf-8")
     sys.exit(main())

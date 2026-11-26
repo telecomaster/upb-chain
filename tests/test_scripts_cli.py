@@ -30,3 +30,17 @@ def test_crear_llave_autoridad_ruta(tmp_path):
     destino = tmp_path / "k" / "auth.json"
     r = _correr("scripts/crear_llave_autoridad.py", destino)
     assert r.returncode == 0 and destino.exists()
+
+
+def test_upbasm_help_con_salida_redirigida():
+    r = _correr("scripts/upbasm.py", "--help")
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")[-300:]
+
+
+def test_upbasm_ejemplos_de_estudiantes_corren():
+    for nombre in ("contador", "colecta", "acertijo"):
+        r = _correr("scripts/upbasm.py", "ensamblar", f"contratos_estudiantes/{nombre}.upbasm")
+        assert r.returncode == 0, nombre
+    r = _correr("scripts/upbasm.py", "ejecutar", "contratos_estudiantes/contador.upbasm",
+                "--args", "5")
+    assert r.returncode == 0 and b"retorno: 5" in r.stdout
