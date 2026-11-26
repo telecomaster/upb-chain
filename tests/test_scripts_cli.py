@@ -51,3 +51,10 @@ def test_laboratorio_ataques_sybil_pbft_con_salida_redirigida():
     r = _correr("scripts/laboratorio_ataques.py", "--escenario", "sybil", "--consenso", "pbft")
     assert r.returncode == 0, r.stderr.decode("utf-8", "replace")[-300:]
     assert "Veredicto".encode("utf-8") in r.stdout
+
+
+def test_setup_rpi_da_el_directorio_al_usuario_del_servicio():
+    texto = (RAIZ / "scripts" / "setup_rpi.sh").read_text(encoding="utf-8")
+    usuario = [l.split("=", 1)[1] for l in texto.splitlines() if l.startswith("User=")][0]
+    assert f"chown -R {usuario}:{usuario}" in texto
+    assert texto.index("chown -R") < texto.index("systemctl start")

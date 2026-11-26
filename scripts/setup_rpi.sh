@@ -57,6 +57,11 @@ DATA_DIR=/home/pi/upb-chain/data
 LOG_LEVEL=INFO
 EOF
 
+# El script corre como root pero el servicio corre como "pi": sin esto chain.db y las llaves
+# (data/) no se pueden escribir y el nodo muere al arrancar.
+mkdir -p "$PROJECT_DIR/data"
+chown -R pi:pi "$PROJECT_DIR"
+
 # ── 5. Servicio systemd ──────────────────────────────────────────
 echo "[5/7] Creando servicio systemd..."
 cat > /etc/systemd/system/upbchain.service << EOF
