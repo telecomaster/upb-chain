@@ -11,7 +11,6 @@ NODE_ID=${1:-node_1}
 API_PORT=${2:-8000}
 P2P_PORT=${3:-8001}
 PROJECT_DIR="/home/pi/upb-chain"
-PYTHON_VERSION="3.11"
 
 echo "════════════════════════════════════════════"
 echo "  UPB-Chain — Configuración de Nodo RPi 5"
@@ -32,10 +31,12 @@ apt-get install -y -qq \
 
 # ── 2. Clonar / copiar proyecto ───────────────────────────────────
 echo "[2/7] Configurando directorio del proyecto..."
-if [ ! -d "$PROJECT_DIR" ]; then
-    mkdir -p "$PROJECT_DIR"
-    cp -r . "$PROJECT_DIR/"
-fi
+# Se copia el código sin venv, .git, data, .env, cachés ni .claude (tar viene en toda Raspberry Pi OS).
+# Si ya existía una instalación, el código se actualiza y .env/data/venv no se tocan.
+mkdir -p "$PROJECT_DIR"
+tar --exclude=./venv --exclude=./.git --exclude=./data --exclude=./.env \
+    --exclude=./.claude --exclude=__pycache__ --exclude=.pytest_cache --exclude='*.pyc' \
+    -cf - . | tar -xf - -C "$PROJECT_DIR"
 cd "$PROJECT_DIR"
 
 # ── 3. Entorno virtual Python ─────────────────────────────────────
@@ -48,6 +49,9 @@ pip install -r requirements.txt -q
 
 # ── 4. Configurar variables de entorno ───────────────────────────
 echo "[4/7] Configurando entorno..."
+if [ -f .env ]; then
+    echo "  .env ya existe: no se modifica (conserva ADMIN_API_KEY, PEERS, etc.)"
+else
 cat > .env << EOF
 NODE_ID=$NODE_ID
 NODE_HOST=0.0.0.0
@@ -56,6 +60,7 @@ API_PORT=$API_PORT
 DATA_DIR=/home/pi/upb-chain/data
 LOG_LEVEL=INFO
 EOF
+fi
 
 # El script corre como root pero el servicio corre como "pi": sin esto chain.db y las llaves
 # (data/) no se pueden escribir y el nodo muere al arrancar.
@@ -100,14 +105,19 @@ ufw --force enable
 
 # ── 7. Verificación ──────────────────────────────────────────────
 echo "[7/7] Verificando instalación..."
-sleep 3
-if curl -s "http://localhost:$API_PORT/health" | grep -q "ok"; then
+# El primer arranque en una Pi puede tardar (revalidación de la cadena): reintentar hasta 60 s.
+SALUD=0
+for _ in $(seq 1 30); do
+    if curl -s "http://localhost:$API_PORT/health" | grep -q "ok"; then SALUD=1; break; fi
+    sleep 2
+done
+if [ "$SALUD" = 1 ]; then
     echo "✓ UPB-Chain iniciado correctamente"
     echo "  API: http://$(hostname -I | awk '{print $1}'):$API_PORT"
     echo "  Dashboard: http://$(hostname -I | awk '{print $1}'):$API_PORT/"
     echo "  Docs: http://$(hostname -I | awk '{print $1}'):$API_PORT/docs"
 else
-    echo "✗ Error al iniciar. Ver logs: journalctl -u upbchain -f"
+    echo "✗ El nodo no respondió en /health tras 60 s. Ver logs: journalctl -u upbchain -f"
     exit 1
 fi
 

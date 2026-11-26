@@ -62,7 +62,7 @@ UPB-Chain es una red blockchain permisionada implementada sobre dos nodos **Rasp
 
 ## Inicio rápido
 
-Requisitos: Python 3.12. En Windows usar siempre `venv\Scripts\python.exe` (el `python` del sistema
+Requisitos: Python 3.12 (también probado con 3.11, el de Raspberry Pi OS Bookworm). En Windows usar siempre `venv\Scripts\python.exe` (el `python` del sistema
 suele ser el alias de la Store); en Linux/RPi, `venv/bin/python`.
 
 ```powershell
@@ -344,7 +344,7 @@ El tablero "UPB-Chain" (altura por nodo, dificultad, mempool, pares, alertas, ed
 bloque y bloques minados por minuto) se provisiona desde `monitoring/grafana/`.
 
 La integración continua (`.github/workflows/tests.yml`) corre `python -m pytest tests -q` en
-Ubuntu con Python 3.12 en cada push y pull request a `main`.
+Ubuntu con Python 3.11 y 3.12 en cada push y pull request a `main`.
 
 ---
 

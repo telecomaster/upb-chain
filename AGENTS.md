@@ -19,7 +19,7 @@ overstate what works).
 
 ## Environment
 
-- Python 3.12 venv built with `uv`. On Windows the system `python` is the Store stub: always use
+- Python 3.12 venv (3.11, the Raspberry Pi OS version, also passes the suite) built with `uv`. On Windows the system `python` is the Store stub: always use
   `venv\Scripts\python.exe` (Linux/RPi: `venv/bin/python`).
 - Add dependencies with `uv pip install --python venv\Scripts\python.exe <pkg>` and record them in
   `requirements.txt`.

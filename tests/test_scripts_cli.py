@@ -66,3 +66,26 @@ def test_scripts_sin_secuencias_de_escape_invalidas():
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             compile(f.read_text(encoding="utf-8"), str(f), "exec")
+
+
+def _setup_rpi() -> str:
+    return (RAIZ / "scripts" / "setup_rpi.sh").read_text(encoding="utf-8")
+
+
+def test_setup_rpi_no_copia_venv_ni_datos_ni_env():
+    t = _setup_rpi()
+    assert "cp -r ." not in t
+    for excluido in ("./venv", "./.git", "./data", "./.env", "./.claude", "__pycache__"):
+        assert f"--exclude={excluido}" in t
+
+
+def test_setup_rpi_no_pisa_un_env_existente():
+    t = _setup_rpi()
+    assert 'if [ -f .env ]' in t
+    assert t.index("if [ -f .env ]") < t.index("cat > .env")
+
+
+def test_setup_rpi_espera_salud_con_reintentos():
+    t = _setup_rpi()
+    assert "sleep 3" not in t
+    assert "seq 1 30" in t and "60 s" in t

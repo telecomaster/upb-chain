@@ -1,1 +1,2 @@
 dashboard/static/vendor/noble-secp256k1.bundle.js -text
+*.sh text eol=lf
