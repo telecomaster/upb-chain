@@ -58,3 +58,11 @@ def test_setup_rpi_da_el_directorio_al_usuario_del_servicio():
     usuario = [l.split("=", 1)[1] for l in texto.splitlines() if l.startswith("User=")][0]
     assert f"chown -R {usuario}:{usuario}" in texto
     assert texto.index("chown -R") < texto.index("systemctl start")
+
+
+def test_scripts_sin_secuencias_de_escape_invalidas():
+    import warnings
+    for f in sorted((RAIZ / "scripts").rglob("*.py")):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            compile(f.read_text(encoding="utf-8"), str(f), "exec")

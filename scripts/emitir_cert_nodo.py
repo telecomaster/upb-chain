@@ -2,7 +2,7 @@
 Emite el certificado de un nodo firmado por la CA de la red (P2-6). CN = node_id.
 
 Uso:
-    venv\Scripts\python.exe scripts\emitir_cert_nodo.py node_1 --host 192.168.1.100 [--host nodo1.local]
+    venv\\Scripts\\python.exe scripts\\emitir_cert_nodo.py node_1 --host 192.168.1.100 [--host nodo1.local]
         [--dir data/tls] [--dias 365]
 
 Escribe ``<dir>/<node_id>.crt`` y ``<dir>/<node_id>.key``. Volver a ejecutarlo para el mismo

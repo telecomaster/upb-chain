@@ -2,7 +2,7 @@
 Crea la CA privada de la red UPB-Chain (P2-6): ``ca.key`` + ``ca.crt``.
 
 Uso (desde la raíz del repo, UNA vez, en la máquina del administrador):
-    venv\Scripts\python.exe scripts\crear_ca.py [--dir data/tls]
+    venv\\Scripts\\python.exe scripts\\crear_ca.py [--dir data/tls]
 
 ``ca.key`` firma los certificados de los nodos: no debe copiarse a los nodos. A cada nodo
 solo van ``ca.crt`` y su propio ``<node_id>.crt/.key`` (ver ``emitir_cert_nodo.py``).
