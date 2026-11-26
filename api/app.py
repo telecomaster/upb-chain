@@ -849,7 +849,7 @@ async def mint_tokens(request: MintRequest, node: NodeState = Depends(get_node))
     Solo funciona en el nodo con la llave de autoridad (como /credentials/issuers).
     """
     if node.authority_wallet is None:
-        raise HTTPException(503, "Este nodo no tiene la llave de autoridad configurada")
+        raise HTTPException(503, _sin_autoridad(node))
     tx = create_mint_transaction(
         authority_address=node.authority_wallet.address,
         recipient=request.recipient,
@@ -890,9 +890,19 @@ async def transfer_tokens(request: TransferRequest, node: NodeState = Depends(ge
 MAX_CSV_ROWS = 100
 
 
+def _sin_autoridad(node: NodeState) -> str:
+    """Mensaje 503 que distingue llave ausente de llave que no es la del génesis."""
+    base = "Este nodo no tiene la llave de autoridad configurada"
+    ruta = node.settings.authority_key_file
+    if Path(ruta).exists():
+        return (f"{base}: {ruta} existe pero no corresponde a la dirección de autoridad "
+                "del génesis (GENESIS_AUTHORITY_ADDRESS)")
+    return f"{base} ({ruta} no existe)"
+
+
 def _require_authority(node: NodeState) -> Wallet:
     if node.authority_wallet is None:
-        raise HTTPException(503, "Este nodo no tiene la llave de autoridad configurada")
+        raise HTTPException(503, _sin_autoridad(node))
     return node.authority_wallet
 
 
@@ -1217,7 +1227,7 @@ async def register_issuer(request: RegisterIssuerRequest, node: NodeState = Depe
     Una TX ISSUER_REGISTER firmada por otra llave se rechaza (también vía /transactions).
     """
     if node.authority_wallet is None:
-        raise HTTPException(503, "Este nodo no tiene la llave de autoridad configurada")
+        raise HTTPException(503, _sin_autoridad(node))
     tx = create_issuer_register_transaction(
         authority_address=node.authority_wallet.address,
         issuer_address=request.issuer_address,
