@@ -1305,6 +1305,9 @@ async function loadNetwork() {
   document.getElementById('net-peers').textContent  = data.active_peers ?? 0;
 
   const hasActivePeers = (data.active_peers ?? 0) > 0;
+  // /network no trae "peer_address": el par activo está en data.peers[] como host + port.
+  const par = (data.peers || []).find(p => p.is_active);
+  const parAddr = par ? `${par.host}:${par.port}` : 'Par activo';
   const peerLine    = document.getElementById('peer-link');
   const nodeCircle1 = document.getElementById('node-circle-1');
   const nodeCircle2 = document.getElementById('node-circle-2');
@@ -1318,7 +1321,7 @@ async function loadNetwork() {
     badge1.className = 'badge badge-ok';  badge1.textContent = '● Activo';
     badge2.className = 'badge badge-ok';  badge2.textContent = '● Activo';
     document.getElementById('node-2-status').textContent =
-      truncate(data.peer_address || 'Par activo', 16);
+      truncate(parAddr, 16);
   } else {
     peerLine.className    = 'peer-line inactive';
     nodeCircle1.className = 'node-circle active';

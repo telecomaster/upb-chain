@@ -35,3 +35,16 @@ def test_metricas_de_minado_usan_los_campos_de_stats(cliente):
     leidos = set(re.findall(r"mining\.(\w+)", cuerpo)) - {"difficulty_bits"}
     assert leidos, "el JS no lee métricas de minado"
     assert leidos <= set(mining), f"el JS lee campos que /stats no devuelve: {leidos - set(mining)}"
+
+
+def test_topologia_de_red_lee_campos_que_devuelve_network(cliente):
+    """loadNetwork: todo ``data.X`` existe en ``/network`` y el par activo se lee de ``peers[]``."""
+    from blockchain.network.node import Peer
+    red = cliente.get("/network").json()
+    cuerpo = _funcion_js("loadNetwork")
+    leidos = set(re.findall(r"\bdata\.(\w+)", cuerpo))
+    assert leidos <= set(red), f"/network no devuelve: {leidos - set(red)}"
+    par = Peer("10.0.0.2", 8001, is_active=True).to_dict()
+    for campo in set(re.findall(r"\bp\.(\w+)", cuerpo)):
+        assert campo in par, f"el par de /network.peers[] no trae {campo!r}"
+
