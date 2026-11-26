@@ -44,3 +44,10 @@ def test_upbasm_ejemplos_de_estudiantes_corren():
     r = _correr("scripts/upbasm.py", "ejecutar", "contratos_estudiantes/contador.upbasm",
                 "--args", "5")
     assert r.returncode == 0 and b"retorno: 5" in r.stdout
+
+
+def test_laboratorio_ataques_sybil_pbft_con_salida_redirigida():
+    # la narración lleva flechas y puntos suspensivos: antes caía con cp1252
+    r = _correr("scripts/laboratorio_ataques.py", "--escenario", "sybil", "--consenso", "pbft")
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")[-300:]
+    assert "Veredicto".encode("utf-8") in r.stdout
