@@ -48,3 +48,12 @@ def test_topologia_de_red_lee_campos_que_devuelve_network(cliente):
     for campo in set(re.findall(r"\bp\.(\w+)", cuerpo)):
         assert campo in par, f"el par de /network.peers[] no trae {campo!r}"
 
+
+def test_colores_del_feed_usan_tipos_de_transaccion_reales():
+    from blockchain.core.transaction import TransactionType
+    m = re.search(r"const TX_COLORS = \{(.*?)\};", INDEX, re.S)
+    tipos = set(re.findall(r"^\s*(\w+):", m.group(1), re.M))
+    reales = {t.value for t in TransactionType} | {"GENESIS"}   # el génesis no es un TransactionType
+    assert tipos <= reales, f"tipos que no existen: {tipos - reales}"
+    assert {"TOKEN_TRANSFER", "TOKEN_MINT", "CREDENTIAL_ISSUE"} <= tipos
+
