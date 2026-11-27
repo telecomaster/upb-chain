@@ -51,10 +51,10 @@ un par con otro modo recibe ``REJECT`` igual que con otro génesis. En pbft,
 ``NEW_BLOCK`` lleva ``certificate`` y ``CHAIN`` lleva ``certificates``
 ({altura: certificado}); la cadena los verifica en lugar del trabajo.
 
-Compatibilidad backward
------------------------
-Si el primer byte recibido es ``{`` o ``[`` (inicio de JSON plano),
-``_recv_framed`` asume protocolo legado (JSON + newline) y lo decodifica.
+Framing
+-------
+Solo existe el protocolo con prefijo de longitud (4 bytes + JSON). El protocolo legado
+(JSON plano + newline) se eliminó: ningún emisor del repositorio lo usa y leía sin tope.
 """
 import json
 import logging
@@ -66,6 +66,7 @@ import struct
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Set
 
@@ -178,6 +179,9 @@ class _Link:
 
 class P2PNode:
     BUFFER_SIZE = 65536
+    MAX_PEERS = 64              # tope de la tabla de pares (los de PEERS se conservan siempre)
+    MAX_PEERS_PER_MSG = 16      # direcciones que se aprenden de un solo mensaje
+    _MAX_SEEN = 5_000           # ids de mensajes recordados para deduplicar (FIFO)
     _MAX_PAYLOAD = 10_000_000   # 10 MB — límite de seguridad
 
     def __init__(
@@ -237,7 +241,7 @@ class P2PNode:
         # se mantiene durante E/S de red (volvería el bloqueo mutuo entre nodos).
         self.peers: Dict[str, Peer] = {}
         self._peers_lock = threading.Lock()
-        self._seen_messages: Set[str] = set()
+        self._seen_messages: "OrderedDict[str, None]" = OrderedDict()
         self._seen_lock = threading.Lock()
         self._sync_lock = threading.Lock()
         self._sync_bg_lock = threading.Lock()
@@ -406,24 +410,9 @@ class P2PNode:
     def _recv_framed(self, conn: socket.socket) -> dict:
         """
         Recibe un mensaje usando length-prefix framing.
-        Compatibilidad backward: si el primer byte es ``{`` o ``[`` (JSON plano),
-        lee hasta newline usando el protocolo legado.
+        Un JSON plano (primer byte ``{``) da una longitud enorme y se rechaza por el tope.
         """
         header = self._recv_exact(conn, 4)
-
-        # ── Protocolo legado: JSON plano + newline ────────────────────────────
-        if header[0] in (ord("{"), ord("[")):
-            rest = b""
-            while b"\n" not in rest:
-                chunk = conn.recv(self.BUFFER_SIZE)
-                if not chunk:
-                    break
-                rest += chunk
-            full = header + rest
-            with self._stats_lock:
-                self._messages_received += 1
-                self._bytes_received += len(full)
-            return json.loads(full.decode("utf-8").strip())
 
         # ── Protocolo moderno: length-prefix ─────────────────────────────────
         length = struct.unpack(">I", header)[0]
@@ -530,9 +519,9 @@ class P2PNode:
         with self._seen_lock:
             if msg_id in self._seen_messages:
                 return False
-            self._seen_messages.add(msg_id)
-            if len(self._seen_messages) > 10_000:
-                self._seen_messages = set(list(self._seen_messages)[-5000:])
+            self._seen_messages[msg_id] = None
+            while len(self._seen_messages) > self._MAX_SEEN:
+                self._seen_messages.popitem(last=False)   # expulsa el más antiguo
         return True
 
     # ── Despacho de mensajes ──────────────────────────────────────────────────
@@ -704,7 +693,10 @@ class P2PNode:
             peer = self.peers.get(address)
             if peer is None:
                 peer = Peer(host=host, port=port)
-                self.peers[address] = peer
+                if len(self.peers) < self.MAX_PEERS or address in self.known_peers:
+                    self.peers[address] = peer
+                else:
+                    return peer   # tabla llena: el par entrante no se guarda
                 logger.info(f"Par conectado: {status.get('node_id', '?')} @ {address}")
             peer.node_id = status.get("node_id", peer.node_id)
             peer.height = int(status.get("height", 0))
@@ -747,14 +739,34 @@ class P2PNode:
         with self._peers_lock:
             self.peers.setdefault(f"{host}:{port}", Peer(host=host, port=port))
 
+    @staticmethod
+    def _direccion_valida(address: object) -> Optional[tuple]:
+        """Devuelve (host, puerto) si ``address`` es un ``host:puerto`` razonable; si no, None."""
+        if not isinstance(address, str) or len(address) > 260:
+            return None
+        host, sep, port = address.rpartition(":")
+        if not sep or not host or len(host) > 253 or not port.isdigit():
+            return None
+        if any(c.isspace() or c in "/\\@" for c in host):
+            return None
+        if not 1 <= int(port) <= 65535 or host in _UNSPECIFIED_HOSTS:
+            return None
+        return host, int(port)
+
     def _learn_peers(self, addresses: List[str]) -> None:
-        for address in addresses or []:
-            try:
-                host, port = str(address).rsplit(":", 1)
-                if host not in _UNSPECIFIED_HOSTS:
-                    self.add_peer(host, int(port))
-            except ValueError:
+        """Aprende pares de un mensaje: tope por mensaje, formato válido y tabla acotada."""
+        if self.allowlist and self._tls_server is None:
+            return   # sin TLS el origen no está autenticado: no se envenena la tabla
+        if not isinstance(addresses, list):
+            return
+        for address in addresses[: self.MAX_PEERS_PER_MSG]:
+            parsed = self._direccion_valida(address)
+            if parsed is None:
                 continue
+            with self._peers_lock:
+                if len(self.peers) >= self.MAX_PEERS:
+                    return
+            self.add_peer(*parsed)
 
     def _mark_failed(self, peer: Peer) -> None:
         """Marca un par inactivo y agenda la reconexión con backoff exponencial."""

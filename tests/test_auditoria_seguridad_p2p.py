@@ -32,7 +32,6 @@ def _par_de_sockets():
     return a, b
 
 
-@pytest.mark.xfail(strict=True, reason="el protocolo legado (JSON + newline) ignora _MAX_PAYLOAD")
 def test_protocolo_legado_respeta_el_limite_de_tamano():
     nodo = P2PNode("a", HOST, 0)          # sin start(): solo el framing
     nodo._MAX_PAYLOAD = 1_000             # límite pequeño para que el test sea rápido
@@ -56,7 +55,6 @@ def test_protocolo_legado_respeta_el_limite_de_tamano():
         hilo.join(timeout=5)
 
 
-@pytest.mark.xfail(strict=True, reason="un HANDSHAKE sin autenticar agrega pares sin límite")
 def test_handshake_no_autenticado_no_inunda_la_tabla_de_pares():
     nodo = P2PNode("a", HOST, 0)
     conn, otro = _par_de_sockets()
@@ -73,3 +71,28 @@ def test_handshake_no_autenticado_no_inunda_la_tabla_de_pares():
         otro.close()
     # Hoy: 2001 pares (las 2000 direcciones inventadas + el host que anunció el intruso).
     assert len(nodo.peers) <= 64, f"{len(nodo.peers)} pares tras un solo HANDSHAKE"
+
+
+def test_mark_seen_expulsa_en_orden_fifo():
+    nodo = P2PNode("a", HOST, 0)
+    nodo._MAX_SEEN = 3
+    for i in range(5):
+        assert nodo._mark_seen(f"m{i}") is True
+    # Quedan los 3 más recientes; los más viejos fueron expulsados en orden.
+    assert list(nodo._seen_messages) == ["m2", "m3", "m4"]
+    assert nodo._mark_seen("m4") is False
+    assert nodo._mark_seen("m0") is True   # ya olvidado
+
+
+def test_direcciones_invalidas_no_se_aprenden():
+    nodo = P2PNode("a", HOST, 0)
+    nodo._learn_peers(["sinpuerto", ":80", "h:0", "h:70000", "h:abc", "a b:80", 5, "ok.example:9000"])
+    assert list(nodo.peers) == ["ok.example:9000"]
+
+
+def test_peers_configurados_se_conservan_con_la_tabla_llena():
+    nodo = P2PNode("a", HOST, 0, known_peers=["10.0.0.1:8001"])
+    for i in range(nodo.MAX_PEERS):
+        nodo.add_peer("10.9.9.9", 1000 + i)
+    nodo._register_peer("10.0.0.1", 8001, {"node_id": "x"})
+    assert "10.0.0.1:8001" in nodo.peers
