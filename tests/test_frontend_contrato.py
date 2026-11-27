@@ -103,7 +103,8 @@ def test_el_inventario_cubre_las_llamadas_conocidas():
                      ("/credentials/{p}/disclose-verify", "POST"), ("/tokens/award/csv", "POST"),
                      ("/accounts/{p}", "GET"), ("/transactions", "POST"), ("/tx/{p}/proof", "GET"),
                      ("/credentials/verify/{p}", "GET"), ("/events", "GET"),
-                     ("/blocks/{p}/certificate", "GET")]:
+                     ("/blocks/{p}/certificate", "GET"), ("/laboratorio/recompensas", "POST"),
+                     ("/catalog", "GET"), ("/tokens/event-codes/{p}", "GET")]:
         assert esperado in todas, esperado
 
 

@@ -114,6 +114,11 @@ export const kinds = {
     ({ type: 'TOKEN_REDEEM', recipient, payload: { amount, ...(item ? { item } : {}), ...(itemId ? { item_id: itemId } : {}) } }),
   eventClaim: (codeId, claimSig) =>
     ({ type: 'EVENT_CODE_CLAIM', recipient: 'TOKENS_CONTRACT', payload: { code_id: codeId, claim_sig: claimSig } }),
+  // Código de evento (P1-12): igual que create_event_code_transaction (destinatario fijo TOKENS_CONTRACT).
+  eventCreate: (codeId, eventPubkey, amount, maxClaims, expiresHeight, reason) =>
+    ({ type: 'EVENT_CODE_CREATE', recipient: 'TOKENS_CONTRACT',
+      payload: { code_id: codeId, event_pubkey: eventPubkey, amount, max_claims: maxClaims,
+        expires_height: expiresHeight, reason } }),
   vote: (election_id, choice) =>
     ({ type: 'VOTE', recipient: 'VOTING_CONTRACT', payload: { election_id, choice } }),
   // data_hash = sha256(json.dumps(data, sort_keys=True)), igual que create_data_record_transaction.
@@ -130,4 +135,17 @@ export function normalizePrivateKey(text) {
   const m = /0201010420([0-9a-f]{64})/.exec(t);
   if (m) return m[1];
   throw new Error('Llave privada no reconocida (64 hex o DER hex).');
+}
+
+// Llave EFÍMERA de un evento (P1-12): la privada (64 hex) viaja en el QR; la pública (DER SPKI hex,
+// como las de billetera) va en la TX EVENT_CODE_CREATE.
+export function newEventKey() {
+  const priv = randomPrivateKey();
+  return { priv, pub: publicKeyHex(priv) };
+}
+
+// Llave privada en DER SEC1 (formato de wallet.py) a partir del escalar crudo; solo para los endpoints
+// educativos del servidor que aún piden private_key_hex (p. ej. /laboratorio/recompensas).
+export function privateKeyDer(privHex) {
+  return '30740201010420' + privHex + 'a00706052b8104000aa144034200' + toHex(secp.getPublicKey(fromHex(privHex), false));
 }

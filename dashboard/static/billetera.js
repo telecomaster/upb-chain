@@ -1,6 +1,7 @@
 // Billetera web del estudiante (P2-1). La llave privada nunca sale del navegador.
 import { buildSignedTx, kinds, signEventClaim, randomPrivateKey, normalizePrivateKey, publicKeyHex,
-  addressFromPublicKey, toHex, fromHex } from './wallet-core.js';
+  addressFromPublicKey, toHex, fromHex, newEventKey } from './wallet-core.js';
+import qrcode from './vendor/qrcode-generator.esm.js';
 
 const $ = (id) => document.getElementById(id);
 const CLAVE_ALMACEN = 'upb_wallet_v1';
@@ -44,6 +45,7 @@ function mostrarCuenta() {
   $('direccion').textContent = direccion;
   $('sec-cuenta').classList.remove('oculto');
   $('sec-tx').classList.remove('oculto');
+  $('sec-emisor').classList.remove('oculto');
   actualizarCampos();
   refrescar();
 }
@@ -150,6 +152,7 @@ $('btn-borrar').onclick = () => {
   try { localStorage.removeItem(CLAVE_ALMACEN); } catch { /* sin almacenamiento */ }
   llave = null; direccion = null;
   $('sec-cuenta').classList.add('oculto'); $('sec-tx').classList.add('oculto');
+  $('sec-emisor').classList.add('oculto');
   estado('Llave olvidada.');
 };
 $('btn-importar').onclick = () => protegido(async () => {
@@ -222,5 +225,64 @@ $('btn-reclamar').onclick = () => protegido(async () => {
   refrescar();
 });
 
+// ── Panel del emisor (P1-12): código de evento firmado en el navegador ───────────
+let sondeoEvento = null;
+// Altura de la cadena (el catálogo la incluye); sirve para fijar el vencimiento del código.
+async function alturaYNonce() {
+  const cuenta = await obtener(`/accounts/${direccion}`);
+  return { nonce: cuenta.next_nonce, altura: (await obtener('/catalog')).height };
+}
+function dibujarQr(texto) {
+  const q = qrcode(0, 'M');      // tipo automático, corrección media
+  q.addData(texto);
+  q.make();
+  $('ev-qr').innerHTML = q.createSvgTag({ cellSize: 6, margin: 2, scalable: true });
+}
+async function sondearEvento(codeId) {
+  clearInterval(sondeoEvento);
+  const leerEstado = async () => {
+    try {
+      const c = await obtener('/tokens/event-codes/' + encodeURIComponent(codeId));
+      $('ev-estado').textContent = `Reclamos: ${c.claims_used}/${c.max_claims} · ${c.amount} puntos c/u · ` +
+        `vence en el bloque ${c.expires_height} (altura ${c.height}) · ${c.status}`;
+    } catch { $('ev-estado').textContent = 'Pendiente de confirmación (hay que minar un bloque)…'; }
+  };
+  await leerEstado();
+  sondeoEvento = setInterval(leerEstado, 5000);
+}
+$('btn-ev-crear').onclick = () => protegido(async () => {
+  if (!llave) throw new Error('Abre o crea tu billetera de emisor primero.');
+  const entero = (id) => {
+    const n = Number($(id).value);
+    if (!Number.isSafeInteger(n) || n <= 0) throw new Error('Monto, cupos y vigencia deben ser enteros positivos.');
+    return n;
+  };
+  const monto = entero('ev-monto'), cupos = entero('ev-cupos'), vigencia = entero('ev-vigencia');
+  const motivo = $('ev-motivo').value.trim();
+  if (!motivo) throw new Error('Escribe el motivo del evento.');
+  const codeId = 'EV-' + toHex(crypto.getRandomValues(new Uint8Array(4)));
+  const clave = newEventKey();
+  const { nonce, altura } = await alturaYNonce();
+  const tx = await buildSignedTx(llave, { ...kinds.eventCreate(codeId, clave.pub, monto, cupos, altura + vigencia, motivo),
+    nonce });
+  const r = await fetch('/transactions', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(tx) });
+  const cuerpo = await r.json().catch(() => ({}));
+  $('resultado').textContent = JSON.stringify(cuerpo, null, 2);
+  if (!r.ok) throw new Error(cuerpo.detail || `Error HTTP ${r.status}`);
+  const url = `${location.origin}/billetera?evento=${encodeURIComponent(codeId)}&k=${clave.priv}`;
+  $('ev-titulo').textContent = `${motivo} (${codeId})`;
+  $('ev-url').textContent = url;
+  dibujarQr(url);
+  $('ev-resultado').classList.remove('oculto');
+  estado('Código creado: ' + cuerpo.tx_id + '. La llave del evento solo está en este QR.');
+  sondearEvento(codeId);
+  refrescar();
+});
+$('btn-ev-imprimir').onclick = () => {
+  document.body.classList.add('imprimiendo');
+  window.addEventListener('afterprint', () => document.body.classList.remove('imprimiendo'), { once: true });
+  window.print();
+};
 actualizarCampos();
 if (!leer()) estado('No hay billetera guardada: crea una o importa tu llave.');

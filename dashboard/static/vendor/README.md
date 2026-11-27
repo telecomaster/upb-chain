@@ -16,3 +16,8 @@ Un test (`tests/test_billetera.py`) comprueba que este hash coincide con el arch
 Para regenerar: `npm i @noble/secp256k1@2.2.3 @noble/hashes@1.8.0 esbuild` y
 `npx esbuild entry.src.js --bundle --format=esm --minify --outfile=noble-secp256k1.bundle.js`;
 luego actualice el hash aquí. Licencias: `LICENSE-noble-*.txt`.
+
+## Generador de QR (P1-12, panel del emisor)
+
+`qrcode-generator.esm.js`: `qrcode-generator` **1.4.4** (MIT, Kazuhiko Arase), copiado de npm sin
+cambios salvo quitar el envoltorio UMD final y exportarlo como ESM. Licencia: `LICENSE-qrcode-generator.txt`.

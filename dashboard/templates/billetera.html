@@ -52,6 +52,28 @@
     <button id="btn-reclamar">Reclamar puntos</button>
   </section>
 
+  <section id="sec-emisor" class="oculto">
+    <h2>Panel del emisor</h2>
+    <p class="nota">Solo emisores registrados. La llave del evento se genera aquí, viaja únicamente en el QR
+      y la TX se firma con tu llave en este navegador.</p>
+    <h3>Crear código de evento</h3>
+    <label>Motivo<input id="ev-motivo" maxlength="140" autocomplete="off" value="Asistencia al evento"></label>
+    <label>Puntos por persona (entero)<input id="ev-monto" type="number" min="1" step="1" value="10"></label>
+    <label>Cupos máximos<input id="ev-cupos" type="number" min="1" step="1" value="50"></label>
+    <label>Vigencia (bloques desde ahora)<input id="ev-vigencia" type="number" min="1" step="1" value="1000"></label>
+    <button id="btn-ev-crear">Firmar y crear código</button>
+    <div id="ev-resultado" class="oculto">
+      <div id="ev-imprimible">
+        <h3 id="ev-titulo"></h3>
+        <div id="ev-qr"></div>
+        <p id="ev-estado"></p>
+        <p class="nota">Escanea con el celular y reclama tus puntos en esta billetera.</p>
+        <code id="ev-url"></code>
+      </div>
+      <button id="btn-ev-imprimir">Vista para imprimir</button>
+    </div>
+  </section>
+
   <section id="sec-tx" class="oculto">
     <h2>Enviar transacción</h2>
     <label>Tipo

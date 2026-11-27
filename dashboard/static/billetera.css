@@ -11,3 +11,14 @@ button{padding:10px 14px;font-size:1rem;margin:4px 4px 4px 0;cursor:pointer}
 .nota{font-size:.85rem;color:#556}
 code,pre{word-break:break-all;white-space:pre-wrap;font-size:.8rem}
 #estado{min-height:1.2em;font-weight:600}
+
+#ev-qr svg,#ev-qr img{width:260px;max-width:100%;height:auto;display:block}
+#ev-url{word-break:break-all;font-size:11px}
+textarea{width:100%;box-sizing:border-box;font-family:monospace}
+@media print{
+  body.imprimiendo main>*{display:none!important}
+  body.imprimiendo main>#sec-emisor{display:block!important;box-shadow:none}
+  body.imprimiendo #sec-emisor>*{display:none!important}
+  body.imprimiendo #sec-emisor>#ev-resultado{display:block!important}
+  body.imprimiendo #btn-ev-imprimir{display:none!important}
+}
