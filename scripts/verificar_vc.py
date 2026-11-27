@@ -18,13 +18,14 @@ Comprueba (contra el nodo indicado, que es la fuente de confianza):
 No verifica la firma ECDSA de la TX (se confía en que el nodo ya la validó al admitir
 el bloque) ni el contexto JSON-LD. Código de salida 0 = todo correcto.
 """
+import argparse
 import base64
 import hashlib
 import json
 import sys
 import urllib.error
 import urllib.request
-from typing import Callable, List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 Chequeo = Tuple[str, bool, str]
 
@@ -162,13 +163,28 @@ def verify_vc(vc: dict, fetch: Callable[[str], dict]) -> List[Chequeo]:
     return res
 
 
-def main(argv: List[str]) -> int:
-    if len(argv) != 3:
-        print(__doc__)
-        return 2
-    with open(argv[1], encoding="utf-8") as f:
-        vc = json.load(f)
-    resultados = verify_vc(vc, fetch_http(argv[2]))
+def construir_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        description="Verifica una Verifiable Credential exportada por UPB-Chain (P2-3).",
+        epilog="Código de salida: 0 = VC válida, 1 = VC no válida o archivo ilegible, 2 = uso incorrecto.",
+    )
+    ap.add_argument("credencial", help="Archivo JSON con la Verifiable Credential")
+    ap.add_argument("base_url", help="URL del nodo de confianza, p. ej. http://127.0.0.1:8000")
+    return ap
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    a = construir_parser().parse_args(argv)
+    try:
+        with open(a.credencial, encoding="utf-8") as f:
+            vc = json.load(f)
+    except FileNotFoundError:
+        print(f"Error: no existe el archivo '{a.credencial}'.", file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as e:
+        print(f"Error: no se pudo leer '{a.credencial}' como JSON ({e}).", file=sys.stderr)
+        return 1
+    resultados = verify_vc(vc, fetch_http(a.base_url))
     for nombre, ok, detalle in resultados:
         print(f"[{'OK' if ok else 'FALLA'}] {nombre}" + (f" ({detalle})" if detalle else ""))
     todo = bool(resultados) and all(ok for _, ok, _ in resultados)
@@ -177,4 +193,4 @@ def main(argv: List[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main())

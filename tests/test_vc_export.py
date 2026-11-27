@@ -141,3 +141,41 @@ async def test_registro_ajeno_se_rechaza_y_ancla_manipulada_falla(client, nodo):
     vc = (await client.get(f"/credentials/{cid}/vc")).json()
     vc["evidence"][0]["blockHash"] = "a" * 64
     assert "hash del bloque recalculado" in _fallos(await _verificar(vc, client))
+
+
+# --- CLI de scripts/verificar_vc.py: argparse y errores sin traceback ---
+_SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "verificar_vc.py"
+
+
+def _cli(*args):
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    return subprocess.run([sys.executable, str(_SCRIPT), *args], capture_output=True,
+                          env=env, timeout=60)
+
+
+def test_cli_help_sale_con_codigo_0():
+    r = _cli("--help")
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
+    assert b"usage" in r.stdout.lower()
+
+
+def test_cli_archivo_faltante_sin_traceback(tmp_path):
+    r = _cli(str(tmp_path / "no_existe.json"), "http://127.0.0.1:8000")
+    err = r.stderr.decode("utf-8", "replace")
+    assert r.returncode == 1
+    assert "Traceback" not in err
+    assert "no existe el archivo" in err
+
+
+def test_cli_json_invalido_sin_traceback(tmp_path):
+    archivo = tmp_path / "roto.json"
+    archivo.write_text("{no es json", encoding="utf-8")
+    r = _cli(str(archivo), "http://127.0.0.1:8000")
+    err = r.stderr.decode("utf-8", "replace")
+    assert r.returncode == 1
+    assert "Traceback" not in err
+    assert "no se pudo leer" in err
