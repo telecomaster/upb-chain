@@ -40,6 +40,7 @@ from config import ConfigError, Settings, load_settings, configure_logging
 from api.metrics import EventCounters, CONTENT_TYPE as METRICS_CONTENT_TYPE, build_registry, render as render_metrics
 from blockchain.anchoring import AnchorService
 from blockchain.core.chain import Blockchain
+from blockchain.core.limits import check_tx_size
 from blockchain.core.merkle import build_proof, leaf_hash
 from blockchain.core import commitment
 from blockchain.core.transaction import (
@@ -390,8 +391,20 @@ def _enforce_tx_rate_limit(node: NodeState, sender: str) -> None:
         raise HTTPException(429, f"Límite de {node.tx_rate_limiter.limit} TX por minuto excedido")
 
 
+def _enforce_tx_size(node: NodeState, tx: Transaction) -> None:
+    """413 si la TX serializada supera el tope de consenso ``MAX_TX_BYTES`` (P0-3)."""
+    ok, reason = check_tx_size(tx.to_dict())
+    if not ok:
+        node.counters.inc("tx_rejected")
+        raise HTTPException(413, reason)
+
+
 def _admit_tx(node: NodeState, tx: Transaction):
-    """``add_transaction`` contando admitidas/rechazadas para /metrics (P2-10)."""
+    """``add_transaction`` contando admitidas/rechazadas para /metrics (P2-10).
+
+    Una TX demasiado grande responde 413 (no 400) antes de tocar el mempool (P0-3).
+    """
+    _enforce_tx_size(node, tx)
     ok, reason = node.blockchain.add_transaction(tx)
     node.counters.inc("tx_admitted" if ok else "tx_rejected")
     return ok, reason
@@ -863,6 +876,7 @@ async def create_transaction(request: TransactionRequest, node: NodeState = Depe
         except Exception:
             raise HTTPException(400, "Llave privada inválida")
 
+    _enforce_tx_size(node, tx)          # antes del detector: no analizar payloads enormes
     _enforce_tx_rate_limit(node, tx.sender)
     anomaly = node.tx_anomaly_detector.predict(tx.to_dict())
     node.security_monitor.on_transaction(tx.to_dict())

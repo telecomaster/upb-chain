@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from typing import Optional, Any
 import base64
 
+from blockchain.core.limits import check_tx_size
+
 
 class TransactionType(str, Enum):
     CREDENTIAL_ISSUE    = "CREDENTIAL_ISSUE"
@@ -158,6 +160,10 @@ class Transaction:
             return False, "fee debe ser un entero >= 0 (unidad mínima)"
         if not _is_int(self.nonce) or self.nonce < 0:
             return False, "nonce debe ser un entero >= 0"
+        # Tope de tamaño (P0-3, consenso): antes de la firma, que es lo caro.
+        ok, reason = check_tx_size(self.to_dict())
+        if not ok:
+            return False, reason
         return self._check_authentication()
 
     def _check_authentication(self) -> tuple[bool, str]:

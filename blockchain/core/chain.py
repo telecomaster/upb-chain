@@ -74,6 +74,8 @@ from blockchain.contracts.base import Contract
 from blockchain.contracts.registry import ContractRegistry
 from blockchain.core.block import (GENESIS_HASH, Block, BlockHeader, hash_meets_bits,
                                    work_for_bits)
+from blockchain.core.limits import (MAX_BLOCK_BYTES, MAX_BLOCK_TXS, check_block_size,
+                                    serialized_size)
 from blockchain.core.storage import ChainStore, Snapshot
 from blockchain.core.transaction import Transaction, TransactionType
 
@@ -644,7 +646,8 @@ class Blockchain:
         timestamp = self._next_block_timestamp()
         if not transactions:
             with self._lock:   # la red puede estar aplicando un bloque en otro hilo
-                transactions = self._still_valid(list(self.mempool), timestamp)[:50]
+                transactions = self._fit_block(
+                    self._still_valid(list(self.mempool), timestamp)[:50])
         txs = transactions
         tx_dicts = [t.to_dict() for t in txs]
         merkle_root = Block.compute_merkle_root(tx_dicts)
@@ -657,6 +660,24 @@ class Blockchain:
             node_id=self.node_id,
         )
         return Block(header=header, transactions=tx_dicts)
+
+    # Bytes reservados para encabezado, hash y llaves del JSON del bloque (sobra: ~400 B reales).
+    _BLOCK_OVERHEAD = 4096
+
+    @classmethod
+    def _fit_block(cls, txs: List[Transaction]) -> List[Transaction]:
+        """El prefijo más largo de ``txs`` que cabe en un bloque (P0-3).
+
+        Un prefijo de una secuencia válida sigue siendo válido (cada TX solo
+        depende de las anteriores), así que cortar no invalida el bloque.
+        """
+        budget = MAX_BLOCK_BYTES - cls._BLOCK_OVERHEAD
+        used = 0
+        for i, tx in enumerate(txs[:MAX_BLOCK_TXS]):
+            used += serialized_size(tx.to_dict()) + 1     # +1: la coma entre TXs
+            if used > budget:
+                return txs[:i]
+        return txs[:MAX_BLOCK_TXS]
 
     # ── Validación ────────────────────────────────────────────────────────────
 
@@ -706,6 +727,10 @@ class Blockchain:
                            f"recibida {h.difficulty}"), None
         if not hash_meets_bits(block.hash, h.difficulty):
             return False, "Proof of Work insuficiente: el hash no cumple la dificultad", None
+        # Tamaño (P0-3, consenso): antes de recorrer y verificar las TXs.
+        ok, reason = check_block_size(block.to_dict())
+        if not ok:
+            return False, reason, None
         if Block.compute_merkle_root(block.transactions) != h.merkle_root:
             return False, "Merkle root inválido", None
         # Timestamp: estrictamente mayor que la mediana de los últimos bloques

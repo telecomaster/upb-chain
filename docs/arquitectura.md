@@ -89,6 +89,28 @@ dueño; la regla de reajuste lo lleva hacia 10 s en cualquier caso.
 ambas unidades), pero los bloques guardados con la unidad hexadecimal ya no validan. Todos los
 nodos deben actualizarse a la vez y borrar su `DATA_DIR` (p. ej. `data/chain`) antes de arrancar.
 
+### 2.4.1 Límites de tamaño de TX y de bloque (P0-3, consenso)
+
+Una auditoría admitió por `POST /transactions` un `DATA_RECORD` de 3 MB: no había tope y la cadena
+podía crecer sin control. Los topes viven en un solo lugar, `blockchain/core/limits.py`, y se miden
+de forma determinista sobre el JSON canónico (`sort_keys`, separadores compactos, UTF-8):
+
+| Límite | Valor | Por qué |
+|---|---|---|
+| `MAX_TX_BYTES` | 64 KiB (65 536 B) | La TX legítima más grande es un `CONTRACT_DEPLOY` al máximo de la VM (4096 B de código = 8192 hex + 256 casillas con palabras de 256 bits): ~49,8 KB. Deja ~30 % de margen. Una credencial, un voto o una fila del CSV de premios ocupan < 2 KB. |
+| `MAX_BLOCK_BYTES` | 1 MiB (1 048 576 B) | Bloque completo (encabezado + TXs + hash). Caben ≥ 16 TX máximas; un lote de sincronización siempre lleva al menos un bloque entero. |
+| `MAX_BLOCK_TXS` | 1000 | Acota la CPU por bloque (una verificación ECDSA por TX en la RPi). |
+
+Dónde se aplican: `Transaction.is_consensus_valid` (por tanto mempool, P2P `NEW_TX` y cada TX de
+un bloque), `Blockchain._validate_block_at` (bloque recibido, minado o descargado al sincronizar)
+y la API, que responde **413** antes de correr el detector de anomalías. El minero
+(`create_candidate_block`) toma hasta 50 TX y corta el prefijo que se pasaría de 1 MiB; lo que no
+cabe queda para el bloque siguiente.
+
+**Cambio de consenso.** El génesis no cambia y ninguna cadena previa legítima viola los topes, pero
+un nodo sin la regla aceptaría bloques que los demás rechazan: todos los nodos deben actualizarse a
+la vez.
+
 ### 2.6 Anclaje público con OpenTimestamps (idea 3)
 
 **No es consenso.** Es un trabajo local de mejor esfuerzo: nunca bloquea ni cambia la validación,

@@ -315,18 +315,18 @@ HARDENING_CHECKS: List[HardeningCheck] = [
         category=HardeningCategory.APP,
         title="Validación de tamaño máximo de payload de TX",
         description=(
-            "La API debe rechazar transacciones con payload mayor al límite "
-            "configurado para prevenir el Storage Bloat Attack en el RPi5 "
-            "(128 GB de disco disponible)."
+            "TX y bloques con tope de tamaño de consenso (blockchain/core/limits.py: "
+            "TX <= 64 KiB, bloque <= 1 MiB y <= 1000 TX) para prevenir el Storage "
+            "Bloat Attack en el RPi5; la API responde 413 (P0-3)."
         ),
         severity="HIGH",
         check_command=(
-            "grep -rn 'MAX_PAYLOAD\\|max_payload\\|MAX_CONTENT_LENGTH' "
-            "/home/upb/blockchain_upb_ia/ --include='*.py'"
+            "grep -n 'MAX_TX_BYTES\\|MAX_BLOCK_BYTES' blockchain/core/limits.py; "
+            "grep -n 'check_tx_size' api/app.py"
         ),
         remediation=(
-            "Agregar MAX_PAYLOAD_BYTES = 10_000 y validar "
-            "len(json.dumps(tx)) <= MAX_PAYLOAD_BYTES en el endpoint POST /transactions/new."
+            "Mantener MAX_TX_BYTES y MAX_BLOCK_BYTES en blockchain/core/limits.py y "
+            "check_tx_size (413) en la admisión de la API."
         ),
     ),
     HardeningCheck(
@@ -694,12 +694,13 @@ class HardeningAuditor:
 
             # ── APP ───────────────────────────────────────────────────────────
             elif cid == "APP-001":
-                for mod in ("api.app", "blockchain.blockchain"):
-                    src = self._read_module_source(mod)
-                    if src and re.search(
-                        r"MAX_PAYLOAD|max_payload|MAX_CONTENT_LENGTH", src
-                    ):
-                        return "PASS"
+                # Topes de consenso (P0-3) definidos y aplicados en la API.
+                limits = self._read_module_source("blockchain.core.limits") or ""
+                api = self._read_module_source("api.app") or ""
+                if (re.search(r"MAX_TX_BYTES\s*=", limits)
+                        and re.search(r"MAX_BLOCK_BYTES\s*=", limits)
+                        and "check_tx_size" in api):
+                    return "PASS"
                 return "FAIL"
 
             elif cid == "APP-002":

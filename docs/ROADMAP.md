@@ -52,6 +52,8 @@ Flujos de trabajo y orden de dependencias:
   Validar dificultad esperada, rango de timestamp, cada TX, sin TX repetidas en la cadena. Separar
   "admisión al mempool" (expira en 1 h) de "validez de consenso" (para que resincronizar no rechace
   bloques viejos). *Listo cuando:* un bloque con dificultad 0 se rechaza y la cadena se revalida al cargar.
+  - [x] Auditoría: límites de consenso de tamaño (`blockchain/core/limits.py`: TX ≤ 64 KiB, bloque
+    ≤ 1 MiB y ≤ 1000 TX) en validación, mempool y API (413); el minero corta el bloque para caber.
 - [x] **P0-4 Dificultad adaptativa y minado sin bloquear la API.** `ProofOfWork(difficulty=4)`
   sobrescribe la dificultad del encabezado y `/blocks/mine` bloquea el event loop. Tomar la dificultad
   de `chain._calculate_difficulty()`, minar en un thread pool con un lock.
