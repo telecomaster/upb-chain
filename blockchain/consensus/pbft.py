@@ -475,7 +475,7 @@ class PBFTReplica:
             for r in self.rs.replicas:
                 seen = self.last_seen.get(r.id)
                 replicas.append({
-                    "id": r.id, "address": r.address,
+                    "id": r.id, "address": r.address, "public_key": r.public_key,
                     "primary": r.id == self.primary, "self": r.id == self.id,
                     "last_message_s_ago": None if seen is None else round(now - seen, 3),
                     "active": r.id == self.id or (

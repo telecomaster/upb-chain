@@ -214,7 +214,8 @@ class NodeState:
         return {"mode": "pbft", "replica_id": None, "is_replica": False, "view": view,
                 "primary": rs.primary(view), "n": rs.n, "f": rs.f, "quorum": rs.quorum,
                 "last_committed_seq": bc.height,
-                "replicas": [{"id": r.id, "address": r.address, "primary": r.id == rs.primary(view)}
+                "replicas": [{"id": r.id, "address": r.address, "public_key": r.public_key,
+                              "primary": r.id == rs.primary(view)}
                              for r in rs.replicas]}
 
     def announce_block(self, block: dict) -> None:
@@ -595,6 +596,10 @@ async def health(node: NodeState = Depends(get_node)):
         "node_id": node.settings.node_id,
         "height": node.blockchain.height,
         "timestamp": time.time(),
+        # Para scripts/verificar_red.py: deben coincidir en todos los nodos de la red.
+        "genesis_hash": node.blockchain.chain[0].hash,
+        "consensus": node.settings.consensus,
+        "p2p_tls": node.settings.p2p_tls,
     }
 
 
