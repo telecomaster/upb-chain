@@ -83,6 +83,13 @@ class NodeCollector:
         for nivel, n in conteo.items():
             alerts.add_metric([nivel], n)
         yield alerts
+        freno = node.pow_engine.freno
+        if freno is not None:   # idea 5: solo si THERMAL_THROTTLE=on
+            freno.actualizar()
+            if freno.temperatura_c is not None:
+                yield gauge("upb_soc_temperature_celsius", "Temperatura del SoC", freno.temperatura_c)
+            yield gauge("upb_miner_duty", "Ciclo de trabajo del minero (1 = sin freno térmico)",
+                        freno.ciclo)
         modo = GaugeMetricFamily("upb_consensus_info", "Modo de consenso (valor siempre 1)",
                                  labels=["mode"])
         modo.add_metric([node.settings.consensus], 1)

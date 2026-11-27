@@ -191,6 +191,16 @@ influyen). El informe incluye `carga_1min`; debe ser baja (< 0,5) al empezar.
 Se copian a `docs/mediciones/` y se resumen en `docs/benchmark_hardware.md` (sin extrapolar: solo
 lo medido en la Pi). Estos números no existen hasta que se ejecuten.
 
+### Freno térmico del minero (opcional, idea 5)
+
+Para que el minado PoW baje su ritmo cuando la Pi se calienta, agregar al `.env` del nodo
+`THERMAL_THROTTLE=on` (umbrales `THERMAL_SOFT_C=70`, `THERMAL_HARD_C=80`, `THERMAL_MIN_DUTY=0.2`)
+y reiniciar. Es local, no cambia la dificultad ni el consenso. Verificar con
+`curl http://127.0.0.1:8000/health` (campo `thermal`). Para medir si ayuda (hipótesis, sin cifras
+previas): `venv/bin/python scripts/bench_rpi.py --termico --termico-segundos 300` mina 300 s sin freno
+y 300 s con freno y guarda la curva de temperatura y el hash rate en `docs/mediciones/`
+(`--rapido` hace una corrida de 2 s de humo). Dejar enfriar la Pi entre corridas.
+
 ## 8. Operación diaria
 
 | Acción | Comando (en la Pi) |

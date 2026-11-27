@@ -414,6 +414,92 @@ def ejecutar(perfil: str = "completo", consenso: str = "ambos") -> dict:
     return r
 
 
+# ── Modo --termico (idea 5): freno térmico del minero, apagado vs encendido ──────
+
+def _minar_n_segundos(segundos: float, bits: int, freno, muestreo_s: float, fuente) -> dict:
+    """Mina bloques de prueba seguidos durante ``segundos`` y muestrea temperatura y hash rate."""
+    pow_ = ProofOfWork(difficulty=bits, freno=freno)
+    t0 = time.perf_counter()
+    muestras, hashes_hechos, semilla = [], 0, 0
+    estado = {"ult_t": t0, "ult_h": 0, "base": 0}
+
+    def tomar(nonce_actual: int) -> None:
+        estado["nonce"] = nonce_actual
+        ahora = time.perf_counter()
+        if ahora - estado["ult_t"] < muestreo_s:
+            return
+        total = estado["base"] + nonce_actual
+        muestras.append({
+            "t_s": round(ahora - t0, 2), "temperatura_c": fuente(),
+            "ciclo": round(freno.ciclo, 3) if freno is not None else 1.0,
+            "hash_rate": round((total - estado["ult_h"]) / (ahora - estado["ult_t"]))})
+        estado["ult_t"], estado["ult_h"] = ahora, total
+
+    bloques = 0
+    while True:
+        resto = segundos - (time.perf_counter() - t0)
+        if resto <= 0:
+            break
+        res = pow_.mine(_bloque_de_prueba(5_000_000 + semilla), timeout=resto,
+                        on_progress=lambda n, _s: tomar(n))
+        semilla += 1
+        if res is None:   # se acabó el tiempo a mitad de un bloque
+            break
+        bloques += 1
+        hashes_hechos += res.attempts
+        estado["base"] = hashes_hechos
+        estado["nonce"] = 0
+    tomar_final = time.perf_counter() - t0
+    return {"segundos": round(tomar_final, 2), "bloques": bloques, "bits": bits,
+            "hashes": hashes_hechos + estado.get("nonce", 0),
+            "hash_rate_medio": round((hashes_hechos + estado.get("nonce", 0)) / tomar_final) if tomar_final > 0 else 0,
+            "muestras": muestras}
+
+
+def medir_termico(segundos: float, bits: int, soft_c: float = 70.0, hard_c: float = 80.0,
+                  min_duty: float = 0.2, muestreo_s: float = 5.0, fuente=None) -> dict:
+    """Mina ``segundos`` con el freno térmico apagado y luego encendido, y devuelve la curva
+    de temperatura y el hash rate de cada tramo. Es una HIPÓTESIS a medir: no hay cifras
+    precargadas. ``fuente`` (opcional) sustituye al sensor, para pruebas."""
+    from blockchain.consensus.termico import FrenoTermico
+    fuente = fuente or leer_temperatura
+    out = {"segundos_por_tramo": segundos, "soft_c": soft_c, "hard_c": hard_c,
+           "min_duty": min_duty, "temperatura_inicial_c": fuente()}
+    out["sin_freno"] = _minar_n_segundos(segundos, bits, None, muestreo_s, fuente)
+    out["con_freno"] = _minar_n_segundos(
+        segundos, bits, FrenoTermico(soft_c, hard_c, min_duty, fuente=fuente),
+        muestreo_s, fuente)
+    out["temperatura_final_c"] = fuente()
+    return out
+
+
+def guardar_termico(t: dict, salida: Path) -> tuple:
+    salida.mkdir(parents=True, exist_ok=True)
+    sello = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    base = f"bench_termico_{info_host()['anfitrion']}_{sello}"
+    md, cs = salida / f"{base}.md", salida / f"{base}.csv"
+    L = ["# Freno térmico del minero: apagado vs encendido (hipótesis a medir)", "",
+         f"Tramo de {t['segundos_por_tramo']} s cada uno; umbrales {t['soft_c']}/{t['hard_c']} °C, "
+         f"ciclo mínimo {t['min_duty']}. Temperatura inicial: {_t(t['temperatura_inicial_c'], ' °C')}; "
+         f"final: {_t(t['temperatura_final_c'], ' °C')}.", "",
+         "| Tramo | Bloques | Hash rate medio (H/s) |", "|---|---|---|"]
+    filas = [("config", k, t[k]) for k in ("segundos_por_tramo", "soft_c", "hard_c", "min_duty")]
+    for nombre in ("sin_freno", "con_freno"):
+        x = t[nombre]
+        L.append(f"| {nombre} | {x['bloques']} | {x['hash_rate_medio']} |")
+        filas.append((nombre, "hash_rate_medio", x["hash_rate_medio"]))
+        for m in x["muestras"]:
+            filas.append((nombre, f"t={m['t_s']}s",
+                          f"temp_c={_t(m['temperatura_c'])};ciclo={m['ciclo']};hash_rate={m['hash_rate']}"))
+    L += ["", "Curva de temperatura: ver el CSV (una fila por muestra).", ""]
+    md.write_text("\n".join(L), encoding="utf-8")
+    with open(cs, "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["seccion", "clave", "valor"])
+        w.writerows(filas)
+    return md, cs
+
+
 # ── Informe ──────────────────────────────────────────────────────────────────
 
 def _t(valor, unidad="") -> str:
@@ -522,9 +608,21 @@ def main() -> None:
                     help="directorio de resultados (.md y .csv)")
     ap.add_argument("--consenso", choices=("pow", "pbft", "ambos"), default="ambos",
                     help="qué medir: pow (un nodo), pbft (4 réplicas) o ambos (por defecto)")
+    ap.add_argument("--termico", action="store_true",
+                    help="solo mide el freno térmico del minero (apagado vs encendido)")
+    ap.add_argument("--termico-segundos", type=float, default=None,
+                    help="segundos por tramo (por defecto 300; con --rapido, 2)")
     args = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    if args.termico:
+        seg = args.termico_segundos or (2.0 if args.rapido else 300.0)
+        t = medir_termico(seg, bits=8 if args.rapido else 24,
+                          muestreo_s=0.5 if args.rapido else 5.0)
+        md, cs = guardar_termico(t, Path(args.salida))
+        print(md.read_text(encoding="utf-8"))
+        print(f"Escrito: {md}\nEscrito: {cs}")
+        return
     r = ejecutar("rapido" if args.rapido else "completo", args.consenso)
     md, cs = guardar(r, Path(args.salida))
     print(informe_markdown(r))

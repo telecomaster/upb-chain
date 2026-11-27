@@ -59,6 +59,7 @@ from blockchain.core.transaction import (
 )
 from blockchain.core.wallet import Wallet, derive_address, public_key_from_private
 from blockchain.consensus.proof_of_work import ProofOfWork
+from blockchain.consensus.termico import FrenoTermico
 from blockchain.consensus.pbft import PBFTConfigError, PBFTReplica, PBFTTransport, ReplicaSet
 from blockchain.core.block import GENESIS_HASH
 from blockchain.contracts.credential import CredentialState, credential_id_of_tx
@@ -295,7 +296,9 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
         blockchain=blockchain,
         authority_wallet=authority_wallet,
         # La dificultad NO vive aquí: la dicta Blockchain._calculate_difficulty() (P0-4).
-        pow_engine=ProofOfWork(),
+        pow_engine=ProofOfWork(freno=(
+            FrenoTermico(settings.thermal_soft_c, settings.thermal_hard_c, settings.thermal_min_duty)
+            if settings.thermal_throttle == "on" else None)),
         mining_lock=asyncio.Lock(),
         mining_stop=threading.Event(),
         tx_anomaly_detector=tx_anomaly_detector,
@@ -633,6 +636,8 @@ async def health(node: NodeState = Depends(get_node)):
         "genesis_hash": node.blockchain.chain[0].hash,
         "consensus": node.settings.consensus,
         "p2p_tls": node.settings.p2p_tls,
+        # Freno térmico local (idea 5): None si está apagado. No afecta al consenso.
+        "thermal": node.pow_engine.freno.estado() if node.pow_engine.freno else None,
     }
 
 
@@ -706,7 +711,8 @@ def _progress_publisher(node: NodeState, difficulty: int, max_per_s: float = 2.0
         node.events.publish("mining_progress", {
             "attempts": nonce, "elapsed_s": round(elapsed, 3), "difficulty": difficulty,
             "hash_rate": round(nonce / elapsed) if elapsed > 0 else 0,
-            "expected_attempts": 2 ** difficulty})
+            "expected_attempts": 2 ** difficulty,
+            **(node.pow_engine.freno.estado() if node.pow_engine.freno else {})})
     return cb
 
 

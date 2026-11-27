@@ -17,6 +17,9 @@ from blockchain.core.block import Block, hash_meets_bits, target_for_bits, work_
 
 logger = logging.getLogger("upb_chain.pow")
 
+# Nonces entre pausas del freno térmico (pausas cortas: la API sigue respondiendo).
+LOTE_FRENO = 2048
+
 
 @dataclass
 class MiningResult:
@@ -29,8 +32,15 @@ class MiningResult:
 
 
 class ProofOfWork:
-    def __init__(self, difficulty: int = 16):
+    def __init__(self, difficulty: int = 16, freno=None,
+                 dormir: Callable[[float], None] = time.sleep,
+                 reloj: Callable[[], float] = time.perf_counter):
         self.difficulty = difficulty  # bits
+        # Freno térmico local (opcional, `termico.FrenoTermico`): solo pausa el hilo entre
+        # lotes de nonces; no cambia la dificultad ni qué bloques son válidos.
+        self.freno = freno
+        self._dormir = dormir
+        self._reloj = reloj
         self._stats: list[MiningResult] = []
         self.last_difficulty = difficulty  # última dificultad usada al minar
 
@@ -55,8 +65,14 @@ class ProofOfWork:
         self.last_difficulty = diff
         block.header.difficulty = diff
         nonce = 0
+        t_lote = self._reloj()
 
         while nonce < max_nonce:
+            if self.freno is not None and nonce > 0 and nonce % LOTE_FRENO == 0:
+                pausa = self.freno.pausa_para(self._reloj() - t_lote)
+                if pausa > 0:
+                    self._dormir(pausa)
+                t_lote = self._reloj()
             if stop_event is not None and nonce % 256 == 0 and stop_event.is_set():
                 logger.info("Minado abortado por stop_event")
                 return None

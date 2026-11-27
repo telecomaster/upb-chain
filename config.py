@@ -10,7 +10,7 @@ con un mensaje en español.
 import logging
 from typing import Annotated, List
 
-from pydantic import ValidationError, field_validator
+from pydantic import ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _NIVELES_LOG = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     cors_origins: Annotated[List[str], NoDecode] = []
     # Máximo de TX por minuto y emisor admitidas al mempool (P1-5). No es regla de consenso.
     tx_rate_limit: int = 100
+    # Freno térmico LOCAL del minero (idea 5): "on"/"off". No es consenso: no cambia la
+    # dificultad ni la validación, solo el ciclo de trabajo del hilo de minado.
+    thermal_throttle: str = "off"
+    thermal_soft_c: float = 70.0   # por debajo: velocidad completa
+    thermal_hard_c: float = 80.0   # desde aquí: ciclo mínimo
+    thermal_min_duty: float = 0.2
     # Consenso (P1-1): "pow" o "pbft". Es de TODA la red: un par con otro modo se rechaza.
     consensus: str = "pow"
     # PBFT: lista ordenada de réplicas {"replicas": [{"id", "address", "public_key"}]}
@@ -123,6 +129,27 @@ class Settings(BaseSettings):
         if v < 1:
             raise ValueError("debe ser al menos 1")
         return v
+
+    @field_validator("thermal_throttle", mode="before")
+    @classmethod
+    def _thermal(cls, v):
+        v = str(v).strip().lower()
+        if v not in ("off", "on"):
+            raise ValueError("debe ser 'off' o 'on'")
+        return v
+
+    @field_validator("thermal_min_duty")
+    @classmethod
+    def _min_duty(cls, v: float) -> float:
+        if not 0.0 < v <= 1.0:
+            raise ValueError("debe estar en (0, 1]")
+        return v
+
+    @model_validator(mode="after")
+    def _umbrales_termicos(self):
+        if self.thermal_hard_c <= self.thermal_soft_c:
+            raise ValueError("THERMAL_HARD_C debe ser mayor que THERMAL_SOFT_C")
+        return self
 
     @field_validator("p2p_tls", mode="before")
     @classmethod

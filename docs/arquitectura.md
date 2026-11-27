@@ -407,6 +407,21 @@ no por mensaje.
 
 ---
 
+## 6.1 Freno térmico local del minero (idea 5)
+
+Con `THERMAL_THROTTLE=on` el hilo de minado PoW hace pausas cortas entre lotes de 2048 nonces
+(`blockchain/consensus/termico.py`). Por debajo de `THERMAL_SOFT_C` (70 °C) trabaja a ciclo 1.0;
+entre `THERMAL_SOFT_C` y `THERMAL_HARD_C` (80 °C) el ciclo baja linealmente hasta `THERMAL_MIN_DUTY`
+(0.2). Es solo local: la dificultad es consenso y sale de los datos de la cadena, y la temperatura
+difiere de un nodo a otro, así que NUNCA interviene en la dificultad ni en la validación; un bloque
+minado con freno es idéntico en validez a uno sin freno. Sin sensor (Windows) no hace nada.
+La temperatura y el ciclo salen en `/health` (`thermal`), en `/metrics`
+(`upb_soc_temperature_celsius`, `upb_miner_duty`) y en los eventos `mining_progress`.
+Que el freno evite el estrangulamiento del firmware (85 °C en la Pi 5) es una HIPÓTESIS: se mide con
+`scripts/bench_rpi.py --termico` en la Pi; aún no hay cifras.
+
+---
+
 ## 7. Extensibilidad
 
 El proyecto está diseñado para ser extendido en trabajos finales de carrera o tesis:
