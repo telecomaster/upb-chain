@@ -35,7 +35,7 @@ import copy
 import json
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from blockchain.contracts.base import MEMPOOL, Contract, TxContext
+from blockchain.contracts.base import MEMPOOL, Contract, TxContext, tx_type_of
 
 States = Dict[str, Any]
 
@@ -75,6 +75,21 @@ class ContractRegistry:
         """Contratos interesados en ``tx``, en orden de registro."""
         return [c for c in self._contracts.values() if c.handles(tx)]
 
+    def known_types(self) -> Set[str]:
+        """Tipos de TX con algún contrato que los maneje (``HANDLED_TYPES`` o ``ACCOUNT_TYPES``)."""
+        tipos: Set[str] = set()
+        for c in self._contracts.values():
+            tipos |= set(c.HANDLED_TYPES or ())
+            tipos |= set(getattr(c, "ACCOUNT_TYPES", ()))
+        return tipos
+
+    def unknown_type_reason(self, tx: dict) -> Optional[str]:
+        """Regla de consenso: un tipo de TX que ningún contrato maneja es inválido."""
+        tipo = tx_type_of(tx)
+        if tipo in self.known_types():
+            return None
+        return f"tipo de TX sin contrato: {tipo}"
+
     def initial_states(self) -> States:
         return {name: c.initial_state() for name, c in self._contracts.items()}
 
@@ -87,6 +102,9 @@ class ContractRegistry:
         ``working`` es la copia de trabajo (se modifica); ``copied`` son los
         contratos cuyo estado ya se copió en esta copia de trabajo.
         """
+        motivo = self.unknown_type_reason(tx)
+        if motivo:
+            return False, motivo
         handlers = self.handlers(tx)
         for contract in handlers:
             ok, reason = contract.validate(working[contract.NAME], tx, ctx)
@@ -181,6 +199,9 @@ class ContractRegistry:
         ctx = self._mempool_ctx(working, timestamp)
         for p in pending:
             self._try_tx(working, copied, p, ctx)
+        motivo = self.unknown_type_reason(tx)
+        if motivo:
+            return False, motivo
         for contract in self.handlers(tx):
             ok, reason = contract.validate(working[contract.NAME], tx, ctx)
             if not ok:
@@ -205,6 +226,9 @@ class ContractRegistry:
         copia de trabajo ya las contiene. El motivo es el del contrato, sin prefijo.
         """
         ctx = self._mempool_ctx(working, timestamp)
+        motivo = self.unknown_type_reason(tx)
+        if motivo:
+            return False, motivo
         for contract in self.handlers(tx):
             ok, reason = contract.validate(working[contract.NAME], tx, ctx)
             if not ok:

@@ -79,6 +79,8 @@ _CONTRACT_TXS = ("CONTRACT_DEPLOY", "CONTRACT_CALL")   # P2-11
 class AccountContract(Contract):
     NAME = "accounts"
     HANDLED_TYPES = None   # toda TX consume nonce y paga fee
+    # Tipos que SOLO manejan las cuentas (los demás los declara otro contrato en HANDLED_TYPES).
+    ACCOUNT_TYPES = frozenset({"TOKEN_TRANSFER", "TOKEN_MINT", "TOKEN_REDEEM", "DATA_RECORD"})
 
     def __init__(self, authority_address: Optional[str] = None) -> None:
         from blockchain.core.block import GENESIS_AUTHORITY_ADDRESS

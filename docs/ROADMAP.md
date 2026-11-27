@@ -5,7 +5,7 @@ Estado verificado al 2026-11-26. Fuente de verdad para prioridades y delegación
 
 ## Resumen
 
-Estado verificado al 2026-11-26 (suite: 722 pruebas pasan y 1 `xfail`). El sistema ya es una
+Estado verificado al 2026-11-26 (suite: 726 pruebas pasan y 1 `xfail`). El sistema ya es una
 blockchain multinodo funcional en laptop:
 
 - Varios nodos locales (PoW) y 4 réplicas PBFT con certificados de commit sincronizan, resuelven
@@ -45,6 +45,7 @@ Flujos de trabajo y orden de dependencias:
   llave pública. Agregar `public_key`, comprobar `address == derive(public_key)` y la firma ECDSA,
   rechazar TXs sin firma, incluir `fee` en el mensaje firmado.
   *Listo cuando:* una TX falsificada o sin firma recibe 400.
+  Seguimiento: el registro rechaza los tipos sin contrato (`CREDENTIAL_VERIFY`, `SMART_CONTRACT`; ver `docs/contratos.md`).
 - [x] **P0-3 Validación completa de bloques.** `chain.py:_validate_block` no revisa PoW ni TXs.
   Validar dificultad esperada, rango de timestamp, cada TX, sin TX repetidas en la cadena. Separar
   "admisión al mempool" (expira en 1 h) de "validez de consenso" (para que resincronizar no rechace

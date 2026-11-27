@@ -297,3 +297,29 @@ async def test_api_lista_contratos(client):
                                                    "tokens", "badges", "vm"]
     assert r["contracts"][0]["handled_types"] is None
     assert r["contracts"][2]["handled_types"] == ["ELECTION_CREATE", "VOTE"]
+
+
+# ── P0-2: tipos de TX sin contrato ────────────────────────────────────────────
+
+@pytest.mark.unit
+@pytest.mark.parametrize("tipo", ["CREDENTIAL_VERIFY", "SMART_CONTRACT", "INVENTADO"])
+def test_registro_rechaza_tipos_sin_contrato(tipo):
+    reg = ContractRegistry([AccountContract(), CredentialContract(), VotingContract()])
+    tx = {"type": tipo, "sender": "UPBana", "tx_id": "1", "payload": {}, "nonce": 1, "fee": 0}
+    ok, why = reg.check_transaction(tx)
+    assert not ok and "sin contrato" in why
+    ok, why, _ = reg.check_block(SimpleNamespace(
+        transactions=[tx], index=1, hash="h", header=SimpleNamespace(index=1, timestamp=1.0)))
+    assert not ok and "sin contrato" in why
+    assert reg.filter_valid([tx]) == []
+
+
+@pytest.mark.unit
+def test_solo_dos_tipos_de_la_enumeracion_quedan_sin_contrato():
+    """CREDENTIAL_VERIFY y SMART_CONTRACT siguen en el enum (lo toca otro trabajo) pero la
+    red los rechaza; cualquier tipo nuevo debe declararse en un contrato."""
+    from blockchain.contracts import default_contracts
+    from blockchain.core.transaction import TransactionType
+    reg = ContractRegistry([AccountContract(), *default_contracts()])
+    sin = {t.value for t in TransactionType if t.value not in reg.known_types()}
+    assert sin == {"CREDENTIAL_VERIFY", "SMART_CONTRACT"}
