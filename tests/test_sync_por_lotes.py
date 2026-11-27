@@ -239,13 +239,23 @@ def test_puesta_al_dia_agrega_por_lotes_y_el_progreso_persiste(red, tmp_path):
     pedidos = []
     orig_req = c.request_blocks
 
+    cortar = [True]
+
     def corta(addr, start, count):
         pedidos.append(start)
-        return orig_req(addr, start, count) if len(pedidos) <= 2 else None
+        if cortar[0] and len(pedidos) > 2:
+            return None
+        return orig_req(addr, start, count)
 
     c.request_blocks = corta
     c.sync_with(f"{HOST}:{a.port}")
-    assert c.blockchain.height == 6            # 2 lotes persistidos
-    c.request_blocks = orig_req
-    assert c.sync_with(f"{HOST}:{a.port}")
-    assert c.blockchain.height == 9
+    # 2 lotes persistidos pese al corte. ``>=``: tras el corte el par se reconecta (backoff de
+    # 0,2 s) y ese handshake puede reanudar la sincronización por su cuenta antes de este assert.
+    assert c.blockchain.height >= 6
+    assert pedidos[:2] == [1, 4]               # el corte llegó en el tercer lote, no antes
+    cortar[0] = False
+    # La reanudación puede hacerla esta llamada o la reconexión en segundo plano (serializadas
+    # por ``_sync_lock``); lo que importa es que se complete sin volver a empezar desde 0.
+    c.sync_with(f"{HOST}:{a.port}")
+    assert _esperar(lambda: c.blockchain.height == 9)
+    assert min(pedidos[2:], default=7) >= 7    # nunca se volvió a pedir desde el principio
