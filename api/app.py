@@ -1651,6 +1651,7 @@ async def revoke_credential(request: RevokeRequest, node: NodeState = Depends(ge
 async def verify_credential(credential_id: str, node: NodeState = Depends(get_node)):
     """Estado de la credencial: PENDING, CONFIRMED (con bloque y confirmaciones),
     REVOKED, EXPIRED o NOT_FOUND. ``valid`` es true solo si está CONFIRMED."""
+    node.counters.inc("verificaciones_locales")
     return _credentials(node).credential_status(credential_id, node.blockchain.height,
                                             pending=node.blockchain.pending_dicts())
 
@@ -1702,6 +1703,7 @@ dd{{margin:0;word-break:break-all}}</style></head>
 @router.get("/verify/{credential_id}", response_class=HTMLResponse)
 async def verify_page(credential_id: str, node: NodeState = Depends(get_node)):
     """Página pública y móvil de verificación. No expone notas ni datos personales."""
+    node.counters.inc("verificaciones_locales")
     st = _estado_publico(node, credential_id)
     cred = st.get("credential") or {}
     campos = [("ID", credential_id), ("Emisor", cred.get("issuer_address")),
@@ -2058,7 +2060,9 @@ async def vm_logs(address: str, node: NodeState = Depends(get_node)):
 @router.get("/ai/analytics")
 async def get_analytics(node: NodeState = Depends(get_node)):
     chain_data = [b.to_dict() for b in node.blockchain.chain]
-    report = node.chain_analytics.analyze(chain_data)
+    report = node.chain_analytics.analyze(
+        chain_data, issuers=_credentials(node).issuers(),
+        local_verifications=node.counters.get("verificaciones_locales"))
     return report.to_dict()
 
 
@@ -2095,10 +2099,15 @@ async def threat_summary(node: NodeState = Depends(get_node)):
 
 @router.get("/security/attack-simulation")
 async def attack_simulation(node: NodeState = Depends(get_node)):
+    # Las tasas de hash 70/30 son una hipótesis didáctica (no una medición de la red).
+    rs = node.replica_set
     return full_security_analysis(
         node_count=len(node.p2p.peers_snapshot()) + 1,
         honest_hash_rate=70.0,
         attacker_hash_rate=30.0,
+        consensus=node.settings.consensus,
+        pbft_f=rs.f if rs is not None else None,
+        pbft_n=rs.n if rs is not None else None,
     )
 
 

@@ -47,7 +47,11 @@ class ChainAnalytics:
         self._block_cache: List[dict] = []
         self._last_analysis: Optional[ChainReport] = None
 
-    def analyze(self, chain: List[dict]) -> ChainReport:
+    def analyze(self, chain: List[dict], issuers: Optional[Dict[str, str]] = None,
+                local_verifications: Optional[int] = None) -> ChainReport:
+        """``issuers``: registro dirección -> código de institución (estado del contrato de
+        credenciales); ``local_verifications``: consultas de verificación atendidas por ESTE
+        nodo desde que arrancó (contador local, no se guarda en la cadena)."""
         if not chain:
             return ChainReport()
 
@@ -61,7 +65,7 @@ class ChainAnalytics:
         report.tx_type_distribution = self._tx_type_distribution(chain)
         report.top_senders = self._top_senders(chain, top_n=10)
         report.daily_tx_counts = self._daily_counts(chain)
-        report.credential_stats = self._credential_stats(chain)
+        report.credential_stats = self._credential_stats(chain, issuers or {}, local_verifications)
         report.network_health_score = self._health_score(report)
         report.recommendations = self._generate_recommendations(report)
 
@@ -119,8 +123,9 @@ class ChainAnalytics:
             daily[day] += len(block.get("transactions", []))
         return dict(sorted(daily.items()))
 
-    def _credential_stats(self, chain: List[dict]) -> dict:
-        issued = revoked = verified = 0
+    def _credential_stats(self, chain: List[dict], issuers: Dict[str, str],
+                          local_verifications: Optional[int] = None) -> dict:
+        issued = revoked = 0
         institutions: Counter = Counter()
         programs: Counter = Counter()
 
@@ -130,21 +135,23 @@ class ChainAnalytics:
                 if tx_type == "CREDENTIAL_ISSUE":
                     issued += 1
                     payload = tx.get("payload", {})
-                    institutions[payload.get("institution", "N/A")] += 1
+                    # La institución no viaja en la TX: sale del registro de emisores.
+                    institutions[issuers.get(tx.get("sender", ""), "N/A")] += 1
                     programs[payload.get("program", "N/A")] += 1
                 elif tx_type == "CREDENTIAL_REVOKE":
                     revoked += 1
-                elif tx_type == "CREDENTIAL_VERIFY":
-                    verified += 1
 
-        return {
+        stats = {
             "issued": issued,
             "revoked": revoked,
-            "verified": verified,
             "active": issued - revoked,
             "top_institutions": dict(institutions.most_common(5)),
             "top_programs": dict(programs.most_common(5)),
         }
+        if local_verifications is not None:
+            # Verificar es una lectura (GET), no una TX: esta cifra es solo de este nodo.
+            stats["local_verifications"] = local_verifications
+        return stats
 
     def _health_score(self, report: ChainReport) -> float:
         score = 1.0
@@ -165,9 +172,6 @@ class ChainAnalytics:
             recs.append("El tiempo de bloque es elevado; considerar reducir dificultad o usar PBFT")
         if report.throughput_tps < 0.01:
             recs.append("TPS bajo; evaluar ajuste de tamaño de bloque o lote de transacciones")
-        cred = report.credential_stats
-        if cred.get("verified", 0) == 0 and cred.get("issued", 0) > 0:
-            recs.append("No hay verificaciones registradas; integrar proceso de verificación de empleadores")
         if report.network_health_score < 0.7:
             recs.append("Puntuación de salud baja; revisar estado de nodos y conectividad")
         if not recs:
