@@ -1001,6 +1001,50 @@ class P2PNode:
                 certs.update(lote_certs)
         return blocks, certs
 
+    def _catch_up(self, peer_address: str, fork: int, fork_hash: str, target: int) -> bool:
+        """Agrega por lotes ``fork+1 … target`` con ``add_block`` (misma validación, y en pbft
+        el certificado de cada bloque). Un corte a medias conserva lo ya agregado (P0-5)."""
+        bc = self.blockchain
+        prev_hash, nxt, added = fork_hash, fork + 1, 0
+        pbft = getattr(bc, "consensus", "pow") == "pbft"
+        while nxt <= target:
+            reply = self.request_blocks(peer_address, nxt, min(self._BLOCKS_PER_MSG, target - nxt + 1))
+            lote = reply.get("data") if reply is not None else None
+            if not lote or not isinstance(lote, list):
+                break
+            certs = reply.get("certificates") or {}
+            if not isinstance(certs, dict):
+                certs = {}
+            for d in lote[:target - nxt + 1]:
+                try:
+                    if d["header"]["index"] != nxt or d["header"]["previous_hash"] != prev_hash:
+                        logger.warning(f"Lote de {peer_address} no encadena en la altura {nxt}")
+                        return self._fin_catch_up(peer_address, added)
+                    block = Block.from_dict(d)
+                except (KeyError, TypeError, ValueError, AttributeError):
+                    return self._fin_catch_up(peer_address, added)
+                if pbft:
+                    ok, reason = bc.add_block(block, certificate=certs.get(str(nxt), certs.get(nxt)))
+                else:
+                    ok, reason = bc.add_block(block)
+                if not ok:
+                    logger.debug(f"Cadena de {peer_address} no adoptada: {reason}")
+                    return self._fin_catch_up(peer_address, added)
+                if self.on_new_block:
+                    self.on_new_block(d)
+                prev_hash, nxt, added = block.hash, nxt + 1, added + 1
+        return self._fin_catch_up(peer_address, added)
+
+    def _fin_catch_up(self, peer_address: str, added: int) -> bool:
+        if added:
+            try:
+                self.blockchain.store.checkpoint()     # acota el WAL tras una descarga grande
+            except Exception:
+                logger.debug("checkpoint del WAL falló", exc_info=True)
+            logger.info(f"Sincronizado con {peer_address}: altura {self.blockchain.height} "
+                        f"({added} bloque(s) agregados por lotes)")
+        return added > 0
+
     def sync_with(self, peer_address: str) -> bool:
         """Sincroniza por lotes con el par (ver "Sincronización por lotes") y ``replace_chain``."""
         if self.blockchain is None:
@@ -1018,6 +1062,9 @@ class P2PNode:
             fork, peer_height = found
             if peer_height <= fork:
                 return False            # el par no tiene nada que no tengamos
+            if fork == len(local) - 1:
+                # Puesta al día pura: cada lote se valida y agrega al llegar (progreso persistente).
+                return self._catch_up(peer_address, fork, local[fork].hash, peer_height)
             downloaded = self._download(peer_address, fork, local[fork].hash, peer_height)
             if downloaded is None:
                 return False

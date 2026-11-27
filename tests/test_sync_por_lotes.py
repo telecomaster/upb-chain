@@ -208,3 +208,39 @@ def test_get_network_sync_ya_no_vuelca_la_cadena(tmp_path):
         r = c.get("/network/sync")
         assert r.status_code == 405 and "chain" not in r.text
         assert c.post("/network/sync").status_code == 200
+
+
+def test_puesta_al_dia_agrega_por_lotes_y_el_progreso_persiste(red, tmp_path):
+    """P0-5: la altura sube lote a lote; un corte a mitad conserva lo agregado y se reanuda."""
+    bc_a = red.cadena("a")
+    _minar(bc_a, 9)
+    a = red.nodo("a", bc=bc_a)
+    b = red.nodo("b")
+    b._BLOCKS_PER_MSG = 3                      # solo esta instancia pide lotes de 3
+    alturas = []
+    original = b.blockchain.add_block
+
+    def espia(block, *args, **kwargs):
+        alturas.append(b.blockchain.height)
+        return original(block, *args, **kwargs)
+
+    b.blockchain.add_block = espia
+    assert b.sync_with(f"{HOST}:{a.port}")
+    assert b.blockchain.height == 9
+    assert alturas[:9] == list(range(9))       # un add_block por bloque, altura creciente
+
+    c = red.nodo("c")
+    c._BLOCKS_PER_MSG = 3
+    pedidos = []
+    orig_req = c.request_blocks
+
+    def corta(addr, start, count):
+        pedidos.append(start)
+        return orig_req(addr, start, count) if len(pedidos) <= 2 else None
+
+    c.request_blocks = corta
+    c.sync_with(f"{HOST}:{a.port}")
+    assert c.blockchain.height == 6            # 2 lotes persistidos
+    c.request_blocks = orig_req
+    assert c.sync_with(f"{HOST}:{a.port}")
+    assert c.blockchain.height == 9
