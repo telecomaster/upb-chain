@@ -409,3 +409,22 @@ def test_par_colgado_sin_rst_se_marca_caido_tras_los_timeouts_del_latido(red):
     inicio = time.time()
     assert _esperar(lambda: b.get_network_stats()["active_peers"] == 0, timeout=5.0)
     assert time.time() - inicio >= 0.3 + 0.2   # hizo falta más de un latido fallido
+
+
+def test_estadisticas_de_par_altura_y_latencia_en_ambos_lados(red):
+    """P2-6: la altura del par se actualiza con cada bloque anunciado (no solo en el handshake)
+    y el nodo que ACEPTÓ la conexión también mide la latencia (antes quedaba en 0)."""
+    # a acepta la conexión y su latido es larguísimo: aun así debe conocer la latencia de b.
+    a = red.nodo("a", sync_interval=60.0)
+    b = red.nodo("b", peers=[a])
+    assert _esperar(lambda: len(a.active_peers()) == 1 and len(b.active_peers()) == 1)
+    _minar(a, 3)
+    assert _esperar(_alcanzo(b, a))
+    # b conoce la altura de a por el bloque anunciado; a ve la de b tras que b la anuncie.
+    par_a_en_b = b.active_peers()[0]
+    assert _esperar(lambda: par_a_en_b.height == a.blockchain.height)
+    _minar(b, 2)
+    assert _esperar(_alcanzo(a, b))
+    par_b_en_a = a.active_peers()[0]
+    assert _esperar(lambda: par_b_en_a.height == b.blockchain.height)
+    assert _esperar(lambda: par_b_en_a.latency_ms > 0)

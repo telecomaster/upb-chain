@@ -705,6 +705,10 @@ class P2PNode:
         era_activo = previo is not None and previo.is_active
         self._register_peer(host, port, message)
         self._send_framed(conn, {"type": MSG_HANDSHAKE, **self._status()})
+        if not era_activo:
+            par = self.get_peer(f"{host}:{port}")
+            if par is not None:
+                self._spawn(self._medir_latencia, par)
         if not era_activo and self.on_peer_connected:
             self._spawn(self._notify, self.on_peer_connected, host, port)
         self._learn_peers(message.get("peers", []))
@@ -724,6 +728,9 @@ class P2PNode:
             logger.warning("Bloque malformado ignorado")
             return
         bc = self.blockchain
+        # El origen del anuncio tiene al menos la altura de este bloque (``/network`` no queda viejo).
+        origen = message.get("origin") or {}
+        self._anotar_altura(origen.get("host", ""), origen.get("port"), block.header.index, conn)
         if bc.get_block_by_hash(block.hash) is not None:
             return
         tip = bc.last_block
@@ -834,6 +841,28 @@ class P2PNode:
             if latency_ms is not None:
                 peer.latency_ms = latency_ms
         return peer
+
+    def _anotar_altura(self, host: str, port, altura: int, conn=None) -> None:
+        """Sube la altura conocida de un par (nunca la baja: un anuncio solo prueba un mínimo)."""
+        try:
+            port = int(port or 0)
+        except (TypeError, ValueError):
+            return
+        host = self._peer_host(host, conn) if conn is not None else host
+        with self._peers_lock:
+            peer = self.peers.get(f"{host}:{port}")
+            if peer is not None and altura > peer.height:
+                peer.height = altura
+
+    def _medir_latencia(self, peer: Peer) -> None:
+        """Mide el RTT con un PING; el nodo que acepta la conexión no lo tiene del handshake."""
+        try:
+            start = time.perf_counter()
+            reply = self._request(peer.host, peer.port, {"type": MSG_PING}, timeout=self.ping_timeout)
+        except Exception:
+            return
+        if reply.get("type") == MSG_PONG:
+            peer.latency_ms = (time.perf_counter() - start) * 1000
 
     def peers_snapshot(self) -> List[Peer]:
         """Copia de la lista de pares tomada bajo el candado: se puede recorrer sin carreras.
@@ -1080,6 +1109,7 @@ class P2PNode:
             if found is None:
                 return False
             fork, peer_height = found
+            self._anotar_altura(host, port, peer_height)
             if peer_height <= fork:
                 return False            # el par no tiene nada que no tengamos
             if fork == len(local) - 1:
