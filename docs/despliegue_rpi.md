@@ -77,6 +77,14 @@ Qué hace (usa `crear_llave_replica`, `crear_ca` y `emitir_cert_nodo`; no duplic
   proyecto y **solo** lo que esa Pi necesita. La llave de autoridad solo va al paquete de la Pi 1
   (`node_1`); sin `--autoridad-llave` las operaciones de emisores y `tokens/mint` darán 503.
 
+`--autoridad-llave` debe ser la llave **original** de la autoridad, la que corresponde a
+`GENESIS_AUTHORITY_ADDRESS` (`blockchain/core/block.py`, el génesis fijado). El script compara la
+dirección de la llave con esa constante y **aborta** si no coincide; con otra llave la red
+arrancaría con `tokens/mint` y los emisores devolviendo 503. No generar una llave nueva con
+`crear_llave_autoridad.py` para una red existente (eso solo vale para una red nueva y obliga a que
+todos los nodos borren su `DATA_DIR`). `verificar_red.py` (§6) también avisa si ningún nodo tiene
+la llave cargada (`authority_key_loaded` en `/health`).
+
 Opciones: `--dir-proyecto` (por defecto `/home/<usuario>/upb-chain`), `--salida`, `--api-base`,
 `--p2p-base`, `--admin-key`. No sobrescribe: si `data\despliegue` ya existe y tiene contenido, se
 niega (borrarlo a mano para empezar de cero).
@@ -149,10 +157,13 @@ reloj entre nodos < 2 s. También sirve desde una Pi (el script solo usa la bibl
 mensajes PBFT). Para generar tráfico real, emitir una transacción en `node_1` (la que tiene la
 llave de autoridad) y repetir la verificación:
 
-```bash
-# en cualquier equipo con curl; KEY = la ADMIN_API_KEY que imprimió el paso 3
-DIR=$(curl -s -X POST http://IP1:8000/wallet/generate | python3 -c "import sys,json;print(json.load(sys.stdin)['address'])")
-curl -s -X POST http://IP1:8000/tokens/mint -H "X-API-Key: KEY" -H "Content-Type: application/json" -d "{\"recipient\":\"$DIR\",\"amount\":5}"
+```powershell
+# en la laptop, desde la raíz del repo; KEY = la ADMIN_API_KEY que imprimió el paso 3.
+# La dirección destino se genera localmente (no usar /wallet/generate por la LAN: devuelve la
+# llave privada en claro); también sirve una dirección de la billetera del navegador (/billetera).
+$DIR = venv\Scripts\python.exe -c "from blockchain.core.wallet import Wallet; print(Wallet.generate().address)"
+$cuerpo = @{ recipient = $DIR; amount = 5 } | ConvertTo-Json -Compress
+curl.exe -s -X POST http://IP1:8000/tokens/mint -H "X-API-Key: KEY" -H "Content-Type: application/json" -d $cuerpo.Replace('"','\"')
 ```
 
 A los pocos segundos las 4 réplicas deben estar en altura 1 (`verificar_red.py` lo confirma) y cada
@@ -271,6 +282,18 @@ cada 5 s.
 Para ensayar la guía sin las Pi (los mismos archivos `.env`, TLS activado, 4 procesos `uvicorn` en
 loopback), generar los paquetes con `--ip-pi1 127.0.0.1 --ip-pi2 127.0.0.1 --api-base 9300
 --p2p-base 9301 --desfase-pi2 40 --dir-proyecto <carpeta>`, copiar `pi1` y `pi2` a `<carpeta>` y
-lanzar cada réplica con `uvicorn api.app:app --port <API_PORT>` y las variables de su `.env`. Así se
-validó la guía antes del despliegue (4 réplicas, mTLS, un bloque confirmado, `verificar_red.py` en
-verde).
+lanzar cada réplica con `uvicorn api.app:app --port <API_PORT>` y las variables de su `.env`.
+`uvicorn` debe correr desde la raíz del repo (las rutas relativas y el import `api.app` dependen de
+ello). En PowerShell, para arrancar un nodo desde su archivo de entorno:
+
+```powershell
+# desde la raíz del repo; ajustar el archivo y el puerto API de la réplica
+Get-Content <carpeta>\nodes\node_1.env | Where-Object { $_ -match '^\s*[^#\s][^=]*=' } | ForEach-Object {
+    $k, $v = $_ -split '=', 2
+    Set-Item -Path "Env:$($k.Trim())" -Value $v.Trim()
+}
+venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 9300
+```
+
+Así se validó la guía antes del despliegue (4 réplicas, mTLS, un bloque confirmado,
+`verificar_red.py` en verde).
