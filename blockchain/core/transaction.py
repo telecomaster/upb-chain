@@ -4,6 +4,7 @@ Soporta múltiples tipos: credenciales académicas, transferencias, votaciones y
 """
 import hashlib
 import json
+import math
 import time
 from enum import Enum
 from dataclasses import dataclass, field
@@ -140,6 +141,12 @@ class Transaction:
 
         Campos obligatorios + autenticación (firma, llave, sender, tx_id).
         """
+        if type(self.timestamp) not in (int, float) or not math.isfinite(self.timestamp):
+            return False, "timestamp debe ser un número finito"
+        if not isinstance(self.sender, str) or not isinstance(self.recipient, str):
+            return False, "sender y recipient deben ser texto"
+        if not isinstance(self.payload, dict):
+            return False, "payload debe ser un objeto"
         if not self.sender:
             return False, "Sender vacío"
         if not self.recipient:

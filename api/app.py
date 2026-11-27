@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Union
 
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, BackgroundTasks, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -401,7 +403,7 @@ class TransactionRequest(BaseModel):
     # Alternativa a private_key_hex: TX firmada por el cliente.
     signature: Optional[str] = None
     public_key: Optional[str] = None
-    timestamp: Optional[float] = None
+    timestamp: Optional[float] = Field(None, allow_inf_nan=False)
 
 
 class CredentialRequest(BaseModel):
@@ -2030,6 +2032,13 @@ def create_app(settings: Optional[Settings] = None,
         version="1.0.0",
         lifespan=lifespan,
     )
+    @app.exception_handler(RequestValidationError)
+    async def _validacion(request: Request, exc: RequestValidationError):
+        # Sin eco de `input`: un NaN/inf en el cuerpo no se puede serializar a JSON.
+        errores = [{"loc": list(e.get("loc", ())), "msg": e.get("msg"), "type": e.get("type")}
+                   for e in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": errores})
+
     app.state.node = node
     app.state.metrics_registry = build_registry(node)   # P2-10: uno por app
 

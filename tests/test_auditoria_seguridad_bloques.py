@@ -50,7 +50,6 @@ def _tx(wallet, timestamp, nonce=1):
     return tx
 
 
-@pytest.mark.xfail(strict=True, reason="timestamp NaN del encabezado pasa la validación de consenso")
 def test_bloque_con_timestamp_nan_es_invalido(tmp_path):
     bc = _nueva(tmp_path)
     assert mine_and_add(bc)[0]
@@ -63,7 +62,6 @@ def test_bloque_con_timestamp_nan_es_invalido(tmp_path):
     assert not ok, "check_block aceptó un bloque con timestamp NaN"
 
 
-@pytest.mark.xfail(strict=True, reason="header.index=True (bool) se acepta como 1: maleabilidad")
 def test_bloque_con_indice_booleano_es_invalido(tmp_path):
     bc = _nueva(tmp_path)
     cand = bc.create_candidate_block()
@@ -73,7 +71,6 @@ def test_bloque_con_indice_booleano_es_invalido(tmp_path):
     assert not ok, "se aceptó un bloque con índice True"
 
 
-@pytest.mark.xfail(strict=True, reason="TX con timestamp no numérico es válida dentro de un bloque")
 def test_tx_con_timestamp_no_numerico_invalida_el_bloque(tmp_path):
     bc = _nueva(tmp_path)
     tx = _tx(Wallet.generate(), "abc")
@@ -82,7 +79,6 @@ def test_tx_con_timestamp_no_numerico_invalida_el_bloque(tmp_path):
     assert not ok, "un bloque con una TX de timestamp 'abc' fue aceptado"
 
 
-@pytest.mark.xfail(strict=True, reason="POST /transactions con timestamp NaN termina en 500")
 def test_api_tx_con_timestamp_nan_responde_4xx(tmp_path):
     app = make_app(tmp_path)
     w = Wallet.generate()

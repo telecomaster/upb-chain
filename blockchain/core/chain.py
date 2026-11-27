@@ -60,6 +60,7 @@ Thread safety:
 """
 import json
 import logging
+import math
 import os
 import sqlite3
 import time
@@ -638,6 +639,14 @@ class Blockchain:
         """
         h = block.header
         prev = prefix[-1]
+        # Tipos estrictos: bool/float darían dos hashes válidos al mismo bloque.
+        for campo in ("index", "nonce", "difficulty"):
+            v = getattr(h, campo)
+            if type(v) is not int or v < 0:
+                return False, f"Encabezado: {campo} debe ser un entero >= 0", None
+        ts = h.timestamp
+        if type(ts) not in (int, float) or not math.isfinite(ts):
+            return False, "Encabezado: timestamp debe ser un número finito", None
         if h.index != len(prefix):
             return False, f"Índice incorrecto: esperado {len(prefix)}, recibido {h.index}", None
         if h.previous_hash != prev.hash:
