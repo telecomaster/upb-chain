@@ -2172,6 +2172,65 @@ def sync_now(node: NodeState = Depends(get_node)):
 
 # ── Fábrica de la aplicación ──────────────────────────────────────────────────
 
+MAX_BODY_BYTES = 2 * 1024 * 1024   # P1-9: tope del cuerpo HTTP (TX 64 KiB, CSV de 100 filas)
+
+
+class BodyLimitMiddleware:
+    """ASGI puro: 413 si el cuerpo supera ``limit`` (por Content-Length o contando el stream)."""
+
+    def __init__(self, app, limit: int = MAX_BODY_BYTES):
+        self.app = app
+        self.limit = limit
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        for name, value in scope["headers"]:
+            if name == b"content-length":
+                try:
+                    if int(value) > self.limit:
+                        return await self._rechazar(scope, receive, send)
+                except ValueError:
+                    pass
+        visto = 0
+        excedido = False
+        respondio = False
+
+        async def limitado_receive():
+            nonlocal visto, excedido
+            msg = await receive()
+            if msg["type"] == "http.request":
+                visto += len(msg.get("body", b""))
+                if visto > self.limit:
+                    excedido = True
+                    return {"type": "http.request", "body": b"", "more_body": False}
+            return msg
+
+        async def limitado_send(msg):
+            nonlocal respondio
+            if excedido and not respondio:
+                respondio = True
+                if msg["type"] == "http.response.start":
+                    return await self._enviar_413(send)
+            if excedido and msg["type"] == "http.response.body" and respondio:
+                return
+            if msg["type"] == "http.response.start":
+                respondio = True
+            await send(msg)
+
+        await self.app(scope, limitado_receive, limitado_send)
+
+    async def _enviar_413(self, send):
+        cuerpo = json.dumps({"detail": "cuerpo de la petición demasiado grande"}).encode()
+        await send({"type": "http.response.start", "status": 413,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(cuerpo)).encode())]})
+        await send({"type": "http.response.body", "body": cuerpo})
+
+    async def _rechazar(self, scope, receive, send):
+        await self._enviar_413(send)
+
+
 def create_app(settings: Optional[Settings] = None,
                authority_address: Optional[str] = None) -> FastAPI:
     """Crea una app FastAPI con su propio ``NodeState`` (``app.state.node``).
@@ -2240,6 +2299,7 @@ def create_app(settings: Optional[Settings] = None,
     # CORS restringido (P1-9): por defecto solo el propio origen del nodo en localhost.
     cors_origins = settings.cors_origins or [
         f"http://localhost:{settings.api_port}", f"http://127.0.0.1:{settings.api_port}"]
+    app.add_middleware(BodyLimitMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[o for o in cors_origins if o != "*"],
