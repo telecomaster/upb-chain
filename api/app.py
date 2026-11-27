@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 
 from config import ConfigError, Settings, load_settings, configure_logging
 from api.metrics import EventCounters, CONTENT_TYPE as METRICS_CONTENT_TYPE, build_registry, render as render_metrics
-from blockchain.anchoring import AnchorService
+from blockchain.anchoring import AnchorService, quien_ancla, responsable_pbft
 from blockchain.core.chain import Blockchain
 from blockchain.core.limits import check_tx_size
 from blockchain.core.merkle import build_proof, leaf_hash
@@ -400,9 +400,15 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
         replica_set=replica_set,
     )
     if settings.anchor_interval > 0:
+        resp = lambda index: True   # noqa: E731
+        if settings.anchor_role == "never":
+            resp = lambda index: False   # noqa: E731
+        elif settings.anchor_role == "auto" and replica_set is not None:
+            resp = responsable_pbft([r.id for r in replica_set.replicas], node_id,
+                                    settings.anchor_interval)
         node.anchors = AnchorService(blockchain.store, settings.anchor_interval,
                                      settings.anchor_calendars,
-                                     tip=lambda: node.blockchain.height)
+                                     tip=lambda: node.blockchain.height, responsable=resp)
     if settings.federated_ai == "on":
         node.federated = _fed.FederadoIA(node_id, k=settings.federated_k, type_map=TYPE_MAP,
                                          model_version=TransactionAnomalyDetector.MODEL_VERSION)
@@ -1787,8 +1793,14 @@ async def list_anchors(from_block: int = 0, include_orphaned: bool = False,
     """Anclajes públicos (OpenTimestamps) desde ``from_block``; un elemento por bloque."""
     if node.anchors is None:
         return {"enabled": False, "anchors": []}
+    rs = node.replica_set
+    lista = node.anchors.listado(from_block, include_orphaned)
+    if rs is not None and node.settings.anchor_role == "auto":
+        ids = [r.id for r in rs.replicas]
+        for a in lista:   # qué réplica ancla ese bloque (los demás nodos no tienen el .ots)
+            a["anchored_by"] = quien_ancla(ids, a["block_index"], node.anchors.interval)
     return {"enabled": True, "interval": node.anchors.interval,
-            "anchors": node.anchors.listado(from_block, include_orphaned)}
+            "role": node.settings.anchor_role, "anchors": lista}
 
 
 @router.get("/anchors/{block_index}.ots")

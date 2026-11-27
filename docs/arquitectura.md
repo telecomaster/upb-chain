@@ -113,6 +113,8 @@ la vez.
 
 ### 2.6 Anclaje público con OpenTimestamps (idea 3)
 
+**Quién ancla (`ANCHOR_ROLE`).** `auto` (por defecto): en PBFT cada bloque lo envía una sola réplica, la que ocupa la posición `(índice // ANCHOR_INTERVAL) % n` de la lista de réplicas (reparto determinista y rotativo, sin coordinación; un nodo que no es réplica no ancla). En PoW no hay lista de nodos, así que `auto` ancla en todos los que tengan `ANCHOR_INTERVAL > 0`; para evitar envíos repetidos se pone `ANCHOR_ROLE=never` en los demás. `always`/`never` fuerzan el comportamiento. Los `.ots` no se replican entre nodos: un nodo que no ancla un bloque no puede servirlo, y `GET /anchors` indica en `anchored_by` qué réplica lo hizo (en PBFT) para pedirle `/anchors/{n}.ots` a ella.
+
 **No es consenso.** Es un trabajo local de mejor esfuerzo: nunca bloquea ni cambia la validación,
 y con `ANCHOR_INTERVAL=0` (por defecto) no existe. Con `ANCHOR_INTERVAL=N`, cada vez que el
 nodo anuncia un bloque de altura múltiplo de N, un hilo en segundo plano (`blockchain/anchoring.py`)

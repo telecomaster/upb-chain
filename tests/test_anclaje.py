@@ -281,3 +281,41 @@ def test_actualizar_sin_atestacion_bitcoin_sigue_pendiente(tmp_path):
     bc, _ = _bloque_pendiente(tmp_path, RESP_A)
     assert actualizar_pendientes(bc.store, lambda u, c: RESP_B) == 0
     assert bc.store.anchors()[0]["status"] == "pending"
+
+
+# ── Una sola réplica ancla cada bloque (P2-anclaje) ───────────────────────────
+
+def test_pbft_una_sola_replica_ancla_cada_bloque():
+    from blockchain.anchoring import quien_ancla, responsable_pbft
+    ids = ["r1", "r2", "r3", "r4"]
+    resp = {i: responsable_pbft(ids, i, 5) for i in ids}
+    for index in range(5, 85, 5):
+        duenos = [i for i in ids if resp[i](index)]
+        assert duenos == [quien_ancla(ids, index, 5)]
+    # rota: no ancla siempre la misma
+    assert {quien_ancla(ids, i, 5) for i in range(5, 45, 5)} == set(ids)
+    assert not responsable_pbft(ids, "observador", 5)(5)
+
+
+def test_servicio_no_responsable_no_envia(tmp_path):
+    fake = Calendarios()
+    store = ChainStore(tmp_path / "c.db")
+    s = AnchorService(store, 2, [CAL_A], transport=fake, background=False,
+                      clock=lambda: 1000.0, responsable=lambda i: False)
+    s.on_block(2, "ab" * 32)
+    assert fake.llamadas == []
+    store.close()
+
+
+def test_anchor_role_never_y_validacion(tmp_path):
+    with pytest.raises(Exception):
+        build_settings(anchor_role="x")
+    app = make_app(tmp_path, anchor_interval=2, anchor_calendars=[CAL_A], anchor_role="never")
+    node = app.state.node
+    fake = Calendarios()
+    node.anchors.transport = fake
+    node.anchors._pool = None
+    for _ in range(2):
+        assert mine_and_add(node.blockchain)[0]
+        node.announce_block(node.blockchain.chain[-1].to_dict())
+    assert fake.llamadas == []

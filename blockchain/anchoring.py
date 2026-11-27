@@ -77,19 +77,35 @@ def transporte_http(calendar: str, digest: bytes, timeout: float = 10.0) -> byte
     return cuerpo
 
 
+def responsable_pbft(ids: Sequence[str], mi_id: str, interval: int) -> Callable[[int], bool]:
+    """Reparto determinista sin coordinación: el bloque ``index`` (múltiplo de ``interval``) lo
+    ancla solo la réplica en la posición ``(index // interval) % n`` de la lista de réplicas.
+    Un nodo que no es réplica nunca ancla. Todas las réplicas calculan lo mismo."""
+    ids = list(ids)
+    return lambda index: (mi_id in ids and interval > 0
+                          and ids[(index // interval) % len(ids)] == mi_id)
+
+
+def quien_ancla(ids: Sequence[str], index: int, interval: int) -> str:
+    return ids[(index // interval) % len(ids)]
+
+
 class AnchorService:
     """Decide cuándo anclar, envía a los calendarios y guarda el resultado en ``anchors``."""
 
     def __init__(self, store, interval: int, calendars: Sequence[str],
                  transport: Transport = transporte_http, background: bool = True,
                  tip: Callable[[], int] = lambda: 0,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 responsable: Callable[[int], bool] = lambda index: True) -> None:
         self.store = store
         self.interval = interval
         self.calendars = list(calendars)
         self.transport = transport
         self.clock = clock
         self.tip = tip   # altura actual de la cadena
+        # ¿le toca a este nodo anclar el bloque ``index``? (ver ``responsable_pbft``)
+        self.responsable = responsable
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="anchor") \
             if background else None
         self._lock = threading.Lock()
@@ -99,7 +115,8 @@ class AnchorService:
         return self.interval > 0 and bool(self.calendars)
 
     def should_anchor(self, index: int) -> bool:
-        return self.enabled and index > 0 and index % self.interval == 0
+        return (self.enabled and index > 0 and index % self.interval == 0
+                and self.responsable(index))
 
     def on_block(self, index: int, block_hash: str, timestamp: Optional[float] = None) -> None:
         """Llamado con cada bloque nuevo: si toca, sella (en segundo plano) y reintenta fallos.

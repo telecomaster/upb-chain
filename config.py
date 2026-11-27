@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     # Anclaje público (idea 3): cada tantos bloques se sella el hash del bloque en los
     # calendarios de OpenTimestamps (0 = apagado). No es consenso: mejor esfuerzo.
     anchor_interval: int = 0
+    # Quién ancla: auto = en pbft una sola réplica por bloque (rotando por índice), en pow todos
+    # los nodos con ANCHOR_INTERVAL > 0; always = siempre; never = nunca (solo sirve lo que haya).
+    anchor_role: str = "auto"
     anchor_calendars: Annotated[List[str], NoDecode] = [
         "https://a.pool.opentimestamps.org", "https://b.pool.opentimestamps.org"]
     log_level: str = "INFO"
@@ -128,6 +131,14 @@ class Settings(BaseSettings):
         v = str(v).strip().lower()
         if v not in ("fast", "full"):
             raise ValueError("debe ser 'fast' o 'full'")
+        return v
+
+    @field_validator("anchor_role", mode="before")
+    @classmethod
+    def _rol_anclaje(cls, v):
+        v = str(v).strip().lower()
+        if v not in ("auto", "always", "never"):
+            raise ValueError("debe ser 'auto', 'always' o 'never'")
         return v
 
     @field_validator("snapshot_interval", "anchor_interval")
