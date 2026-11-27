@@ -12,7 +12,7 @@ def _minar(c, n):
 
 
 def test_blocks_orden_desc_y_paginacion(tmp_path):
-    with TestClient(make_app(tmp_path)) as c:
+    with TestClient(make_app(tmp_path), base_url="http://127.0.0.1") as c:
         _minar(c, 12)                       # alturas 0..12 (13 bloques)
         asc = c.get("/blocks?page=0&size=10").json()
         assert [b["header"]["index"] for b in asc["blocks"]] == list(range(10))
@@ -26,7 +26,7 @@ def test_blocks_orden_desc_y_paginacion(tmp_path):
 
 def test_tx_recibida_por_p2p_pasa_por_monitor_y_feed(tmp_path):
     app = make_app(tmp_path)
-    with TestClient(app):
+    with TestClient(app, base_url="http://127.0.0.1"):
         node = app.state.node
         monitor, eventos = [], []
         node.security_monitor.on_transaction = monitor.append
