@@ -453,6 +453,12 @@ class P2PNode:
                     if not reutilizada:
                         link.close()
                         link.abrir(timeout)
+                        link.sock.settimeout(timeout)
+                        if channel == "ctl" and message.get("type") != MSG_HANDSHAKE:
+                            # Enlace nuevo (p. ej. el par se reinició y olvidó a sus entrantes):
+                            # se anuncia con HANDSHAKE para que nos vuelva a registrar.
+                            self._send_framed(link.sock, {"type": MSG_HANDSHAKE, **self._status()})
+                            self._recv_framed(link.sock)
                     link.sock.settimeout(timeout)
                     self._send_framed(link.sock, message)
                     return self._recv_framed(link.sock) if expect_reply else None

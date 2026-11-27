@@ -347,3 +347,25 @@ def test_recorrer_pares_mientras_otro_hilo_los_modifica_no_falla():
         hilo.join(2)
         sys.setswitchinterval(previo)
     assert seguros == 0
+
+
+def test_nodo_reiniciado_vuelve_a_registrar_a_sus_pares_entrantes(red):
+    """A (sin PEERS) se reinicia; B (PEERS=A) le vuelve a hablar y A debe re-registrar a B.
+
+    Sin HANDSHAKE al reabrir el enlace, A queda con 0 pares y sus bloques solo llegan a B
+    por el sondeo de estado (aquí desactivado con sync_interval grande)."""
+    puerto_a = _puerto_libre()
+    a = red.nodo("a", port=puerto_a, sync_interval=600)
+    b = red.nodo("b", peers=[a], sync_interval=600)
+    assert _esperar(lambda: a.get_peer(f"{HOST}:{b.port}") is not None)
+
+    a.stop()
+    a2 = red.nodo("a", port=puerto_a, sync_interval=600)   # misma cadena en disco, sin pares
+    assert a2.get_peer(f"{HOST}:{b.port}") is None
+
+    _minar(b)                                              # B reabre el enlace hacia A
+    assert _esperar(_alcanzo(a2, b))
+    assert _esperar(lambda: a2.get_peer(f"{HOST}:{b.port}") is not None), "A no re-registró a B"
+
+    _minar(a2)                                             # ahora A le empuja el bloque a B
+    assert _esperar(_alcanzo(b, a2), timeout=5), "el bloque de A no llegó a B sin esperar el sondeo"
