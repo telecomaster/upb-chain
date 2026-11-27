@@ -1074,6 +1074,8 @@ class Blockchain:
                            if self.consensus == "pbft" else None)
             try:
                 self.store.replace_from(fork, added, snapshot, added_certs)
+                if len(added) > 50:
+                    self.store.checkpoint()      # reorganización grande: acota el WAL
             except sqlite3.Error as e:
                 logger.exception("No se pudo guardar la reorganización en chain.db")
                 return False, f"Error de almacenamiento: {e}"

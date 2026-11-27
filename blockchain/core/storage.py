@@ -63,6 +63,7 @@ from typing import Iterator, List, Optional, Sequence, Tuple
 
 from blockchain.contracts.base import tx_type_of
 
+WAL_SIZE_LIMIT = 8 * 1024 * 1024   # bytes (journal_size_limit)
 SCHEMA_VERSION = 1
 
 _SCHEMA = """
@@ -198,6 +199,7 @@ class ChainStore:
             return
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=FULL")
+        conn.execute(f"PRAGMA journal_size_limit={WAL_SIZE_LIMIT}")   # el -wal no queda enorme
         conn.executescript(_SCHEMA)
         # anchors creada por una versión anterior (sin la columna de intentos).
         if "attempts" not in [r[1] for r in conn.execute("PRAGMA table_info(anchors)")]:
@@ -209,6 +211,11 @@ class ChainStore:
         elif int(row[0]) != SCHEMA_VERSION:
             raise StorageError(f"{self.path}: versión de esquema {row[0]} desconocida "
                                f"(este código usa {SCHEMA_VERSION})")
+
+    def checkpoint(self) -> None:
+        """Vuelca el WAL a chain.db y lo trunca (tras reorganizaciones o sincronizaciones grandes)."""
+        with self._lock:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
     def close(self) -> None:
         with self._lock:
