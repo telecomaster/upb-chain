@@ -57,7 +57,7 @@ def test_setup_rpi_da_el_directorio_al_usuario_del_servicio():
     texto = (RAIZ / "scripts" / "setup_rpi.sh").read_text(encoding="utf-8")
     usuario = [l.split("=", 1)[1] for l in texto.splitlines() if l.startswith("User=")][0]
     assert f"chown -R {usuario}:{usuario}" in texto
-    assert texto.index("chown -R") < texto.index("systemctl start")
+    assert texto.index("chown -R") < texto.index("systemctl restart")
 
 
 def test_scripts_sin_secuencias_de_escape_invalidas():
@@ -75,14 +75,46 @@ def _setup_rpi() -> str:
 def test_setup_rpi_no_copia_venv_ni_datos_ni_env():
     t = _setup_rpi()
     assert "cp -r ." not in t
-    for excluido in ("./venv", "./.git", "./data", "./.env", "./.claude", "__pycache__"):
+    for excluido in ("./venv", "./.git", "./data", "./.env", "./nodes", "./.claude", "__pycache__"):
         assert f"--exclude={excluido}" in t
 
 
 def test_setup_rpi_no_pisa_un_env_existente():
     t = _setup_rpi()
-    assert 'if [ -f .env ]' in t
-    assert t.index("if [ -f .env ]") < t.index("cat > .env")
+    assert 'if [ -f "$ENV_FILE" ]' in t
+    assert t.index('if [ -f "$ENV_FILE" ]') < t.index('cat > "$ENV_FILE"')
+
+
+def test_setup_rpi_dos_replicas_en_la_misma_pi_no_se_pisan():
+    """P0-7: 2 réplicas por Pi = 2 unidades systemd con env y DATA_DIR propios."""
+    t = _setup_rpi()
+    assert "/etc/systemd/system/$SERVICIO.service" in t and 'SERVICIO="upbchain-$NODE_ID"' in t
+    assert "upbchain.service" not in t           # nombre fijo: la 2.ª réplica sobrescribiría la 1.ª
+    assert 'ENV_FILE="$PROJECT_DIR/nodes/$NODE_ID.env"' in t
+    assert "EnvironmentFile=$ENV_FILE" in t
+    assert "DATA_DIR=$PROJECT_DIR/data/$NODE_ID" in t
+    assert 'ufw allow "$API_PORT/tcp"' in t and 'ufw allow "$P2P_PORT/tcp"' in t
+    assert "SKIP_APT" in t
+
+
+def test_setup_rpi_no_asume_el_usuario_pi_ni_copia_sobre_si_mismo():
+    t = _setup_rpi()
+    assert "/home/pi" not in t and "pi:pi" not in t and "User=pi" not in t
+    assert "SUDO_USER" in t and "User=$USUARIO" in t
+    assert "pwd -P" in t                          # clon directo en el destino: no copiar
+    assert "After=network-online.target" in t
+
+
+def test_setup_rpi_sintaxis_bash_valida():
+    import shutil
+    import pytest
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("sin bash")
+    ruta = RAIZ / "scripts" / "setup_rpi.sh"
+    r = subprocess.run([bash, "-n", str(ruta)], capture_output=True, timeout=30)
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
+    assert b"\r" not in ruta.read_bytes()        # CRLF rompe bash en la Pi
 
 
 def test_setup_rpi_espera_salud_con_reintentos():
