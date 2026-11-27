@@ -72,7 +72,9 @@ Qué hace (usa `crear_llave_replica`, `crear_ca` y `emitir_cert_nodo`; no duplic
 - crea las 4 llaves PBFT y **una** `pbft_replicas.json` con el orden `node_1..node_4`
   (direcciones `IP1:8001`, `IP1:8011`, `IP2:8001`, `IP2:8011`);
 - emite un certificado por réplica (CN = `node_N`, SAN = la IP de su Pi);
-- escribe los 4 `nodes/node_N.env` con una `ADMIN_API_KEY` aleatoria común (la imprime: **guardarla**);
+- escribe los 4 `nodes/node_N.env` con una `ADMIN_API_KEY` aleatoria común (la imprime: **guardarla**)
+  y el mismo `DID_WEB_DOMAIN` (por defecto `IP1:8000`; `--did-dominio upb.edu.bo` para el dominio
+  real), así un VC exportado por cualquier réplica verifica contra cualquier otra;
 - arma `data\despliegue\pi1\` y `data\despliegue\pi2\`, cada uno con la estructura de la raíz del
   proyecto y **solo** lo que esa Pi necesita. La llave de autoridad solo va al paquete de la Pi 1
   (`node_1`); sin `--autoridad-llave` las operaciones de emisores y `tokens/mint` darán 503.

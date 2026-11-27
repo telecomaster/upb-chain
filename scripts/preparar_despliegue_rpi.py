@@ -45,7 +45,7 @@ REPLICAS = [("pi1", "node_1", 0), ("pi1", "node_2", 1), ("pi2", "node_3", 0), ("
 
 
 def _env(nodo: str, ip: str, api: int, p2p: int, d: str, admin_key: str,
-         con_autoridad: bool) -> str:
+         con_autoridad: bool, did_dominio: str) -> str:
     lineas = [
         f"NODE_ID={nodo}",
         "NODE_HOST=0.0.0.0",
@@ -61,6 +61,9 @@ def _env(nodo: str, ip: str, api: int, p2p: int, d: str, admin_key: str,
         f"P2P_TLS_DIR={d}/tls",
         f"ADMIN_API_KEY={admin_key}",
         f"PUBLIC_BASE_URL=http://{ip}:{api}",
+        # did:web (P2-3) COMÚN a las 4 réplicas: si cada una usara su PUBLIC_BASE_URL, un VC
+        # exportado por una réplica no verificaría contra las demás (verificar_vc.py).
+        f"DID_WEB_DOMAIN={did_dominio}",
     ]
     if con_autoridad:
         lineas.append(f"AUTHORITY_KEY_FILE={d}/keys/authority.json")
@@ -84,8 +87,12 @@ def _verificar_autoridad(ruta: Path) -> None:
 
 def preparar(salida: Path, ip_pi1: str, ip_pi2: str, dir_proyecto: str, api_base: int = 8000,
              p2p_base: int = 8001, desfase_pi2: int = 0, admin_key: Optional[str] = None,
-             autoridad_llave: Optional[Path] = None) -> Dict[str, object]:
-    """Crea los paquetes ``pi1``/``pi2`` y devuelve ``{"admin_key", "urls", "salida"}``."""
+             autoridad_llave: Optional[Path] = None,
+             did_dominio: Optional[str] = None) -> Dict[str, object]:
+    """Crea los paquetes ``pi1``/``pi2`` y devuelve ``{"admin_key", "urls", "salida"}``.
+
+    ``did_dominio``: DID_WEB_DOMAIN común (por defecto ``<ip-pi1>:<api-base>``, la URL de node_1).
+    """
     if salida.exists() and any(salida.iterdir()):
         sys.exit(f"{salida} ya existe y no está vacío: borrarlo antes (no se sobrescriben llaves).")
     if autoridad_llave is not None and not autoridad_llave.is_file():
@@ -93,6 +100,7 @@ def preparar(salida: Path, ip_pi1: str, ip_pi2: str, dir_proyecto: str, api_base
     if autoridad_llave is not None:
         _verificar_autoridad(autoridad_llave)
     admin_key = admin_key or secrets.token_hex(24)
+    did_dominio = did_dominio or f"{ip_pi1}:{api_base}"
     d = dir_proyecto.rstrip("/")
     ips = {"pi1": ip_pi1, "pi2": ip_pi2}
     desfase = {"pi1": 0, "pi2": desfase_pi2}
@@ -118,7 +126,7 @@ def preparar(salida: Path, ip_pi1: str, ip_pi2: str, dir_proyecto: str, api_base
         # newline="\n": systemd conserva un \r de más como parte del valor.
         with open(paquete / "nodes" / f"{nodo}.env", "w", encoding="utf-8", newline="\n") as f:
             f.write(_env(nodo, ips[pi], api, p2p, d, admin_key,
-                         autoridad_llave is not None and nodo == "node_1"))
+                         autoridad_llave is not None and nodo == "node_1", did_dominio))
         shutil.copy2(llaves / f"pbft_{nodo}.json", paquete / "keys" / f"pbft_{nodo}.json")
         shutil.copy2(lista, paquete / "pbft_replicas.json")
         shutil.copy2(ca / "ca.crt", paquete / "tls" / "ca.crt")
@@ -149,11 +157,15 @@ def main() -> None:
     ap.add_argument("--admin-key", help="ADMIN_API_KEY común (por defecto una aleatoria)")
     ap.add_argument("--autoridad-llave",
                     help="llave de la autoridad del génesis: se copia SOLO al paquete de node_1")
+    ap.add_argument("--did-dominio",
+                    help="DID_WEB_DOMAIN común a las 4 réplicas (p. ej. upb.edu.bo); "
+                         "por defecto <ip-pi1>:<api-base>")
     args = ap.parse_args()
     r = preparar(Path(args.salida), args.ip_pi1, args.ip_pi2,
                  args.dir_proyecto or f"/home/{args.usuario}/upb-chain", args.api_base,
                  args.p2p_base, args.desfase_pi2, args.admin_key,
-                 Path(args.autoridad_llave) if args.autoridad_llave else None)
+                 Path(args.autoridad_llave) if args.autoridad_llave else None,
+                 args.did_dominio)
     print(f"\nPaquetes listos en {r['salida']}/pi1 y {r['salida']}/pi2 (NO versionar).")
     print(f"ca.key queda en {r['salida']}/ca/ca.key: no copiarla a ninguna Pi.")
     print(f"ADMIN_API_KEY: {r['admin_key']}")

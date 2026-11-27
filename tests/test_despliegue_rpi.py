@@ -65,6 +65,23 @@ def test_env_sin_crlf_y_valido_para_config(paquetes):
         assert s.node_advertise_host == ("10.0.0.1" if pi == "pi1" else "10.0.0.2")
 
 
+def test_las_cuatro_replicas_comparten_el_dominio_did_web(paquetes, tmp_path):
+    """Regresión (P2-3): cada réplica tenía su PUBLIC_BASE_URL y ningún DID_WEB_DOMAIN, así que
+    cada una exportaba VCs con su propio did:web y un VC de node_1 fallaba en verificar_vc.py
+    contra node_3 (la otra Pi). Las 4 deben usar el MISMO dominio."""
+    from blockchain.contracts import vc_export
+    salida, _, _ = paquetes
+    dominios = set()
+    for pi, nodo, _hueco in pd.REPLICAS:
+        s = _settings(salida / pi / "nodes" / f"{nodo}.env")
+        dominios.add(vc_export.did_domain(s.did_web_domain, s.public_base_url))
+    assert dominios == {"10.0.0.1%3A8000"}
+    otro = pd.preparar(tmp_path / "otra", "10.0.0.1", "10.0.0.2", "/srv/upb",
+                       admin_key="k", did_dominio="upb.edu.bo")
+    s = _settings(otro["salida"] / "pi2" / "nodes" / "node_4.env")
+    assert s.did_web_domain == "upb.edu.bo"
+
+
 def test_una_replica_arranca_con_su_paquete(paquetes):
     """El paquete copiado a la raíz del proyecto basta para construir el nodo (PBFT + mTLS)."""
     from api.app import create_app
