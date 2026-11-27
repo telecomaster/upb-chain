@@ -50,9 +50,9 @@ class _Red:
         return Blockchain(nombre, str(self.tmp_path / nombre), initial_difficulty=1,
                           min_difficulty=1, max_difficulty=1)
 
-    def nodo(self, nombre, peers=(), bc=None, tope=TOPE, port=0):
+    def nodo(self, nombre, peers=(), bc=None, tope=TOPE, port=0, sync_interval=0.5):
         node = P2PNode(nombre, HOST, port, blockchain=bc or self.cadena(nombre),
-                       sync_interval=0.5, retry_base=0.2, retry_max=1.0, timeout=5.0)
+                       sync_interval=sync_interval, retry_base=0.2, retry_max=1.0, timeout=5.0)
         node._MAX_PAYLOAD = tope          # solo esta instancia
         node.start()
         self.nodos.append(node)
@@ -157,6 +157,8 @@ def test_cadenas_divergentes_reorganizan_bajando_solo_desde_la_bifurcacion(red):
     bc_b.add_reorg_listener(lambda fork, dropped, added: reorgs.append((fork, len(dropped))))
     b.add_peer(HOST, a.port)
     assert _esperar(lambda: b.blockchain.last_block.hash == a.blockchain.last_block.hash)
+    # El aviso de reorganización se emite DESPUÉS de reemplazar la cadena (fuera del lock).
+    assert _esperar(lambda: reorgs)
     assert reorgs[0] == (3, 2)
     hashes = [m for m in enviados if m.get("type") == MSG_GET_HASHES]
     lotes = [m for m in enviados if m.get("type") == MSG_GET_BLOCKS]
@@ -215,7 +217,10 @@ def test_puesta_al_dia_agrega_por_lotes_y_el_progreso_persiste(red, tmp_path):
     bc_a = red.cadena("a")
     _minar(bc_a, 9)
     a = red.nodo("a", bc=bc_a)
-    b = red.nodo("b")
+    # Sin sondeo periódico: con carga, el mantenimiento de B/C sincronizaba por su cuenta y
+    # ``sync_with`` devolvía False porque otro hilo ya había puesto al día (comportamiento
+    # correcto del producto, serializado por ``_sync_lock``; la carrera era del test).
+    b = red.nodo("b", sync_interval=3600)
     b._BLOCKS_PER_MSG = 3                      # solo esta instancia pide lotes de 3
     alturas = []
     original = b.blockchain.add_block
@@ -229,7 +234,7 @@ def test_puesta_al_dia_agrega_por_lotes_y_el_progreso_persiste(red, tmp_path):
     assert b.blockchain.height == 9
     assert alturas[:9] == list(range(9))       # un add_block por bloque, altura creciente
 
-    c = red.nodo("c")
+    c = red.nodo("c", sync_interval=3600)
     c._BLOCKS_PER_MSG = 3
     pedidos = []
     orig_req = c.request_blocks

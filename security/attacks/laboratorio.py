@@ -422,8 +422,12 @@ def _doble_gasto_pow(semilla, cuota, z, bits, monto, max_atraso) -> dict:
             narr.append(f"Tras {carrera['rondas']} rondas la cadena privada (altura {alt_privada}) "
                         f"supera a la pública (altura {alt_honesta}): el atacante la LIBERA.")
             atacante.liberar([b.to_dict() for b in privada.chain])
+            # La alerta CHAIN_REORG la emite el listener DESPUÉS de reemplazar la cadena (fuera del
+            # lock): esperar también a la alerta, o la profundidad se leía como 0 bajo carga.
+            n_reorgs = len(_alertas(comercio, ("CHAIN_REORG",)))
             _esperar(lambda: comercio.blockchain.last_block.hash == privada.last_block.hash
-                     and minero.blockchain.last_block.hash == privada.last_block.hash, 10)
+                     and minero.blockchain.last_block.hash == privada.last_block.hash
+                     and len(_alertas(comercio, ("CHAIN_REORG",))) > n_reorgs, 10)
         else:
             motivo = (f"va {alt_honesta - alt_privada} bloque(s) atrás"
                       if alt_honesta - alt_privada >= max_atraso else "se agotaron las rondas")
