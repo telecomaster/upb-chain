@@ -52,7 +52,8 @@ Complejidades:
     validate_chain()   → O(H * n) donde H = altura, n = TXs por bloque
     get_transaction()  → O(log N) por el índice de TXs de chain.db
     get_credentials_for() → O(log N + k) por el índice de destinatarios
-    replace_chain()    → O(H' * n) donde H' = altura de la cadena candidata
+    replace_chain()    → O(S * n) en firmas y contratos, S = bloques nuevos desde la
+                         bifurcación (+ O(H') hashes baratos del prefijo común)
 
 Thread safety:
     _lock (threading.Lock) protege chain y mempool de escrituras concurrentes.
@@ -118,6 +119,8 @@ class Blockchain:
     # Ventana de timestamps para la mediana (estilo Bitcoin) y tolerancia al futuro.
     MEDIAN_WINDOW = 11
     MAX_FUTURE_SECONDS = 2 * 3600
+    # Estados de contratos recientes que se guardan en memoria (ver _recent_states).
+    RECENT_STATES = 16
 
     def __init__(
         self,
@@ -188,6 +191,15 @@ class Blockchain:
         self.on_chain_reorg: List[Callable[[int, List[Block], List[Block]], None]] = []
         # Bloques validados por completo (firmas + contratos) al arrancar (P2-4).
         self.replayed_on_start = 0
+        # Anillo de estados recientes (P2-4, reorg desde la bifurcación):
+        # {altura: (hash del bloque, estados tras ese bloque)} de los últimos
+        # ``recent_states_kept`` bloques. Los estados no se modifican nunca
+        # (copia al escribir en ContractRegistry), así que guardar la referencia
+        # basta. Permite reorganizar cerca de la punta sin reproducir nada.
+        self.recent_states_kept = self.RECENT_STATES
+        self._recent_states: Dict[int, Tuple[str, dict]] = {}
+        # Bloques que validó por completo el último replace_chain (pruebas y logs).
+        self.last_replace_validated = 0
 
         self._load_or_init()
 
@@ -366,16 +378,19 @@ class Blockchain:
                 return False, f"Bloque {i}: Merkle root inválido"
         return True, "OK"
 
-    def _latest_snapshot(self, chain: List[Block]) -> Tuple[int, dict]:
+    def _latest_snapshot(self, chain: List[Block],
+                         max_height: Optional[int] = None) -> Tuple[int, dict]:
         """``(altura, estados)`` de la foto más alta utilizable, o ``(0, iniciales)``.
 
-        Se descarta una foto si está por encima de la punta, si su bloque no es
-        el de la cadena en esa altura, si los contratos no son los mismos o si
-        su SHA-256 no coincide (dañada). Sin foto se reproduce desde el génesis.
+        Se descarta una foto si está por encima de la punta (o de ``max_height``),
+        si su bloque no es el de la cadena en esa altura, si los contratos no son
+        los mismos o si su SHA-256 no coincide (dañada). Sin foto se reproduce
+        desde el génesis.
         """
         names = ",".join(self.contracts.names)
+        top = len(chain) - 1 if max_height is None else min(max_height, len(chain) - 1)
         for snap in self.store.snapshots():
-            if snap.height >= len(chain) or chain[snap.height].hash != snap.block_hash:
+            if snap.height > top or chain[snap.height].hash != snap.block_hash:
                 continue
             if snap.contracts != names:
                 logger.info(f"Foto de la altura {snap.height} con otros contratos; se ignora")
@@ -605,6 +620,7 @@ class Blockchain:
                 self.certificates[height] = cert
             self._confirmed_ids.update(tx.get("tx_id") for tx in block.transactions)
             self.contracts.commit(states, block.header.index)
+            self._remember_states([(height, block.hash, states)])
             # Remueve del mempool las TXs confirmadas y las que ya no pueden
             # confirmarse: p. ej. otra TX del mismo sender ocupó su nonce (P0-9)
             # o la misma credencial ya se emitió en este bloque (P1-13).
@@ -966,7 +982,8 @@ class Blockchain:
         self.on_chain_reorg.append(callback)
 
     def replace_chain(self, new_chain: List[dict],
-                      certificates: Optional[dict] = None) -> Tuple[bool, str]:
+                      certificates: Optional[dict] = None, *,
+                      full_validation: bool = False) -> Tuple[bool, str]:
         """Adopta `new_chain` si es válida y tiene MÁS trabajo acumulado (P0-5).
 
         Modo pbft (P1-1): ``certificates`` = {altura: certificado} de la cadena
@@ -976,7 +993,11 @@ class Blockchain:
         distintos: se rechaza y se avisa a ``on_certified_conflict``.
 
         Reglas:
-          1. Mismo génesis y validez de consenso completa (`_validate_blocks`).
+          1. Mismo génesis y validez de consenso completa. Por defecto se valida
+             solo DESDE LA BIFURCACIÓN (``_validate_from_fork``): el prefijo común
+             ya lo validó este nodo. ``full_validation=True`` usa el camino
+             antiguo (``_replay_blocks`` desde el génesis); ambos dan el mismo
+             resultado (prueba diferencial en ``tests/test_reorg_incremental.py``).
           2. Trabajo acumulado estrictamente mayor que el nuestro (no basta con
              ser más larga). Empate: nos quedamos con la nuestra (determinista).
           3. TXs de nuestros bloques descartados que no están en la cadena nueva
@@ -990,14 +1011,13 @@ class Blockchain:
             certs = {int(k): v for k, v in (certificates or {}).items()}
         except (KeyError, TypeError, ValueError, AttributeError) as e:
             return False, f"Cadena recibida malformada: {e}"
-        if self.consensus == "pbft":
-            ok, reason = self._check_certificates(candidate, certs)
-            if not ok:
-                return False, f"Cadena recibida sin certificados válidos: {reason}"
         # Validación costosa fuera del lock: una cadena válida lo sigue siendo.
-        valid, reason, states = self._replay_blocks(candidate)
+        if full_validation:
+            valid, reason, states, recent = self._validate_full(candidate, certs)
+        else:
+            valid, reason, states, recent = self._validate_from_fork(candidate, certs)
         if not valid:
-            return False, f"Cadena recibida inválida: {reason}"
+            return False, reason
         new_work = self.cumulative_work(candidate)
         if self.consensus == "pbft":
             chain = self.chain
@@ -1013,14 +1033,22 @@ class Blockchain:
                 return False, (
                     f"Cadena recibida sin más trabajo acumulado ({new_work} <= {our_work})"
                 )
-            # Último bloque común (el génesis siempre coincide).
+            if states is None:
+                # La candidata era un prefijo de nuestra cadena (sin bloques
+                # nuevos): no puede tener más trabajo. Defensa por si acaso.
+                return False, "Cadena recibida sin bloques nuevos"
+            # Último bloque común (el génesis siempre coincide). Se recalcula
+            # aquí: la cadena local pudo cambiar mientras se validaba.
             fork = 0
             limit = min(len(self.chain), len(candidate))
             while fork + 1 < limit and self.chain[fork + 1].hash == candidate[fork + 1].hash:
                 fork += 1
             dropped = self.chain[fork + 1:]
             added = candidate[fork + 1:]
-            new_ids = self._collect_ids(candidate)
+            # IDs confirmados de la cadena nueva, de forma incremental:
+            # los nuestros, menos los de los bloques que salen, más los que entran.
+            new_ids = ((self._confirmed_ids - self._collect_ids(dropped))
+                       | self._collect_ids(added))
 
             # Candidatas al mempool: TXs huérfanas (en orden de cadena) y luego
             # las pendientes, salvo las ya confirmadas en la cadena nueva.
@@ -1056,6 +1084,7 @@ class Blockchain:
             self._confirmed_ids = new_ids
             self.mempool = []
             self.contracts.commit(states, tip)
+            self._remember_states(recent)
         # Re-admisión por la puerta normal (fuera del lock): expiración, duplicados
         # y check_transaction de los contratos ya reconstruidos (P1-13).
         for tx in readmit:
@@ -1070,3 +1099,138 @@ class Blockchain:
             except Exception:
                 logger.exception("Error en un listener de on_chain_reorg")
         return True, "OK"
+
+    # ── Validación de la cadena candidata (completa o desde la bifurcación) ──
+
+    def _validate_full(self, candidate: List[Block], certs: Dict[int, dict],
+                       ) -> Tuple[bool, str, Optional[dict], list]:
+        """Camino antiguo: certificados y validación completa desde el génesis.
+
+        Se conserva como referencia (prueba diferencial) y para
+        ``replace_chain(..., full_validation=True)``. Devuelve
+        ``(ok, motivo, estados_en_la_punta, [])``.
+        """
+        if self.consensus == "pbft":
+            ok, reason = self._check_certificates(candidate, certs)
+            if not ok:
+                return False, f"Cadena recibida sin certificados válidos: {reason}", None, []
+        ok, reason, states = self._replay_blocks(candidate)
+        if not ok:
+            return False, f"Cadena recibida inválida: {reason}", None, []
+        self.last_replace_validated = len(candidate) - 1
+        return True, "OK", states, []
+
+    def _validate_from_fork(self, candidate: List[Block], certs: Dict[int, dict],
+                            ) -> Tuple[bool, str, Optional[dict], list]:
+        """Valida ``candidate`` reutilizando el prefijo que comparte con nuestra cadena.
+
+        Mismo veredicto (y mismo motivo) que ``_validate_full``:
+          - Prefijo común = bloques 1..f con el MISMO hash que los nuestros y cuyo
+            contenido realmente da ese hash (``compute_hash``). Como el hash
+            serializa encabezado y TXs (JSON, distingue 1 de 1.0 y de true), un
+            bloque así es idéntico al nuestro, que ya pasó la validación de
+            consenso: validarlo otra vez daría lo mismo. El primer bloque que
+            no cumple se valida entero (y falla con el mismo motivo que antes).
+          - Estado en la bifurcación: ``_states_at`` (anillo en memoria, foto de
+            chain.db + reproducción de NUESTROS bloques sin firmas, o el génesis).
+          - Certificados PBFT: los del prefijo que son idénticos a los nuestros
+            ya se verificaron; el resto (y todos los del sufijo) se verifican.
+        Devuelve ``(ok, motivo, estados_en_la_punta, recientes)``; ``recientes``
+        = ``[(altura, hash, estados)]`` de los últimos bloques del sufijo, para el
+        anillo. ``estados`` es None si no hay sufijo (la candidata es un prefijo
+        nuestro y no puede tener más trabajo).
+        """
+        with self._lock:     # foto coherente de cadena, estado, IDs y certificados
+            local = list(self.chain)
+            tip_states = self.contracts._states
+            recent = dict(self._recent_states)
+            local_ids = set(self._confirmed_ids)
+            local_certs = dict(self.certificates)
+        fork = -1
+        if self._check_genesis(candidate)[0]:
+            fork = 0
+            limit = min(len(local), len(candidate))
+            while (fork + 1 < limit and candidate[fork + 1].hash == local[fork + 1].hash
+                   and candidate[fork + 1].compute_hash() == candidate[fork + 1].hash):
+                fork += 1
+        if self.consensus == "pbft":
+            for block in candidate[1:]:
+                h = block.header.index
+                if h <= fork and h in local_certs and certs.get(h) == local_certs[h]:
+                    continue          # certificado ya verificado al adoptar ese bloque
+                ok, reason = self.check_certificate(block, certs.get(h))
+                if not ok:
+                    return (False, f"Cadena recibida sin certificados válidos: "
+                                   f"Bloque {h}: {reason}", None, [])
+        if fork < 0:
+            ok, reason = self._check_genesis(candidate)
+            return False, f"Cadena recibida inválida: {reason}", None, []
+        if fork == len(candidate) - 1:
+            self.last_replace_validated = 0
+            return True, "OK", None, []
+        states = self._states_at(local, fork, tip_states, recent)
+        if states is None:      # no debería ocurrir: se usa el camino completo
+            logger.warning("No se pudo reconstruir el estado en la bifurcación; "
+                           "validación completa")
+            return self._validate_full(candidate, certs)
+        # TXs ya confirmadas en el prefijo común = las nuestras menos las que salen.
+        seen = local_ids - self._collect_ids(local[fork + 1:])
+        now = time.time()
+        out = []
+        keep = self.recent_states_kept
+        for i in range(fork + 1, len(candidate)):
+            ok, reason, states = self._validate_block_at(
+                candidate[i], candidate[:i], seen, now,
+                lambda block, st=states: self.contracts.run_block(st, block))
+            if not ok:
+                return False, f"Cadena recibida inválida: Bloque {i}: {reason}", None, []
+            if keep and i > len(candidate) - 1 - keep:
+                out.append((i, candidate[i].hash, states))
+        self.last_replace_validated = len(candidate) - 1 - fork
+        return True, "OK", states, out
+
+    def _states_at(self, local: List[Block], fork: int, tip_states: dict,
+                   recent: Dict[int, Tuple[str, dict]]) -> Optional[dict]:
+        """Estados de los contratos tras ``local[fork]`` (bloques ya validados).
+
+        En orden de costo: punta actual, génesis (estado inicial), anillo de
+        estados recientes, y si no, la foto de chain.db más alta en o debajo de
+        ``fork`` (o el génesis) + reproducción SOLO de contratos de nuestros
+        bloques hasta ``fork`` (sin firmas: ya se verificaron al adoptarlos).
+        None si la reproducción falla (no debería: la cadena local es válida).
+        """
+        if fork == len(local) - 1:
+            return tip_states
+        if fork == 0:
+            return self.contracts.initial_states()
+        entry = recent.get(fork)
+        if entry is not None and entry[0] == local[fork].hash:
+            return entry[1]
+        base, states = self._latest_snapshot(local, fork)
+        # Un estado del anillo más cercano a la bifurcación que la foto ahorra reproducción.
+        for h in sorted(recent, reverse=True):
+            if base < h < fork and recent[h][0] == local[h].hash:
+                base, states = h, recent[h][1]
+                break
+        for i in range(base + 1, fork + 1):
+            ok, reason, states = self.contracts.run_block(states, local[i])
+            if not ok:
+                logger.error(f"Bloque local {i} no reproduce: {reason}")
+                return None
+        return states
+
+    def _remember_states(self, entries) -> None:
+        """Guarda ``[(altura, hash, estados)]`` en el anillo y poda lo viejo o huérfano.
+
+        Llamar con ``_lock`` y DESPUÉS de actualizar ``self.chain``.
+        """
+        keep = self.recent_states_kept
+        if not keep:
+            self._recent_states = {}
+            return
+        ring = self._recent_states
+        for height, block_hash, states in entries:
+            ring[height] = (block_hash, states)
+        chain, floor = self.chain, len(self.chain) - keep
+        self._recent_states = {h: v for h, v in ring.items()
+                               if floor <= h < len(chain) and chain[h].hash == v[0]}

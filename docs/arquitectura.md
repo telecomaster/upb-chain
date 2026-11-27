@@ -462,8 +462,17 @@ otro camino.
 
 `GET_CHAIN` se eliminó (nadie más lo usaba; el nodo malicioso del laboratorio ahora sobrescribe
 `_serving_chain`). Un marco que supera el tope o no es JSON se registra en **una línea** y se cierra
-esa conexión; un par que se va mientras se le responde, también (sin traza). La validación completa
-desde el génesis en `replace_chain` se mantiene: es O(altura) por sincronización.
+esa conexión; un par que se va mientras se le responde, también (sin traza).
+
+**Validación desde la bifurcación (P2-4).** `replace_chain` ya no revalida la cadena desde el génesis:
+el prefijo común (mismo hash y contenido que de verdad da ese hash) ya lo validó este nodo, así que
+solo se validan por completo (firmas, contratos, certificados PBFT) los bloques nuevos. El estado de
+los contratos en la bifurcación sale de un anillo en memoria con los últimos 16 estados
+(`Blockchain.RECENT_STATES`), o de la foto de `chain.db` más cercana por debajo + reproducción, solo
+de contratos, de nuestros bloques hasta la bifurcación. Lo que sigue siendo O(altura) es barato
+(decodificar los bloques recibidos, un SHA-256 por bloque del prefijo, sumar el trabajo). El camino
+antiguo queda como `replace_chain(..., full_validation=True)`; `tests/test_reorg_incremental.py`
+compara ambos en bifurcaciones aleatorias.
 
 **Cambio de protocolo.** Un nodo con la versión anterior pide `GET_CHAIN` y no recibe respuesta:
 todos los nodos deben actualizarse a la vez (es el mismo despliegue que los topes de P0-3).
