@@ -315,11 +315,11 @@ def test_registro_rechaza_tipos_sin_contrato(tipo):
 
 
 @pytest.mark.unit
-def test_solo_dos_tipos_de_la_enumeracion_quedan_sin_contrato():
-    """CREDENTIAL_VERIFY y SMART_CONTRACT siguen en el enum (lo toca otro trabajo) pero la
-    red los rechaza; cualquier tipo nuevo debe declararse en un contrato."""
+def test_todos_los_tipos_de_la_enumeracion_tienen_contrato():
+    """CREDENTIAL_VERIFY y SMART_CONTRACT ya no están en el enum; la
+    red rechaza los tipos sin contrato; cualquier tipo nuevo debe declararse en un contrato."""
     from blockchain.contracts import default_contracts
     from blockchain.core.transaction import TransactionType
     reg = ContractRegistry([AccountContract(), *default_contracts()])
     sin = {t.value for t in TransactionType if t.value not in reg.known_types()}
-    assert sin == {"CREDENTIAL_VERIFY", "SMART_CONTRACT"}
+    assert sin == set()

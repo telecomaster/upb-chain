@@ -1055,10 +1055,6 @@ class P2PNode:
 
     # ── Envío de mensajes ─────────────────────────────────────────────────────
 
-    def _send_message(self, conn: socket.socket, message: dict) -> None:
-        """Alias de _send_framed para compatibilidad con código existente."""
-        self._send_framed(conn, message)
-
     def _new_message(self, msg_type: str, data: dict) -> dict:
         msg = {"type": msg_type, "data": data, "id": str(uuid.uuid4())}
         self._mark_seen(msg["id"])   # no re-procesar nuestro propio mensaje

@@ -177,8 +177,3 @@ class ChainAnalytics:
         if not recs:
             recs.append("Red operando dentro de parámetros óptimos")
         return recs
-
-    def export_report(self, report: ChainReport, path: str) -> None:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(report.to_dict(), f, indent=2, ensure_ascii=False)
-        logger.info(f"Reporte exportado a {path}")

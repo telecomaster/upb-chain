@@ -171,7 +171,7 @@ pero con TXs muertas" que igual consumen nonce. Con una sola regla:
 
 Una TX cuyo tipo no maneja ningún contrato (`HANDLED_TYPES` de los contratos, o `ACCOUNT_TYPES` de
 cuentas: `TOKEN_TRANSFER`, `TOKEN_MINT`, `TOKEN_REDEEM` y `DATA_RECORD`) es inválida: el mempool la rechaza y un bloque que la
-contenga se rechaza entero. Hoy esto afecta a `CREDENTIAL_VERIFY` y `SMART_CONTRACT` (la
+contenga se rechaza entero. Los tipos `CREDENTIAL_VERIFY` y `SMART_CONTRACT` ya no están en el enum (la
 verificación es una consulta, no una TX; los contratos usan `CONTRACT_DEPLOY`/`CONTRACT_CALL`).
 Un tipo nuevo debe declararse en el contrato que lo maneja. Cadenas guardadas con TXs de esos
 tipos ya no validan: borrar `data/chain` y resincronizar.

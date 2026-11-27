@@ -17,7 +17,6 @@ from blockchain.core.limits import check_tx_size
 class TransactionType(str, Enum):
     CREDENTIAL_ISSUE    = "CREDENTIAL_ISSUE"
     CREDENTIAL_REVOKE   = "CREDENTIAL_REVOKE"
-    CREDENTIAL_VERIFY   = "CREDENTIAL_VERIFY"
     ISSUER_REGISTER     = "ISSUER_REGISTER"     # admin: alta de emisor, firmada por la autoridad (P0-6)
     VOTE                = "VOTE"
     DATA_RECORD         = "DATA_RECORD"
@@ -32,7 +31,6 @@ class TransactionType(str, Enum):
     EVENT_CODE_CREATE   = "EVENT_CODE_CREATE"   # emisor: código QR de evento, un reclamo por dirección (P1-12)
     EVENT_CODE_CLAIM    = "EVENT_CODE_CLAIM"    # estudiante: reclama puntos con la firma de la llave del evento (P1-12)
     ELECTION_CREATE     = "ELECTION_CREATE"     # configuración de una elección ponderada (P2-12)
-    SMART_CONTRACT      = "SMART_CONTRACT"
     CONTRACT_DEPLOY     = "CONTRACT_DEPLOY"     # despliega bytecode de la VM de pila (P2-11)
     CONTRACT_CALL       = "CONTRACT_CALL"       # llama a un contrato desplegado con gas en PUPB (P2-11)
 
