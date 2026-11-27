@@ -65,7 +65,7 @@ from blockchain.contracts.credential import CredentialState, credential_id_of_tx
 from blockchain.contracts import vc_export
 from blockchain.contracts import programs
 from blockchain.vm import AsmError, assemble, disassemble
-from blockchain.vm.asm import address_to_int
+from blockchain.vm.asm import address_to_int, int_to_address
 from blockchain.contracts.tokens import (
     MAX_CLAIMS, MAX_REASON, TOKEN_NAME, TOKEN_SYMBOL, is_semester, semester_of,
 )
@@ -1019,6 +1019,18 @@ async def award_tokens(request: AwardRequest, node: NodeState = Depends(get_node
     return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce}
 
 
+def _direccion_valida(address: str) -> bool:
+    """¿Es una dirección UPB canónica (``UPB`` + 32 hex en mayúsculas, la de ``derive_address``)?
+
+    Reusa ``address_to_int`` / ``int_to_address`` (blockchain/vm/asm.py): la forma canónica
+    evita que una variante en minúsculas sea otra cuenta que nadie controla.
+    """
+    try:
+        return int_to_address(address_to_int(address)) == address
+    except ValueError:
+        return False
+
+
 def _parse_award_csv(text: str):
     """Filas ``(línea, dirección, monto, motivo)`` y errores ``{"row", "error"}``."""
     rows, errors = [], []
@@ -1031,6 +1043,8 @@ def _parse_award_csv(text: str):
         reason = (row.get("reason") or "").strip()
         if not address:
             errors.append({"row": line, "error": "falta address"})
+        elif not _direccion_valida(address):
+            errors.append({"row": line, "error": "address no es una dirección UPB válida (UPB + 32 hex)"})
         elif not (amount.isascii() and amount.isdigit()) or int(amount) <= 0:
             errors.append({"row": line, "error": "amount debe ser un entero > 0"})
         elif not reason or len(reason) > MAX_REASON:

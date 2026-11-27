@@ -338,6 +338,24 @@ async def test_api_csv_todo_o_nada(client, nodo):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_api_csv_rechaza_direcciones_mal_formadas(client, nodo):
+    """Una dirección que no es UPB + 32 hex (o no es la forma canónica) no recibe premios."""
+    await _emisor_con_presupuesto(client, nodo, 10)
+    base = {"issuer_address": nodo.emisor.address,
+            "private_key_hex": nodo.emisor.private_key_hex}
+    a = nodo.ana.address
+    # UPBAAA: prefijo bien y cuerpo corto; la minúscula es otra cuenta sin dueño.
+    csv_malo = (f"address,amount,reason\n{a},3,taller\nUPBAAA,2,taller\n"
+                f"{a.lower()},1,taller\n")
+    r = await client.post("/tokens/award/csv", json={**base, "csv": csv_malo})
+    assert r.status_code == 400
+    assert [e["row"] for e in r.json()["detail"]["errors"]] == [3, 4]
+    assert all("UPB" in e["error"] for e in r.json()["detail"]["errors"])
+    assert nodo.bc.mempool == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_api_csv_respeta_el_limite_de_tasa(client, nodo):
     await _emisor_con_presupuesto(client, nodo, 10)
     nodo.node.tx_rate_limiter = TxRateLimiter(limit=2)
