@@ -89,6 +89,33 @@ dueño; la regla de reajuste lo lleva hacia 10 s en cualquier caso.
 ambas unidades), pero los bloques guardados con la unidad hexadecimal ya no validan. Todos los
 nodos deben actualizarse a la vez y borrar su `DATA_DIR` (p. ej. `data/chain`) antes de arrancar.
 
+### 2.6 Anclaje público con OpenTimestamps (idea 3)
+
+**No es consenso.** Es un trabajo local de mejor esfuerzo: nunca bloquea ni cambia la validación,
+y con `ANCHOR_INTERVAL=0` (por defecto) no existe. Con `ANCHOR_INTERVAL=N`, cada vez que el
+nodo anuncia un bloque de altura múltiplo de N, un hilo en segundo plano (`blockchain/anchoring.py`)
+envía el **hash del bloque como 32 bytes** (el hash ya es un SHA-256; se usa tal cual como
+"hash del archivo" del formato OTS) con `POST <calendario>/digest` (solo `urllib`, timeout 10 s)
+a cada calendario de `ANCHOR_CALENDARS`. La respuesta (un timestamp con atestación "pending")
+se guarda en la tabla `anchors` de `chain.db` (`block_index, block_hash, calendar, submitted_at,
+ots_bytes, status`: `pending`, `failed`, `orphaned`; `upgraded` queda reservado). Los fallos se
+registran y se reintentan con el siguiente bloque y al arrancar. Si una reorganización descarta el
+bloque, sus anclajes pasan a `orphaned` (misma transacción que la reorg) y la API los ignora.
+Un nodo que sincroniza una cadena larga ancla también las alturas múltiplo de N que recibe.
+
+`GET /anchors?from_block=N` lista los bloques anclados; `GET /anchors/{n}.ots` descarga un `.ots`
+escrito a mano (cabecera mágica + versión 1 + op SHA-256 + digest + respuestas de los calendarios
+separadas por `0xff`). El kiosco muestra el estado del primer anclaje en o después del bloque de la
+credencial. No se implementa la verificación contra Bitcoin: se usa el cliente oficial
+(`pip install opentimestamps-client`):
+
+    ots upgrade bloque-100.ots                     # tras unas horas: trae la prueba de Bitcoin
+    ots verify -d <hash del bloque en hex> bloque-100.ots
+
+Sin archivo original: se pasa el digest con `-d`. **Estado de la prueba:** el formato y el flujo
+se comprueban en `tests/test_anclaje.py` con un calendario simulado; no se ha probado contra los
+calendarios reales en CI ni se ha confirmado con `ots verify`; eso lo hace el dueño del nodo.
+
 ### 2.5 Almacenamiento en SQLite, índices y fotos de estado (P2-4)
 
 **Antes.** La cadena vivía en `chain.json`, reescrito ENTERO (temporal + fsync + rename, P1-8)

@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field
 
 from config import ConfigError, Settings, load_settings, configure_logging
 from api.metrics import EventCounters, CONTENT_TYPE as METRICS_CONTENT_TYPE, build_registry, render as render_metrics
+from blockchain.anchoring import AnchorService
 from blockchain.core.chain import Blockchain
 from blockchain.core.merkle import build_proof, leaf_hash
 from blockchain.core import commitment
@@ -193,6 +194,7 @@ class NodeState:
     replica_set: Optional[ReplicaSet] = None
     pbft: Optional[PBFTReplica] = None
     pbft_transport: Optional[PBFTTransport] = None
+    anchors: Optional[AnchorService] = None   # idea 3: anclaje público (None = apagado)
 
     def on_pbft_committed(self, block, certificate: dict) -> None:
         """Bloque confirmado por PBFT: aviso + el primario lo difunde con su certificado
@@ -225,6 +227,8 @@ class NodeState:
         """Bloque nuevo (propio o de un par): monitor + evento ``block``."""
         self.security_monitor.on_block(block)
         header = block.get("header", {})
+        if self.anchors is not None and block.get("hash"):
+            self.anchors.on_block(header.get("index", 0), block["hash"])
         self.events.publish("block", {
             "index": header.get("index"), "hash": block.get("hash"),
             "tx_count": len(block.get("transactions", [])),
@@ -311,6 +315,9 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
         events=events,
         replica_set=replica_set,
     )
+    if settings.anchor_interval > 0:
+        node.anchors = AnchorService(blockchain.store, settings.anchor_interval,
+                                     settings.anchor_calendars)
     blockchain.add_reorg_listener(node.on_chain_reorg)
     blockchain.add_certified_conflict_listener(security_monitor.on_certified_conflict)
     if replica_wallet is not None:
@@ -1622,6 +1629,29 @@ async def verify_page(credential_id: str, node: NodeState = Depends(get_node)):
 
 # ── Kiosco verificador (idea 4) ───────────────────────────────────────────────
 
+@router.get("/anchors")
+async def list_anchors(from_block: int = 0, include_orphaned: bool = False,
+                       node: NodeState = Depends(get_node)):
+    """Anclajes públicos (OpenTimestamps) desde ``from_block``; un elemento por bloque."""
+    if node.anchors is None:
+        return {"enabled": False, "anchors": []}
+    return {"enabled": True, "interval": node.anchors.interval,
+            "anchors": node.anchors.listado(from_block, include_orphaned)}
+
+
+@router.get("/anchors/{block_index}.ots")
+async def download_anchor(block_index: int, node: NodeState = Depends(get_node)):
+    """Descarga el .ots del bloque anclado (verificar con el cliente oficial ``ots``)."""
+    bc = node.blockchain
+    if node.anchors is None or not 0 <= block_index <= bc.height:
+        raise HTTPException(404, "Sin anclaje para ese bloque")
+    ots = node.anchors.ots_de_bloque(block_index, bc.chain[block_index].hash)
+    if ots is None:
+        raise HTTPException(404, "Sin anclaje para ese bloque")
+    return Response(ots, media_type="application/octet-stream", headers={
+        "Content-Disposition": f'attachment; filename="bloque-{block_index}.ots"'})
+
+
 @router.get("/kiosco", response_class=HTMLResponse)
 @router.get("/kiosco/{credential_id}", response_class=HTMLResponse)
 async def kiosco(credential_id: str = ""):
@@ -2084,6 +2114,8 @@ def create_app(settings: Optional[Settings] = None,
             logger.warning("Red multinodo sin DID_WEB_DOMAIN ni PUBLIC_BASE_URL: los VC exportados "
                            "por este nodo no verificarán contra los demás; definir el mismo "
                            "DID_WEB_DOMAIN (o PUBLIC_BASE_URL) en todos los nodos")
+        if node.anchors is not None:
+            node.anchors.retry_failed()
         logger.info(f"UPB-Chain nodo {settings.node_id} iniciado ({settings.consensus})")
         yield
         node.mining_stop.set()
@@ -2091,6 +2123,8 @@ def create_app(settings: Optional[Settings] = None,
             node.pbft.stop()
             node.pbft_transport.stop()
         node.p2p.stop()
+        if node.anchors is not None:
+            node.anchors.close()
         logger.info("Nodo detenido")
 
     app = FastAPI(

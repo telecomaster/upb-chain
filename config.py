@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     revalidate_on_start: str = "fast"
     # Cada cuántos bloques se guarda una foto del estado de los contratos (0 = nunca).
     snapshot_interval: int = 100
+    # Anclaje público (idea 3): cada tantos bloques se sella el hash del bloque en los
+    # calendarios de OpenTimestamps (0 = apagado). No es consenso: mejor esfuerzo.
+    anchor_interval: int = 0
+    anchor_calendars: Annotated[List[str], NoDecode] = [
+        "https://a.pool.opentimestamps.org", "https://b.pool.opentimestamps.org"]
     log_level: str = "INFO"
     # Llave privada de la autoridad UPB (P0-6). Archivo local, ignorado por git.
     authority_key_file: str = "data/keys/authority.json"
@@ -89,7 +94,7 @@ class Settings(BaseSettings):
     # cualquier certificado de la CA. Sin TLS solo avisa (el node_id anunciado no está autenticado).
     p2p_allowlist: Annotated[List[str], NoDecode] = []
 
-    @field_validator("peers", "cors_origins", "p2p_allowlist", mode="before")
+    @field_validator("peers", "cors_origins", "p2p_allowlist", "anchor_calendars", mode="before")
     @classmethod
     def _separar_comas(cls, v):
         return _lista(v)
@@ -116,7 +121,7 @@ class Settings(BaseSettings):
             raise ValueError("debe ser 'fast' o 'full'")
         return v
 
-    @field_validator("snapshot_interval")
+    @field_validator("snapshot_interval", "anchor_interval")
     @classmethod
     def _intervalo(cls, v: int) -> int:
         if v < 0:

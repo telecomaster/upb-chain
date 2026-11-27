@@ -102,6 +102,18 @@ CREATE TABLE IF NOT EXISTS snapshots (
     states     TEXT NOT NULL,
     digest     TEXT NOT NULL
 );
+-- Idea 3: anclaje público. Tabla local, fuera del consenso; ``CREATE IF NOT EXISTS``
+-- la agrega a una chain.db anterior sin cambiar SCHEMA_VERSION. status: pending |
+-- upgraded | failed | orphaned (el bloque salió de la cadena en una reorganización).
+CREATE TABLE IF NOT EXISTS anchors (
+    block_index  INTEGER NOT NULL,
+    block_hash   TEXT    NOT NULL,
+    calendar     TEXT    NOT NULL,
+    submitted_at REAL    NOT NULL,
+    ots_bytes    BLOB,
+    status       TEXT    NOT NULL,
+    PRIMARY KEY (block_hash, calendar)
+);
 """
 
 
@@ -280,6 +292,9 @@ class ChainStore:
         with self._transaction() as conn:
             for table in ("txs", "blocks", "snapshots", "certificates"):
                 conn.execute(f"DELETE FROM {table} WHERE height > ?", (fork_height,))
+            # Los anclajes de los bloques descartados se conservan, marcados como huérfanos.
+            conn.execute("UPDATE anchors SET status = 'orphaned' WHERE block_index > ?",
+                         (fork_height,))
             self._add_blocks(conn, blocks, snapshot, certificates)
 
     def import_chain(self, blocks, snapshot: Optional[Snapshot] = None) -> None:
@@ -300,6 +315,27 @@ class ChainStore:
             conn.execute(
                 "DELETE FROM snapshots WHERE height NOT IN "
                 "(SELECT height FROM snapshots ORDER BY height DESC LIMIT ?)", (keep,))
+
+    # ── Anclajes públicos (idea 3) ────────────────────────────────────────────
+
+    def put_anchor(self, block_index: int, block_hash: str, calendar: str,
+                   submitted_at: float, ots_bytes: Optional[bytes], status: str) -> None:
+        """Inserta o reemplaza la fila (``block_hash``, ``calendar``)."""
+        with self._transaction() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO anchors(block_index, block_hash, calendar, "
+                "submitted_at, ots_bytes, status) VALUES (?, ?, ?, ?, ?, ?)",
+                (block_index, block_hash, calendar, submitted_at, ots_bytes, status))
+
+    def anchors(self, from_block: int = 0, include_orphaned: bool = False) -> List[dict]:
+        """Filas de ``anchors`` con ``block_index >= from_block``, por altura y calendario."""
+        sql = ("SELECT block_index, block_hash, calendar, submitted_at, ots_bytes, status "
+               "FROM anchors WHERE block_index >= ?")
+        if not include_orphaned:
+            sql += " AND status != 'orphaned'"
+        rows = self._query(sql + " ORDER BY block_index, calendar", (from_block,))
+        return [dict(zip(("block_index", "block_hash", "calendar", "submitted_at",
+                          "ots_bytes", "status"), r)) for r in rows]
 
     # ── Lectura ───────────────────────────────────────────────────────────────
 

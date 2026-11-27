@@ -121,6 +121,14 @@ async function verificar(id) {
       await verifyProof(p.leaf, p.proof, bloque.header.merkle_root));
     prueba.textContent = ok ? 'Prueba Merkle verificada en este dispositivo' : 'LA PRUEBA MERKLE NO COINCIDE';
     prueba.classList.add(ok ? 'ok' : 'mal');
+    // Idea 3: anclaje público (OpenTimestamps) en o después del bloque de la credencial.
+    const anc = await getJson('/anchors?from_block=' + st.block_index);
+    const a = anc && anc.anchors && anc.anchors[0];
+    if (a) {
+      const conf = a.status === 'upgraded';
+      $('motivo').textContent += (st.reason ? ' · ' : '') + 'Anclada en Bitcoin: ' +
+        (conf ? 'confirmada' : 'pendiente') + ' (bloque ' + a.block_index + ')';
+    }
     const cons = await getJson('/consensus');
     if (cons && cons.mode === 'pbft') {
       const cert = await getJson('/blocks/' + st.block_index + '/certificate');
