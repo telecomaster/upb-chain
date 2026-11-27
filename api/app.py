@@ -73,8 +73,9 @@ from blockchain.vm.asm import address_to_int, int_to_address
 from blockchain.contracts.tokens import (
     MAX_CLAIMS, MAX_REASON, TOKEN_NAME, TOKEN_SYMBOL, is_semester, semester_of,
 )
-from blockchain.network.node import P2PNode
-from ai.anomaly.detector import TransactionAnomalyDetector, BlockAnomalyDetector
+from blockchain.network.node import P2PNode, MSG_AI_FLAG, MSG_AI_SUMMARY
+from ai.anomaly.detector import TransactionAnomalyDetector, BlockAnomalyDetector, TYPE_MAP
+from ai.anomaly import federated as _fed
 from ai.analytics.chain_stats import ChainAnalytics
 from security.monitor import SecurityMonitor
 from api.events import EventBus, sse_stream
@@ -203,6 +204,53 @@ class NodeState:
     pbft: Optional[PBFTReplica] = None
     pbft_transport: Optional[PBFTTransport] = None
     anchors: Optional[AnchorService] = None   # idea 3: anclaje público (None = apagado)
+    federated: Optional[_fed.FederadoIA] = None   # idea 6: IA federada (None = apagada)
+
+    # ── IA federada (idea 6): resúmenes y banderas entre nodos; no es consenso ──
+    def federated_sync(self) -> dict:
+        """Publica el resumen local a los pares activos. 409 si aún no hay modelo entrenado."""
+        resumen = self.tx_anomaly_detector.federated_summary()
+        if resumen is None:
+            raise HTTPException(409, "Entrena el detector (POST /ai/train) antes de sincronizar")
+        self.federated.set_local(resumen)
+        enviados = self.p2p.broadcast_ai(MSG_AI_SUMMARY, {"node_id": self.settings.node_id, **resumen})
+        return {"enviados": enviados, "resumen": resumen}
+
+    def federated_screen(self, tx: dict, report) -> None:
+        """Marca la TX (IF local o puntaje federado) y difunde un AI_FLAG; alerta si k nodos coinciden."""
+        fed = self.federated
+        if fed is None:
+            return
+        z, top = 0.0, [e["caracteristica"] for e in report.explicacion if e.get("contribucion", 0) > 0]
+        x = self.tx_anomaly_detector._matrix([[report.features[n] for n in TransactionAnomalyDetector.FEATURE_NAMES]])[0]
+        res = fed.puntuar(list(x))
+        if res is not None:
+            z, det = res
+            top = [d["caracteristica"] for d in det if d["z"] >= _fed.Z_UMBRAL] or top
+        if not (report.is_anomaly or z >= _fed.Z_UMBRAL):
+            return
+        flag, alertas = fed.marcar_local(tx.get("tx_id", ""), tx.get("sender", ""), report.score, z, top)
+        threading.Thread(target=self.p2p.broadcast_ai, args=(MSG_AI_FLAG, flag), daemon=True).start()
+        for a in alertas:
+            self.security_monitor.on_federated_anomaly(a, fed.k)
+
+    def federated_peer_tx(self, tx: dict) -> None:
+        """TX de un par ya admitida: la revisa el detector local para poder votar (sin alerta ANOMALY)."""
+        if self.federated is None:
+            return
+        report = self.tx_anomaly_detector.predict(tx)
+        self.tx_anomaly_detector.observe(tx)
+        self.federated_screen(tx, report)
+
+    def on_ai_message(self, tipo: str, origen: str, data: dict) -> None:
+        fed = self.federated
+        if fed is None:
+            return
+        if tipo == MSG_AI_SUMMARY:
+            fed.recibir_resumen(origen, {k: v for k, v in data.items() if k != "node_id"})
+        elif tipo == MSG_AI_FLAG:
+            for a in fed.recibir_flag(origen, data):
+                self.security_monitor.on_federated_anomaly(a, fed.k)
 
     def on_pbft_committed(self, block, certificate: dict) -> None:
         """Bloque confirmado por PBFT: aviso + el primario lo difunde con su certificado
@@ -315,7 +363,8 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
         # P1-5: bloques recibidos y aceptados, bloques inválidos y pares fuera de PEERS.
         on_new_block=lambda b: node.announce_block(b),
         # TXs de pares ya admitidas al mempool: feed en vivo y monitor (solo alertas).
-        on_new_tx=lambda t: node.announce_tx(t),
+        on_new_tx=lambda t: (node.announce_tx(t), node.federated_peer_tx(t)),
+        on_ai_message=lambda tipo, origen, data: node.on_ai_message(tipo, origen, data),
         on_invalid_block=security_monitor.on_invalid_block,
         on_unknown_peer=security_monitor.on_unknown_peer,
         known_peers=settings.peers,
@@ -348,6 +397,10 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
         node.anchors = AnchorService(blockchain.store, settings.anchor_interval,
                                      settings.anchor_calendars,
                                      tip=lambda: node.blockchain.height)
+    if settings.federated_ai == "on":
+        node.federated = _fed.FederadoIA(node_id, k=settings.federated_k, type_map=TYPE_MAP,
+                                         model_version=TransactionAnomalyDetector.MODEL_VERSION)
+        node.federated.set_local(tx_anomaly_detector.federated_summary())
     blockchain.add_reorg_listener(node.on_chain_reorg)
     blockchain.add_certified_conflict_listener(security_monitor.on_certified_conflict)
     if replica_wallet is not None:
@@ -380,6 +433,7 @@ def _screen_admitted_tx(node: NodeState, tx: Transaction, report=None) -> None:
     node.tx_anomaly_detector.observe(tx.to_dict())
     if report.is_anomaly:
         node.security_monitor.on_anomalous_transaction(tx.to_dict(), report.to_dict())
+    node.federated_screen(tx.to_dict(), report)
 
 
 def _enforce_tx_rate_limit(node: NodeState, sender: str) -> None:
@@ -2074,7 +2128,24 @@ async def train_anomaly_detector(node: NodeState = Depends(get_node)):
     if result.get("trained"):
         node.tx_anomaly_detector.save(node.anomaly_model_path)
         result["model_path"] = str(node.anomaly_model_path)
+        if node.federated is not None:
+            result["federado"] = node.federated_sync()["enviados"]
     return result
+
+
+@router.get("/ai/federated")
+async def federated_state(node: NodeState = Depends(get_node)):
+    """Idea 6: resúmenes de los pares, referencia agregada y banderas recientes."""
+    if node.federated is None:
+        return {"enabled": False}
+    return {"enabled": True, **node.federated.estado()}
+
+
+@router.post("/ai/federated/sync", dependencies=[Depends(require_admin)])
+async def federated_sync(node: NodeState = Depends(get_node)):
+    if node.federated is None:
+        raise HTTPException(409, "IA federada apagada (FEDERATED_AI=on)")
+    return node.federated_sync()
 
 
 @router.get("/ai/anomaly/stats")

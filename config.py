@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # Freno térmico LOCAL del minero (idea 5): "on"/"off". No es consenso: no cambia la
     # dificultad ni la validación, solo el ciclo de trabajo del hilo de minado.
     thermal_throttle: str = "off"
+    # IA federada (idea 6): "on"/"off". Solo intercambia resúmenes estadísticos y banderas; no es
+    # consenso. FEDERATED_K = nodos distintos que deben marcar la misma TX/emisor para alertar.
+    federated_ai: str = "off"
+    federated_k: int = 2
     thermal_soft_c: float = 70.0   # por debajo: velocidad completa
     thermal_hard_c: float = 80.0   # desde aquí: ciclo mínimo
     thermal_min_duty: float = 0.2
@@ -136,6 +140,21 @@ class Settings(BaseSettings):
     @field_validator("tx_rate_limit", "mempool_max", "mempool_max_per_sender")
     @classmethod
     def _limite(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("debe ser al menos 1")
+        return v
+
+    @field_validator("federated_ai", mode="before")
+    @classmethod
+    def _federated(cls, v):
+        v = str(v).strip().lower()
+        if v not in ("off", "on"):
+            raise ValueError("debe ser 'off' o 'on'")
+        return v
+
+    @field_validator("federated_k")
+    @classmethod
+    def _federated_k(cls, v: int) -> int:
         if v < 1:
             raise ValueError("debe ser al menos 1")
         return v

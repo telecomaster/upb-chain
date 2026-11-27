@@ -109,6 +109,8 @@ MSG_PEERS       = "PEERS"
 MSG_PING        = "PING"
 MSG_PONG        = "PONG"
 MSG_PBFT        = "PBFT"
+MSG_AI_SUMMARY  = "AI_SUMMARY"      # idea 6: resumen estadístico del detector (no consenso)
+MSG_AI_FLAG     = "AI_FLAG"         # idea 6: "marqué esta TX como anómala"
 MSG_SYNC_REQUEST  = "SYNC_REQUEST"
 MSG_SYNC_RESPONSE = "SYNC_RESPONSE"
 
@@ -228,6 +230,7 @@ class P2PNode:
         tls: Optional[Dict[str, str]] = None,
         allowlist: Optional[List[str]] = None,
         idle_timeout: float = 120.0,
+        on_ai_message: Optional[Callable] = None,
     ):
         """
         - ``blockchain``: si se pasa, el nodo valida y añade bloques/TXs recibidos,
@@ -275,6 +278,7 @@ class P2PNode:
         self.on_new_block = on_new_block
         self.on_new_tx = on_new_tx
         self.on_pbft_message = on_pbft_message
+        self.on_ai_message = on_ai_message   # idea 6: (tipo, origen autenticado, data)
         self.on_invalid_block = on_invalid_block
         self.on_unknown_peer = on_unknown_peer
         self.known_peers: Set[str] = set(known_peers or [])
@@ -587,6 +591,23 @@ class P2PNode:
             self._send_framed(conn, {"type": MSG_PONG, "node_id": self.node_id})
         elif msg_type == MSG_PBFT and self.on_pbft_message:
             self._notify(self.on_pbft_message, message.get("data"))
+        elif msg_type in (MSG_AI_SUMMARY, MSG_AI_FLAG) and self.on_ai_message:
+            self._handle_ai(message)
+
+    def _handle_ai(self, message: dict) -> None:
+        """Idea 6: entrega un mensaje de IA federada con la identidad del par. Con TLS es el CN
+        del certificado; sin TLS, el node_id declarado (que debe figurar en la lista blanca si la hay)."""
+        data = message.get("data")
+        if not isinstance(data, dict):
+            return
+        if self._tls_server is not None:
+            origen = getattr(self._local, "cn", None)
+        else:
+            origen = data.get("node_id")
+            if self.allowlist and origen not in self.allowlist:
+                return
+        if isinstance(origen, str) and origen:
+            self._notify(self.on_ai_message, message["type"], origen, data)
 
     # ── Servir la cadena por lotes (P0-5) ─────────────────────────────────────
 
@@ -1068,6 +1089,10 @@ class P2PNode:
 
     def broadcast_transaction(self, tx_dict: dict) -> int:
         return self._broadcast(self._new_message(MSG_TRANSACTION, tx_dict))
+
+    def broadcast_ai(self, msg_type: str, data: dict) -> int:
+        """Idea 6: envía un resumen o una bandera a los pares activos (directo, sin re-gossip)."""
+        return self._broadcast(self._new_message(msg_type, data))
 
     def send_pbft(self, host: str, port: int, pbft_msg: dict, timeout: float = 2.0) -> None:
         """Entrega directa (sin gossip ni respuesta) de un mensaje PBFT a una réplica."""

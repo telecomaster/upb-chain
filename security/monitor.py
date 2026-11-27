@@ -67,6 +67,7 @@ class SecurityMonitor:
         "TX_RATE_LIMIT":  "application",
         "HIGH_FEE":       "application",
         "ANOMALY":        "application",
+        "FEDERATED_ANOMALY": "application",
         "DIFFICULTY_SPIKE": "consensus",
         "ORPHAN_BLOCK":   "consensus",
         "PBFT_EQUIVOCATION": "consensus",
@@ -158,6 +159,21 @@ class SecurityMonitor:
             metadata={"sender": sender, "tx_id": tx.get("tx_id", ""), "tx_type": str(tx.get("type", "")),
                       "score": score, "explanation": reasons,
                       "explicacion": report.get("explicacion", []), "resumen": report.get("resumen", "")},
+        ))
+
+    def on_federated_anomaly(self, alerta: dict, k: int) -> None:
+        """Alerta `FEDERATED_ANOMALY` (idea 6): >= k nodos distintos marcaron la misma TX o emisor."""
+        nodos = alerta.get("nodos", [])
+        clave = alerta.get("clave", "")
+        self._fire(SecurityAlert(
+            level=AlertLevel.CRITICAL,
+            event_type="FEDERATED_ANOMALY",
+            message=f"{len(nodos)} nodos ({', '.join(nodos)}) marcaron {clave[:40]}… como anómala",
+            metadata=_con_explicacion(
+                {"clave": clave, "tx_id": alerta.get("tx_id", ""), "sender": alerta.get("sender", ""),
+                 "nodos": nodos, "k": k, "top": alerta.get("top", [])},
+                [_regla("nodos_que_marcan", len(nodos), k, ">=")],
+                f"{len(nodos)} nodos independientes coinciden (umbral k={k})."),
         ))
 
     def on_block(self, block: dict) -> None:

@@ -216,7 +216,8 @@ class TransactionAnomalyDetector:
         X_scaled = self._scaler.fit_transform(X)
         self._ref = {"mediana": np.median(X, axis=0).tolist(),
                      "q1": np.percentile(X, 25, axis=0).tolist(),
-                     "q3": np.percentile(X, 75, axis=0).tolist()}
+                     "q3": np.percentile(X, 75, axis=0).tolist(),
+                     "mad": np.median(np.abs(X - np.median(X, axis=0)), axis=0).tolist()}
         self._model = IsolationForest(
             contamination=self.contamination, random_state=seed, n_estimators=100)
         self._model.fit(X_scaled)
@@ -244,6 +245,14 @@ class TransactionAnomalyDetector:
     def scores_from_features(self, features: List[List[float]]) -> np.ndarray:
         """Score de anomalía crudo (mayor = más anómalo) para una matriz de características."""
         return -self._model.score_samples(self._scaler.transform(self._matrix(features)))
+
+    def federated_summary(self) -> Optional[dict]:
+        """Resumen compacto para la detección federada (Idea 6); None sin modelo o con uno viejo."""
+        from ai.anomaly import federated
+        if not self._is_trained or not self._ref or "mad" not in self._ref:
+            return None
+        return federated.construir_resumen(self._ref["mediana"], self._ref["mad"],
+                                           self._training_samples, TYPE_MAP, self.MODEL_VERSION)
 
     # ── Persistencia (joblib) ────────────────────────────────────────────────
 

@@ -12,8 +12,8 @@ blockchain multinodo funcional en laptop:
   bifurcaciones y se recuperan al reiniciar (SQLite en `chain.db`); P2P con mTLS opcional.
 - Firmas, génesis determinista, nonces/saldos, credenciales con emisores registrados, votación,
   máquina virtual y laboratorio de ataques están conectados y probados por la API.
-- Pendiente: P1-10 (mediciones en las RPi, las hace el dueño del hardware), Idea 6 (detección
-  federada) y las decisiones legales. Ninguna cifra de rendimiento en RPi está medida.
+- Pendiente: P1-10 (mediciones en las RPi, las hace el dueño del hardware) y las decisiones
+  legales. Ninguna cifra de rendimiento en RPi está medida.
 
 **Espíritu del proyecto:** construido desde cero, explicable en un paper, ejecutable en una RPi 5,
 útil para enseñar. Las mejoras deben respetar eso.
@@ -191,6 +191,7 @@ Flujos de trabajo y orden de dependencias:
 5. **RPi consciente de temperatura:** controlador que ajusta la dificultad según la temperatura.
    *Hecho: ajustado a freno LOCAL del minero (la dificultad es consenso y no puede depender de la temperatura): `blockchain/consensus/termico.py`, `THERMAL_THROTTLE=on|off` y umbrales, `thermal` en `/health`, gauges `upb_soc_temperature_celsius`/`upb_miner_duty`, y `bench_rpi.py --termico` para medir en la Pi (hipótesis, sin cifras aún); ver `docs/arquitectura.md` §6.1.*
 6. **Detección federada de anomalías** entre nodos.
+   *Hecho (apagada por defecto, no es consenso): `FEDERATED_AI=on|off`, `FEDERATED_K`; `ai/anomaly/federated.py`. Los nodos intercambian un resumen estadístico (mediana/MAD de 5 características, sin TX ni modelo; mensaje `AI_SUMMARY`) y banderas `AI_FLAG`; puntaje z robusto contra la referencia agregada además del IF local; alerta `FEDERATED_ANOMALY` cuando >= k nodos distintos marcan la misma TX o emisor en la ventana. `GET /ai/federated`, admin `POST /ai/federated/sync`. Topes de tamaño y tasa; sin TLS la identidad del par es declarada. Evaluación sintética (mejora modesta, no uniforme) en `docs/evaluacion_anomalias.md`; `scripts/evaluar_federado.py`.*
 7. **Alertas explicables** con contribución por característica.
    *Hecho: oclusión por característica (mediana de entrenamiento) en `explicacion`/`resumen` de alertas ANOMALY y de `anomaly`; ver `docs/evaluacion_anomalias.md`.*
 8. **Elecciones estudiantiles** sobre el tipo `VOTE` existente.

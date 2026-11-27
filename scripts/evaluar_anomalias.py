@@ -200,6 +200,8 @@ def main() -> int:
     res = evaluar(seed=a.seed, dias=a.dias)
     res["explicaciones"] = evaluar_explicaciones(seed=a.seed, dias=a.dias)
     texto = informe(res)
+    import evaluar_federado   # Idea 6: sección sintética de la detección federada (mismo directorio)
+    texto += chr(10).join(evaluar_federado.seccion(evaluar_federado.evaluar(a.seed, a.dias))) + chr(10)
     Path(a.salida).write_text(texto, encoding="utf-8")
     print(texto)
     print(f"Escrito en {a.salida}")
