@@ -44,7 +44,8 @@ sudo apt install -y git
 sudo timedatectl set-ntp true
 timedatectl status          # debe decir "System clock synchronized: yes" (si no, ver §9)
 python3 --version           # 3.11.x
-hostnamectl set-hostname upb-pi1     # upb-pi2 en la otra: los informes de bench llevan el nombre
+sudo hostnamectl set-hostname upb-pi1     # upb-pi2 en la otra: los informes de bench llevan el nombre
+sudo sed -i "s/^127\.0\.1\.1.*/127.0.1.1\tupb-pi1/" /etc/hosts   # si no, cada sudo avisa "unable to resolve host"
 ```
 
 ## 2. Clonar el proyecto (en las dos)
@@ -52,8 +53,11 @@ hostnamectl set-hostname upb-pi1     # upb-pi2 en la otra: los informes de bench
 ```bash
 git clone https://github.com/telecomaster/upb-chain.git ~/upb-chain
 cd ~/upb-chain
-git log --oneline -1        # anotar el commit: en las dos Pi debe ser el mismo
+git log --oneline -1        # anotar el commit: en las dos Pi debe ser el mismo (y el de la laptop)
 ```
+
+Antes de clonar, comprobar en la laptop que todo lo que se va a desplegar ya está en
+`origin/main` (`git status -sb` no debe decir `ahead`): las Pi clonan GitHub, no la laptop.
 
 Si ya estaba clonado: `cd ~/upb-chain && git pull`. Las carpetas `nodes/`, `keys/`, `tls/`, `data/`
 y el archivo `pbft_replicas.json` están en `.gitignore`: un `git pull` no los toca.
@@ -90,6 +94,11 @@ la llave cargada (`authority_key_loaded` en `/health`).
 Opciones: `--dir-proyecto` (por defecto `/home/<usuario>/upb-chain`), `--salida`, `--api-base`,
 `--p2p-base`, `--admin-key`. No sobrescribe: si `data\despliegue` ya existe y tiene contenido, se
 niega (borrarlo a mano para empezar de cero).
+
+Los `.env` generados dejan apagados el anclaje público y la IA federada. Para activarlos, agregar
+a los 4 `nodes/node_N.env` (antes del paso 4, o después y reiniciar) `ANCHOR_INTERVAL=N` (necesita
+internet; con `ANCHOR_ROLE=auto`, por defecto, ancla una sola réplica por bloque, rotando) y/o
+`FEDERATED_AI=on`.
 
 ## 4. Copiar a cada Pi solo su paquete
 
@@ -170,9 +179,13 @@ curl.exe -s -X POST http://IP1:8000/tokens/mint -H "X-API-Key: KEY" -H "Content-
 
 A los pocos segundos las 4 réplicas deben estar en altura 1 (`verificar_red.py` lo confirma) y cada
 una debe tener 2f+1 réplicas activas. Esto prueba el camino completo (TX, PBFT con mTLS,
-certificado de commit, persistencia).
+certificado de commit, persistencia). "Activa" = mensaje PBFT en los últimos 15 s
+(3 x `PBFT_VIEW_TIMEOUT`): repetir `verificar_red.py` **enseguida** tras la TX; pasado ese plazo la
+línea vuelve a `WARN` sin que nada esté mal.
 
-Panel de cada réplica: `http://IP:PUERTO_API/` (dashboard) y `/consensus`.
+Panel de cada réplica: `http://IP:PUERTO_API/` (dashboard) y `/consensus`. El panel, `/billetera`,
+`/kiosco` y `/verify` funcionan sin internet (librerías incluidas en el repo); `/docs` (Swagger)
+carga sus archivos de un CDN y sin internet queda en blanco.
 
 ## 7. Benchmark (P1-10)
 
@@ -232,7 +245,18 @@ de vista de PBFT. Revisar `timedatectl status` en las dos Pi. Sin internet: `sud
 set-ntp false && sudo timedatectl set-time "AAAA-MM-DD HH:MM:SS"` en ambas, y comprobar el desfase
 con `verificar_red.py` (línea `reloj`).
 
-**Un nodo caído sigue figurando como par activo.** El latido P2P (`P2P_PING_INTERVAL`, 3 s por defecto) consulta a cada par activo; si el proceso murió, el par se marca caído en ese plazo y se reconecta con backoff. Un par colgado o con el cable desconectado (sin RST) tarda `P2P_PING_MISSES` x (`P2P_PING_INTERVAL` + `P2P_PING_TIMEOUT`) en declararse caído (por defecto 2 timeouts de 3 s: unos 9 s). En una red muy cargada (PoW minando en las dos Pi) subir `P2P_PING_TIMEOUT` evita falsos positivos. Medido en portátil con 4 procesos: ~2,6 s (antes ~15 s); no es una medida en Raspberry Pi.
+**Un nodo caído sigue figurando como par activo.** El latido P2P (`P2P_PING_INTERVAL`, 3 s por defecto) consulta a cada par activo; si el proceso murió, el par se marca caído en ese plazo y se reconecta con backoff. Un par colgado o con el cable desconectado (sin RST) tarda `P2P_PING_MISSES` x (`P2P_PING_INTERVAL` + `P2P_PING_TIMEOUT`) en declararse caído (por defecto 2 timeouts de 3 s: unos 9 s). En una red muy cargada (PoW minando en las dos Pi) subir `P2P_PING_TIMEOUT` evita falsos positivos. Medido en portátil Windows con 4 réplicas PBFT y mTLS (no es una medida en Raspberry Pi): proceso muerto ~2,5 s (antes ~15 s; 2 s de ellos son el rechazo de conexión lento de Windows en loopback), dos muertos a la vez 4-6 s (se consultan en serie), proceso colgado 9,6-11 s. Mientras tanto las otras 3 réplicas siguen confirmando (~0,2 s por bloque en el ensayo).
+
+**Una réplica con `chain.db` dañada o perdida (las demás bien).** No hace falta tocar las otras:
+parar esa réplica, borrar solo su `data/node_N` y arrancarla; se resincroniza con certificados
+desde las demás (ensayo en portátil: 3,4 s con 8 bloques).
+
+```bash
+sudo systemctl stop upbchain-node_2 && rm -rf ~/upb-chain/data/node_2 && sudo systemctl start upbchain-node_2
+```
+
+**TX pendientes tras un reinicio.** El mempool se guarda en `chain.db`: al arrancar se recarga y,
+al reconectar, cada réplica reenvía sus TX pendientes a los pares (así llegan al primario).
 
 **`verificar_red.py` da FAIL**
 
@@ -299,5 +323,14 @@ Get-Content <carpeta>\nodes\node_1.env | Where-Object { $_ -match '^\s*[^#\s][^=
 venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 9300
 ```
 
+**Una ventana de PowerShell nueva por réplica**: el fragmento deja las variables en la sesión, y
+una variable que solo está en `node_1.env` (p. ej. `AUTHORITY_KEY_FILE`) pasaría a `node_2` si se
+arranca desde la misma ventana. Además, en la laptop `AUTHORITY_KEY_FILE` vale por defecto
+`data/keys/authority.json`: si ese archivo existe en el repo, todas las réplicas simuladas cargan la
+llave (en las Pi no pasa: el paquete la deja en `keys/authority.json` y solo `node_1` la apunta).
+
 Así se validó la guía antes del despliegue (4 réplicas, mTLS, un bloque confirmado,
-`verificar_red.py` en verde).
+`verificar_red.py` en verde). Ensayo completo del 2026-11-27 (portátil Windows, no Pi): red lista
+~5 s después de lanzar los 4 procesos; commit visible en las 4 en ~0,2 s; credencial firmada en el
+navegador y VC verificada con `verificar_vc.py` desde otra réplica; réplica muerta, colgada,
+"Pi 1" apagada (2 réplicas) y réplica borrada: todas se recuperan solas.
