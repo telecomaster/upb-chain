@@ -1867,7 +1867,8 @@ async def vm_simulate(request: VmSimulateRequest, node: NodeState = Depends(get_
         "storage": [[k, v] for k, v in result.storage.items()] if result.ok else None,
         "logs": result.logs,
         "transfers": [[programs.int_to_address(t), a] for t, a in result.transfers],
-        "trace": result.trace, "trace_truncated": result.steps > len(result.trace),
+        "trace": result.trace,
+        "trace_truncated": bool(request.trace) and result.steps > len(result.trace),
         "block_height": height,
     }
 

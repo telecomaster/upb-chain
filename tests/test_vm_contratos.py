@@ -471,6 +471,7 @@ async def test_simulate_no_cambia_estado(client, nodo):
     r = await _ok(await client.post("/vm/simulate", json={
         "source": "CALLER\nRETURN", "caller": nodo.ana.address, "trace": False}))
     assert r["return_value"] == address_to_int(nodo.ana.address) and r["trace"] == []
+    assert r["trace_truncated"] is False   # no se pidió traza: nada que truncar
     assert nodo.bc.height == altura and _estado(nodo.bc) == estado
     assert not nodo.bc.mempool
     assert (await client.post("/vm/simulate", json={"code": "ee"})).status_code == 400
