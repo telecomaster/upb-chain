@@ -428,3 +428,34 @@ def test_estadisticas_de_par_altura_y_latencia_en_ambos_lados(red):
     par_b_en_a = a.active_peers()[0]
     assert _esperar(lambda: par_b_en_a.height == b.blockchain.height)
     assert _esperar(lambda: par_b_en_a.latency_ms > 0)
+
+
+def _tx_pendiente(bc):
+    w = Wallet.generate()
+    tx = Transaction(type=TransactionType.DATA_RECORD, sender=w.address,
+                     recipient="DEST", payload={"x": 1}, nonce=1)
+    tx.sign(w.private_key_hex)
+    assert bc.add_transaction(tx)[0]
+    return tx
+
+
+def _en_mempool(nodo, tx):
+    return lambda: any(t.tx_id == tx.tx_id for t in nodo.blockchain.mempool)
+
+
+def test_quien_conecta_reenvia_su_mempool_al_par(red):
+    """Regresión: una TX que quedó solo en el mempool de B (recargada de chain.db o admitida
+    sin pares) llega a A cuando B se conecta. Sin difusión ni sync: solo el reenvío."""
+    a = red.nodo("a", sync_interval=60)
+    bc_b = red.cadena("b")
+    tx = _tx_pendiente(bc_b)
+    red.nodo("b", peers=[a], bc=bc_b, sync_interval=60)
+    assert _esperar(_en_mempool(a, tx), 5), "A no recibió la TX pendiente de B"
+
+
+def test_quien_acepta_reenvia_su_mempool_al_par(red):
+    bc_a = red.cadena("a")
+    tx = _tx_pendiente(bc_a)
+    a = red.nodo("a", bc=bc_a, sync_interval=60)
+    b = red.nodo("b", peers=[a], sync_interval=60)
+    assert _esperar(_en_mempool(b, tx), 5), "B no recibió la TX pendiente de A"

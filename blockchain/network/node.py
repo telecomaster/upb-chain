@@ -709,6 +709,7 @@ class P2PNode:
             par = self.get_peer(f"{host}:{port}")
             if par is not None:
                 self._spawn(self._medir_latencia, par)
+            self._spawn(self._reenviar_mempool, host, port)
         if not era_activo and self.on_peer_connected:
             self._spawn(self._notify, self.on_peer_connected, host, port)
         self._learn_peers(message.get("peers", []))
@@ -939,6 +940,7 @@ class P2PNode:
         """HANDSHAKE con un par; si tiene más trabajo, se sincroniza. False si falla o se rechaza."""
         self.add_peer(host, port)
         peer = self.get_peer(f"{host}:{port}")
+        era_activo = peer is not None and peer.is_active
         try:
             start = time.perf_counter()
             reply = self._request(host, port, {"type": MSG_HANDSHAKE, **self._status()})
@@ -962,6 +964,8 @@ class P2PNode:
             return False
         peer = self._register_peer(host, port, reply,
                                    latency_ms=(time.perf_counter() - start) * 1000)
+        if not era_activo:
+            self._spawn(self._reenviar_mempool, host, port)
         self._learn_peers(reply.get("peers", []))
         if peer.work > self._local_work():
             self.sync_with(peer.address)
@@ -1194,6 +1198,25 @@ class P2PNode:
 
     def broadcast_transaction(self, tx_dict: dict) -> int:
         return self._broadcast(self._new_message(MSG_TRANSACTION, tx_dict))
+
+    def _reenviar_mempool(self, host: str, port: int) -> int:
+        """Manda las TX pendientes a un par que acaba de pasar a activo (en los dos sentidos del
+        handshake). Una TX se difunde una sola vez al admitirse: si entonces el par estaba caído,
+        o la TX se recargó de chain.db al reiniciar, nunca le llegaba. En PBFT eso la dejaba
+        para siempre en una réplica que no es el primario (solo él propone bloques). El receptor
+        descarta las que ya tiene (duplicadas o confirmadas)."""
+        if self.blockchain is None:
+            return 0
+        enviadas = 0
+        for tx in self.blockchain.pending_dicts():
+            try:
+                self._request(host, port, self._new_message(MSG_TRANSACTION, tx), expect_reply=False)
+            except Exception:
+                break                       # el par volvió a caer: lo reintentará al reconectar
+            enviadas += 1
+        if enviadas:
+            logger.info(f"Reenviadas {enviadas} TX pendientes a {host}:{port}")
+        return enviadas
 
     def broadcast_ai(self, msg_type: str, data: dict) -> int:
         """Idea 6: envía un resumen o una bandera a los pares activos (directo, sin re-gossip)."""

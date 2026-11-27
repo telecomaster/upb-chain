@@ -297,3 +297,18 @@ def test_primario_que_pierde_los_commit_se_pone_al_dia_por_la_red(red):
     # Sigue siendo el primario: el siguiente bloque se confirma en las 4.
     red.enviar_tx("r2", 1)
     assert esperar(lambda: all(red.altura(r) == 2 for r in red.ids), 10)
+
+
+def test_tx_que_quedo_solo_en_una_replica_aislada_se_confirma_al_volver_la_red(red):
+    """Regresión (ensayo del despliegue): una TX admitida por una réplica que no es el primario
+    mientras estaba aislada (o recargada de chain.db al reiniciar) quedaba para siempre en su
+    mempool: el primario solo propone lo que tiene y nadie se la reenviaba. Ahora cada réplica
+    reenvía su mempool al par que pasa a activo."""
+    red.iniciar("r3")
+    tx_id = red.enviar_tx("r3")
+    assert [t.tx_id for t in red.nodo("r3").blockchain.mempool] == [tx_id]
+    red.iniciar("r0", "r1", "r2")
+    assert esperar(lambda: all(red.altura(r) == 1 for r in ("r0", "r1", "r2")), 10), \
+        "la TX de r3 nunca llegó al primario"
+    assert red.nodo("r0").blockchain.chain[1].transactions[0]["tx_id"] == tx_id
+    assert esperar(lambda: red.altura("r3") == 1 and not red.nodo("r3").blockchain.mempool, 10)
