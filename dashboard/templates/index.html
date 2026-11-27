@@ -743,6 +743,7 @@
       </div>
     </div>
 
+    <div id="ai-model-status" style="font-size:11px; color:var(--upb-gold); margin-bottom:8px;">Detector de TX: —</div>
     <div id="ai-recommendations" style="background:var(--upb-dark); border-radius:6px; padding:12px; font-size:11px; color:var(--upb-muted); line-height:2;"></div>
   </div>
 
@@ -856,7 +857,7 @@ async function loadStats() {
     document.getElementById('warning-alerts').textContent  = t.warning_alerts  ?? 0;
     document.getElementById('chain-reorgs').textContent    = t.chain_reorgs    ?? 0;
     document.getElementById('threat-desc').textContent =
-      `${t.total_alerts} alertas totales · ${t.chain_reorgs} reorganizaciones · TPS ${(data.chain?.total_transactions/Math.max(data.chain?.height,1)).toFixed(2)} TX/bloque`;
+      `${t.total_alerts} alertas totales · ${t.chain_reorgs} reorganizaciones · ${(data.chain?.total_transactions/Math.max(data.chain?.height,1)).toFixed(2)} TX/bloque`;
   }
 }
 
@@ -923,6 +924,12 @@ async function loadAnalytics() {
   document.getElementById('ai-block-time').textContent  = (data.avg_block_time_s ?? 0).toFixed(1) + 's';
   document.getElementById('ai-creds').textContent       = data.credential_stats?.active ?? 0;
   document.getElementById('ai-health').textContent      = ((data.network_health_score ?? 1)*100).toFixed(0) + '%';
+
+  const st = await fetchJSON('/ai/anomaly/stats');
+  if (st.ok && st.data) {
+    document.getElementById('ai-model-status').textContent =
+      `Detector de TX: ${st.data.label} · mínimo para entrenar: ${st.data.min_samples} TX`;
+  }
 
   const recs = (data.recommendations || []).map(r => `• ${r}`).join('\n');
   document.getElementById('ai-recommendations').textContent = recs || '• Sin recomendaciones pendientes';
@@ -1249,7 +1256,9 @@ async function trainModel() {
   if (ok && data.trained) {
     el.textContent = `✓ Modelo entrenado con ${data.samples} muestras · ${data.features?.join(', ')}`;
   } else {
-    el.textContent = `ℹ Entrenamiento: ${data?.reason || 'Ver consola'}`;
+    el.textContent = data?.reason === 'insufficient_data'
+      ? `ℹ Datos insuficientes: ${data.samples} TX (mínimo ${data.min_samples}); sigue la heurística`
+      : `ℹ Entrenamiento: ${data?.reason || 'Ver consola'}`;
   }
 }
 
@@ -1261,9 +1270,15 @@ async function loadAttackSim() {
 
   const lines = [];
   for (const [name, result] of Object.entries(data)) {
-    const icon   = result.success ? '⚠' : '✓';
-    const status = result.success ? 'VULNERABLE' : 'PROTEGIDO';
-    const color  = result.success ? '#f87171' : '#4ade80';
+    if (name === '_summary') {
+      lines.push(`<span style="color:var(--upb-gold)">Σ RESUMEN [${result.risk_label}]</span>`);
+      lines.push(`  <span style="color:var(--upb-muted)">→ ${result.description}</span>`, '');
+      continue;
+    }
+    const noAplica = result.applicable === false;
+    const icon   = noAplica ? '–' : (result.success ? '⚠' : '✓');
+    const status = noAplica ? 'NO APLICA' : (result.success ? 'VULNERABLE' : 'PROTEGIDO');
+    const color  = noAplica ? 'var(--upb-muted)' : (result.success ? '#f87171' : '#4ade80');
     lines.push(`<span style="color:${color}">${icon} [${status}]</span> ${name.replace(/_/g,' ').toUpperCase()}`);
     lines.push(`  <span style="color:var(--upb-muted)">→ ${result.description}</span>`);
     if (result.recommendations?.[0]) {

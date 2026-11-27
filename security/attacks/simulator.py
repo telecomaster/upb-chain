@@ -450,12 +450,24 @@ class StorageAttack:
 
 # ── Resumen de análisis de seguridad ─────────────────────────────────────────
 
+def _no_aplica(attack_type: str, description: str) -> dict:
+    """Entrada de escenario que no aplica al consenso del nodo (mismo contrato que AttackResult)."""
+    return {"attack_type": attack_type, "success": False, "applicable": False, "duration_s": 0.0,
+            "description": description, "metrics": {}, "recommendations": []}
+
+
 def full_security_analysis(
     node_count: int = 2,
     honest_hash_rate: float = 70.0,
     attacker_hash_rate: float = 30.0,
+    consensus: str = "pow",
+    pbft_f: Optional[int] = None,
+    pbft_n: Optional[int] = None,
 ) -> dict:
     """
+    Con ``consensus="pbft"`` los escenarios de poder de hash (51 % y doble gasto) no se
+    simulan: no aplican, y se informan como tales (``applicable: False``) y fuera del riesgo.
+
     Ejecuta todos los simuladores de ataque y retorna un análisis consolidado.
 
     Nuevos campos respecto a la versión anterior:
@@ -477,10 +489,18 @@ def full_security_analysis(
     results: dict = {}
 
     # ── Ataques existentes ────────────────────────────────────────────────────
+    es_pbft = consensus == "pbft"
     pow_attack = FiftyOnePercentAttack()
-    results["51_percent"] = pow_attack.simulate(
-        honest_hash_rate, attacker_hash_rate
-    ).__dict__
+    if es_pbft:
+        tolera = f"; con n={pbft_n} tolera f={pbft_f} réplicas bizantinas" if pbft_n is not None else ""
+        results["51_percent"] = _no_aplica(
+            "51% Attack",
+            "No aplica en PBFT: no hay minado ni hash rate. El riesgo equivalente es que más de "
+            f"f réplicas sean bizantinas (se necesitan 2f+1 COMMIT firmados){tolera}.")
+    else:
+        results["51_percent"] = pow_attack.simulate(
+            honest_hash_rate, attacker_hash_rate
+        ).__dict__
 
     sybil_attack = SybilAttack()
     results["sybil_no_mitigation"] = sybil_attack.simulate(
@@ -491,8 +511,15 @@ def full_security_analysis(
     ).__dict__
 
     ds_attack = DoubleSpendAttack()
-    results["double_spend_6conf"]  = ds_attack.simulate(6,  attacker_hash_rate).__dict__
-    results["double_spend_12conf"] = ds_attack.simulate(12, attacker_hash_rate).__dict__
+    for conf in (6, 12):
+        clave = f"double_spend_{conf}conf"
+        if es_pbft:
+            results[clave] = _no_aplica(
+                "Double Spend",
+                "No aplica en PBFT: un bloque con certificado de commit es final, sin confirmaciones "
+                "probabilísticas que un atacante pueda reescribir con hash rate.")
+        else:
+            results[clave] = ds_attack.simulate(conf, attacker_hash_rate).__dict__
 
     # ── Nuevos ataques ────────────────────────────────────────────────────────
     eclipse_attack = EclipseAttack()
@@ -526,10 +553,13 @@ def full_security_analysis(
     weight_sum = 0.0
     with_mitigation = 0
     any_success = False
-    total_scenarios = len(_weights)
+    total_scenarios = 0
 
     for key, weight in _weights.items():
         r = results.get(key, {})
+        if r.get("applicable") is False:
+            continue
+        total_scenarios += 1
         risk_value = 1.0 if r.get("success", False) else 0.0
         any_success = any_success or bool(r.get("success", False))
         risk_sum   += risk_value * weight
@@ -545,10 +575,15 @@ def full_security_analysis(
             with_mitigation += 1
 
     overall_risk_score  = round(risk_sum / weight_sum, 4) if weight_sum > 0 else 0.0
-    mitigation_coverage = round(with_mitigation / total_scenarios, 4)
+    mitigation_coverage = round(with_mitigation / total_scenarios, 4) if total_scenarios else 0.0
 
     # `success` del resumen: al menos un escenario resultó vulnerable (mismo contrato que AttackResult)
     results["_summary"] = {
+        "description": (
+            f"Resumen ({'PBFT: 51 % y doble gasto no aplican' if es_pbft else 'PoW'}; "
+            f"{total_scenarios} escenarios evaluados): riesgo global {overall_risk_score:.2f}, "
+            f"cobertura de mitigación {mitigation_coverage:.2f}."),
+        "consensus":           consensus,
         "success":             any_success,
         "overall_risk_score":  overall_risk_score,
         "mitigation_coverage": mitigation_coverage,
