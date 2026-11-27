@@ -70,3 +70,20 @@ def test_bench_consenso_invalido():
     import pytest
     with pytest.raises(ValueError):
         bench_rpi.ejecutar("rapido", consenso="raft")
+
+
+def test_bench_cli_rapido_escribe_informe_y_registra_la_carga(tmp_path):
+    """Como lo corre el dueño en la Pi: por línea de comandos y con --salida propio."""
+    import subprocess
+    raiz = Path(__file__).resolve().parents[1]
+    r = subprocess.run([sys.executable, str(raiz / "scripts" / "bench_rpi.py"), "--rapido",
+                        "--consenso", "pbft", "--salida", str(tmp_path / "res")],
+                       capture_output=True, timeout=120, cwd=tmp_path)
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
+    md = list((tmp_path / "res").glob("bench_*_rapido_*.md"))
+    cs = list((tmp_path / "res").glob("bench_*_rapido_*.csv"))
+    assert len(md) == 1 and len(cs) == 1
+    texto = md[0].read_text(encoding="utf-8")
+    assert "carga_1min" in texto and "## TPS con PBFT" in texto
+    assert "## Hash rate" not in texto            # --consenso pbft no mide el PoW
+    assert "carga_1min" in bench_rpi.info_host()

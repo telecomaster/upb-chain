@@ -83,6 +83,9 @@ def info_host() -> dict:
         "arquitectura": platform.machine(),
         "cpu": _modelo_cpu(),
         "nucleos": os.cpu_count() or 0,
+        # Carga de los últimos 60 s al empezar: si es alta (nodos corriendo en la misma Pi) el
+        # benchmark mide una máquina ocupada. No existe en Windows.
+        "carga_1min": round(os.getloadavg()[0], 2) if hasattr(os, "getloadavg") else NO_DISPONIBLE,
         "python": platform.python_version(),
         "fecha_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
     }
