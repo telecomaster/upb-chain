@@ -240,3 +240,26 @@ def test_sin_tls_la_lista_blanca_filtra_ids_desconocidos():
     finally:
         for n in (r, ok, mal):
             n.stop()
+
+
+def test_par_que_se_conecta_despues_recibe_el_resumen_tras_el_handshake(tmp_path):
+    a, d = _nodo(tmp_path, "a"), _nodo(tmp_path, "d")
+    try:
+        assert a.tx_anomaly_detector.train(_txs(7, 400))["trained"]
+        a.federated.set_local(a.tx_anomaly_detector.federated_summary())   # sin pares aún
+        assert not d.federated.estado()["pares"]
+        d.p2p.add_peer("127.0.0.1", a.p2p.port)        # d llega tarde
+        assert _esperar(lambda: len(d.federated.estado()["pares"]) == 1)
+    finally:
+        a.p2p.stop()
+        d.p2p.stop()
+
+
+def test_resumen_se_repite_cada_n_bloques(tmp_path, monkeypatch):
+    from api.app import build_node
+    n = build_node(make_settings(tmp_path, "a", federated_ai="on", federated_resync_blocks=3), None)
+    enviados = []
+    monkeypatch.setattr(n, "federated_send_summary", lambda *a: enviados.append(1) or 0)
+    for i in range(1, 8):
+        n.announce_block({"hash": "h", "header": {"index": i, "timestamp": 0}, "transactions": []})
+    assert _esperar(lambda: len(enviados) == 2)        # bloques 3 y 6

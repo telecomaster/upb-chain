@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     # consenso. FEDERATED_K = nodos distintos que deben marcar la misma TX/emisor para alertar.
     federated_ai: str = "off"
     federated_k: int = 2
+    # Cada cuántos bloques se vuelve a difundir el último resumen (0 = nunca), para los pares
+    # que se conectaron después. Además se envía a cada par nuevo tras su handshake.
+    federated_resync_blocks: int = 10
     thermal_soft_c: float = 70.0   # por debajo: velocidad completa
     thermal_hard_c: float = 80.0   # desde aquí: ciclo mínimo
     thermal_min_duty: float = 0.2
@@ -161,6 +164,13 @@ class Settings(BaseSettings):
         v = str(v).strip().lower()
         if v not in ("off", "on"):
             raise ValueError("debe ser 'off' o 'on'")
+        return v
+
+    @field_validator("federated_resync_blocks")
+    @classmethod
+    def _federated_resync(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("debe ser 0 o mayor")
         return v
 
     @field_validator("federated_k")

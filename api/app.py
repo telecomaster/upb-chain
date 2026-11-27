@@ -216,6 +216,18 @@ class NodeState:
         enviados = self.p2p.broadcast_ai(MSG_AI_SUMMARY, {"node_id": self.settings.node_id, **resumen})
         return {"enviados": enviados, "resumen": resumen}
 
+    def federated_send_summary(self, host: Optional[str] = None, port: int = 0) -> int:
+        """Reenvía nuestro último resumen (sin reentrenar): a un par recién conectado o a todos.
+        Lo llaman el handshake de un par nuevo y la repetición periódica por bloques."""
+        fed = self.federated
+        resumen = fed.local() if fed is not None else None
+        if resumen is None:
+            return 0
+        data = {"node_id": self.settings.node_id, **resumen}
+        if host is not None:
+            return int(self.p2p.send_ai(host, port, MSG_AI_SUMMARY, data))
+        return self.p2p.broadcast_ai(MSG_AI_SUMMARY, data)
+
     def federated_screen(self, tx: dict, report) -> None:
         """Marca la TX (IF local o puntaje federado) y difunde un AI_FLAG; alerta si k nodos coinciden."""
         fed = self.federated
@@ -284,6 +296,10 @@ class NodeState:
         self.security_monitor.on_block(block)
         self._observar_bloque(block)
         header = block.get("header", {})
+        cada = self.settings.federated_resync_blocks
+        if (self.federated is not None and cada > 0 and header.get("index", 0) > 0
+                and header["index"] % cada == 0):
+            threading.Thread(target=self.federated_send_summary, daemon=True).start()
         if self.anchors is not None and block.get("hash"):
             self.anchors.on_block(header.get("index", 0), block["hash"],
                                   header.get("timestamp"))
@@ -371,6 +387,7 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
         # TXs de pares ya admitidas al mempool: feed en vivo y monitor (solo alertas).
         on_new_tx=lambda t: (node.announce_tx(t), node.federated_peer_tx(t)),
         on_ai_message=lambda tipo, origen, data: node.on_ai_message(tipo, origen, data),
+        on_peer_connected=lambda h, p: node.federated_send_summary(h, p),
         on_invalid_block=security_monitor.on_invalid_block,
         on_unknown_peer=security_monitor.on_unknown_peer,
         known_peers=settings.peers,

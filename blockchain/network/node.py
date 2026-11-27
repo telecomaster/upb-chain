@@ -231,6 +231,7 @@ class P2PNode:
         allowlist: Optional[List[str]] = None,
         idle_timeout: float = 120.0,
         on_ai_message: Optional[Callable] = None,
+        on_peer_connected: Optional[Callable] = None,
     ):
         """
         - ``blockchain``: si se pasa, el nodo valida y añade bloques/TXs recibidos,
@@ -278,6 +279,7 @@ class P2PNode:
         self.on_new_block = on_new_block
         self.on_new_tx = on_new_tx
         self.on_pbft_message = on_pbft_message
+        self.on_peer_connected = on_peer_connected   # (host, port) de un par que pasa a activo
         self.on_ai_message = on_ai_message   # idea 6: (tipo, origen autenticado, data)
         self.on_invalid_block = on_invalid_block
         self.on_unknown_peer = on_unknown_peer
@@ -688,8 +690,12 @@ class P2PNode:
                 self._notify(self.on_unknown_peer, f"{host}:{port}")
         # Se registra al par ANTES de responder: si no, el cliente recibe el HANDSHAKE y
         # puede observar que este nodo aún no lo conoce (carrera intermitente).
+        previo = self.get_peer(f"{host}:{port}")
+        era_activo = previo is not None and previo.is_active
         self._register_peer(host, port, message)
         self._send_framed(conn, {"type": MSG_HANDSHAKE, **self._status()})
+        if not era_activo and self.on_peer_connected:
+            self._spawn(self._notify, self.on_peer_connected, host, port)
         self._learn_peers(message.get("peers", []))
         if int(message.get("work", 0)) > self._local_work():
             self._spawn(self.sync_with, f"{host}:{port}")
@@ -1140,6 +1146,16 @@ class P2PNode:
     def broadcast_ai(self, msg_type: str, data: dict) -> int:
         """Idea 6: envía un resumen o una bandera a los pares activos (directo, sin re-gossip)."""
         return self._broadcast(self._new_message(msg_type, data))
+
+    def send_ai(self, host: str, port: int, msg_type: str, data: dict) -> bool:
+        """Idea 6: envía un resumen/bandera a UN par (p. ej. el que acaba de conectarse)."""
+        message = {**self._new_message(msg_type, data),
+                   "origin": {"host": self.advertise_host, "port": self.port}}
+        try:
+            self._request(host, port, message, expect_reply=False)
+            return True
+        except Exception:
+            return False
 
     def send_pbft(self, host: str, port: int, pbft_msg: dict, timeout: float = 2.0) -> None:
         """Entrega directa (sin gossip ni respuesta) de un mensaje PBFT a una réplica."""
