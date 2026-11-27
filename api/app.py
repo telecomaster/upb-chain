@@ -1755,13 +1755,15 @@ async def kiosco(credential_id: str = ""):
 
 @router.get("/blocks/{index}/certificate")
 async def block_certificate(index: int, node: NodeState = Depends(get_node)):
-    """Resumen del certificado PBFT del bloque: cantidad de firmantes distintos."""
+    """Certificado PBFT del bloque: firmantes distintos y los COMMIT firmados (para que un
+    cliente, como el kiosco o ``verificar_prueba.py``, compruebe las firmas por su cuenta)."""
     cert = node.blockchain.certificates.get(index)
     if cert is None:
         raise HTTPException(404, "Sin certificado para ese bloque")
     commits = cert.get("commits") or []
     return {"index": index, "view": cert.get("view"), "digest": cert.get("digest"),
-            "signers": len({m.get("replica") for m in commits})}
+            "seq": cert.get("seq"), "signers": len({m.get("replica") for m in commits}),
+            "commits": commits}
 
 
 @router.get("/credentials/issuer/{address}")

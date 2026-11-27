@@ -5,6 +5,7 @@ transporte PBFT y temporizadores). Toda espera está acotada (``esperar``).
 """
 import contextlib
 import json
+import shutil
 import socket
 import time
 
@@ -120,6 +121,22 @@ def test_caso_normal_4_replicas_consenso_api_metricas_y_eventos(red):
     assert estado["mode"] == "pbft" and estado["view"] == 0 and estado["primary"] == "r0"
     assert estado["last_committed_seq"] == 1 and (estado["n"], estado["f"]) == (4, 1)
     assert [x["id"] for x in estado["replicas"]] == red.ids
+    cert = c.get("/blocks/1/certificate").json()
+    assert cert["signers"] >= estado["quorum"] and len(cert["commits"]) == cert["signers"]
+    if shutil.which("node"):    # el kiosco (JS) verifica el certificado real contra las llaves de /consensus
+        import subprocess
+        from tests.test_kiosco import JS_LOCAL
+        bloque = c.get("/blocks/1").json()
+        bloque.pop("anomaly", None)
+        caso = {"id": "x", "tx_id": tx_id, "bloque": bloque, "prueba": c.get(f"/tx/{tx_id}/proof").json(),
+                "consenso": estado, "cert": cert}
+        res = subprocess.run(["node", str(JS_LOCAL)], input=json.dumps({"casos": [caso]}).encode("utf-8"),
+                             capture_output=True, timeout=60, check=True)
+        checks = json.loads(res.stdout.decode("utf-8"))[0]["checks"]
+        pbft = [x for x in checks if "Certificado PBFT" in x["texto"]]
+        assert pbft and pbft[0]["ok"] is True
+        assert [x["texto"] for x in checks if x["ok"] is False] == [
+            x["texto"] for x in checks if "ID de la credencial" in x["texto"]]   # solo falla el ID (la TX no es una credencial)
     r = c.post("/blocks/mine", json={"miner_address": "M"})
     assert r.status_code == 409 and "PBFT" in r.json()["detail"]
     metricas = c.get("/metrics").text
