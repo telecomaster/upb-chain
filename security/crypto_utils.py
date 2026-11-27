@@ -20,22 +20,9 @@ Implementa las primitivas criptográficas que sustentan la seguridad del sistema
 
     Propiedad avalancha: cambiar 1 bit de entrada cambia ~50 % de la salida.
 
-─── Cifrado simétrico (AES-256-GCM) ───────────────────────────────────────
-    Cifrado autenticado: proporciona confidencialidad + integridad + autenticidad.
-    Nonce de 12 bytes aleatorio por operación → evita reutilización de nonce.
-    Precondición: nunca reutilizar (key, nonce). Genera nonce nuevo con os.urandom().
-
-─── Derivación de contraseñas (PBKDF2-HMAC-SHA256) ────────────────────────
-    Iteraciones: 100,000 → ~100 ms en RPi5 por verificación → costoso para atacante.
-    Salt: 32 bytes aleatorios por contraseña → previene rainbow tables.
-
-─── Comparación de hashes (hmac.compare_digest) ───────────────────────────
-    Tiempo constante → previene timing attacks en verificación de contraseñas.
-
-Rendimiento esperado en RPi5 (Cortex-A76 @ 2.4 GHz):
-    SHA-256:              ~500,000 ops/s
-    ECDSA sign+verify:    ~300–500 ops/s
-    AES-256-GCM encrypt:  ~1,000,000 ops/s (aceleración AES-NI disponible)
+Nota: el cifrado simétrico y la derivación de contraseñas se eliminaron (ninguna
+función del sistema los usaba); los benchmarks de rendimiento se miden con
+``benchmark_crypto`` y ``scripts/bench_rpi.py``, no se estiman aquí.
 
 Referencias:
     NIST FIPS 186-5 (2023) — Digital Signature Standard (ECDSA).
@@ -43,10 +30,6 @@ Referencias:
     Johnson, D., et al. (2001). The Elliptic Curve Digital Signature Algorithm. IJIS.
 """
 import hashlib
-import hmac
-import json
-import os
-import secrets
 from typing import Tuple
 
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -103,70 +86,6 @@ def sha3_256(data: str) -> str:
 
 def blake2b(data: str) -> str:
     return hashlib.blake2b(data.encode()).hexdigest()
-
-
-def double_sha256(data: str) -> str:
-    first = hashlib.sha256(data.encode()).digest()
-    return hashlib.sha256(first).hexdigest()
-
-
-def hash_object(obj: dict) -> str:
-    serialized = json.dumps(obj, sort_keys=True, ensure_ascii=False)
-    return sha256(serialized)
-
-
-# ── Generación de tokens seguros ──────────────────────────────────────────────
-
-def generate_nonce(length: int = 32) -> str:
-    return secrets.token_hex(length)
-
-
-def generate_challenge() -> str:
-    """Challenge de autenticación de un solo uso."""
-    return secrets.token_urlsafe(32)
-
-
-# ── Derivación de llave (KDF) ─────────────────────────────────────────────────
-
-def derive_key(password: str, salt: bytes, iterations: int = 100_000) -> bytes:
-    """PBKDF2-HMAC-SHA256 para derivación de llaves desde contraseña."""
-    return hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
-
-
-def hash_password(password: str) -> Tuple[str, str]:
-    """Retorna (salt_hex, hash_hex) para almacenamiento seguro."""
-    salt = os.urandom(32)
-    key = derive_key(password, salt)
-    return salt.hex(), key.hex()
-
-
-def verify_password(password: str, salt_hex: str, stored_hash_hex: str) -> bool:
-    salt = bytes.fromhex(salt_hex)
-    key = derive_key(password, salt)
-    return hmac.compare_digest(key.hex(), stored_hash_hex)
-
-
-# ── Cifrado simétrico AES-GCM ──────────────────────────────────────────────────
-
-def encrypt_aes_gcm(plaintext: str, key_hex: str) -> dict:
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    key = bytes.fromhex(key_hex)
-    nonce = os.urandom(12)
-    aesgcm = AESGCM(key)
-    ciphertext = aesgcm.encrypt(nonce, plaintext.encode(), None)
-    return {
-        "nonce": nonce.hex(),
-        "ciphertext": ciphertext.hex(),
-    }
-
-
-def decrypt_aes_gcm(encrypted: dict, key_hex: str) -> str:
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    key = bytes.fromhex(key_hex)
-    nonce = bytes.fromhex(encrypted["nonce"])
-    ciphertext = bytes.fromhex(encrypted["ciphertext"])
-    aesgcm = AESGCM(key)
-    return aesgcm.decrypt(nonce, ciphertext, None).decode()
 
 
 # ── Benchmark criptográfico ───────────────────────────────────────────────────

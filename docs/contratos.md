@@ -214,9 +214,8 @@ comprueba contra el `fields_root` confirmado en la cadena. Las páginas y endpoi
 (`/verify/{id}`, `/credentials/verify/{id}`, QR, historial) muestran solo campos públicos y la raíz.
 
 Limitaciones: las hojas no llevan separación de dominio (ver `merkle.py`); el nombre del campo
-entra en el hash, así que un valor no se puede presentar bajo otro campo. `get_stats_by_program`
-ya no da `avg_grade/min_grade/max_grade` (la nota no está en la cadena) y `search_credentials`
-busca solo por título/programa.
+entra en el hash, así que un valor no se puede presentar bajo otro campo. `search_credentials`
+busca solo por título/programa (la nota no está en la cadena).
 
 **Compatibilidad.** Las cadenas guardadas con credenciales en formato anterior (nombre/nota en
 claro) ya no validan al cargar: borrar `data/chain` y actualizar todos los nodos a la vez. No hay

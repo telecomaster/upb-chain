@@ -26,30 +26,6 @@ class TestProofOfWork:
         assert int(result.hash, 16) < 2 ** 255  # 1 bit inicial en cero (P2-5)
         assert result.block.hash == result.hash
 
-    def test_validate_proof(self):
-        pow_engine = ProofOfWork(difficulty=1)
-        genesis = Block.create_genesis("test")
-        from blockchain.core.block import BlockHeader
-        candidate = Block(
-            header=BlockHeader(
-                index=1,
-                timestamp=genesis.header.timestamp + 1,
-                previous_hash=genesis.hash,
-                merkle_root=Block.compute_merkle_root([]),
-                difficulty=1,
-            ),
-            transactions=[],
-        )
-        result = pow_engine.mine(candidate, timeout=30.0)
-        assert result is not None
-        assert pow_engine.validate_proof(result.block)
-
-    def test_invalid_hash_fails_validation(self):
-        pow_engine = ProofOfWork(difficulty=4)
-        genesis = Block.create_genesis("test")
-        genesis.hash = "0" * 64  # hash inválido
-        assert not pow_engine.validate_proof(genesis)
-
     def test_mining_stats_empty(self):
         pow_engine = ProofOfWork(difficulty=4)
         stats = pow_engine.get_mining_stats()

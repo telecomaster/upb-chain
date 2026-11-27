@@ -357,7 +357,7 @@ class TimingAttack:
                 "Nunca usar '==' para comparar secretos, hashes o tokens de autenticación",
                 "En Python, secrets.compare_digest() es equivalente y también es seguro",
                 "Agregar jitter (random sleep) puede reducir pero NO elimina la vulnerabilidad",
-                "Revisar crypto_utils.py: verify_password() ya usa hmac.compare_digest [OK]",
+                "Comparar firmas con ecdsa.verify y los digests con hmac.compare_digest (no con ==)",
             ],
         )
 

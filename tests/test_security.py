@@ -5,8 +5,7 @@ import pytest_asyncio
 
 from security.crypto_utils import (
     generate_keypair, sign_data, verify_signature,
-    sha256, sha3_256, blake2b, hash_password, verify_password,
-    encrypt_aes_gcm, decrypt_aes_gcm, benchmark_crypto,
+    sha256, sha3_256, blake2b, benchmark_crypto,
 )
 from security.attacks.simulator import (
     FiftyOnePercentAttack, SybilAttack, DoubleSpendAttack, full_security_analysis
@@ -49,41 +48,10 @@ class TestCrypto:
         hashes = {sha256(data), sha3_256(data), blake2b(data)}
         assert len(hashes) == 3
 
-    def test_password_hashing(self):
-        salt, hashed = hash_password("mi_password_seguro")
-        assert verify_password("mi_password_seguro", salt, hashed)
-        assert not verify_password("password_incorrecto", salt, hashed)
-
-    def test_aes_gcm_encrypt_decrypt(self):
-        import os
-        key = os.urandom(32).hex()
-        plaintext = "Credencial académica UPB 2025"
-        encrypted = encrypt_aes_gcm(plaintext, key)
-        assert "nonce" in encrypted
-        assert "ciphertext" in encrypted
-        decrypted = decrypt_aes_gcm(encrypted, key)
-        assert decrypted == plaintext
-
     def test_benchmark_runs(self):
         result = benchmark_crypto(iterations=100)
         assert "sha256" in result
         assert "ecdsa_sign_verify" in result
-
-    def test_encrypt_decrypt_roundtrip_large_payload(self):
-        """Cifrado y descifrado AES-GCM de un payload de 10 KB deben ser exactos."""
-        key = os.urandom(32).hex()
-        large_text = "X" * (10 * 1024)  # 10 KB de datos
-        encrypted = encrypt_aes_gcm(large_text, key)
-
-        assert "nonce" in encrypted
-        assert "ciphertext" in encrypted
-        # El ciphertext cifrado no debe coincidir con el plaintext en hex
-        assert encrypted["ciphertext"] != large_text.encode().hex()
-
-        decrypted = decrypt_aes_gcm(encrypted, key)
-        assert decrypted == large_text, (
-            "El texto descifrado no coincide con el original (10 KB)"
-        )
 
 
 class TestAttackSimulator:

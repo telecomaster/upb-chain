@@ -121,7 +121,7 @@ async def test_verify_publico_sigue_y_muestra_raiz_sin_datos(client):
     assert "student_name" not in v["credential"] and "grade" not in v["credential"]
     qr = await client.get(f"/credentials/{cid}/qr")
     assert qr.status_code == 200
-    assert NOMBRE not in emitida["qr_data"]
+    assert NOMBRE not in emitida["verify_url"]
 
 
 @pytest.mark.asyncio

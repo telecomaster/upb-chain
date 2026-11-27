@@ -934,18 +934,6 @@ async def get_account(address: str, node: NodeState = Depends(get_node)):
     return node.blockchain.account_info(address)
 
 
-@router.get("/chain/balance/{address}")
-async def get_address_balance(address: str, node: NodeState = Depends(get_node)):
-    """Saldo confirmado (entero, unidad mínima) y total de fees quemadas (P0-9)."""
-    balance = node.blockchain.get_balance(address)
-    total_fees = node.blockchain.total_fees
-    return {
-        "address": address,
-        "balance": balance,
-        "chain_total_fees": total_fees,
-    }
-
-
 @router.post("/mempool/prune", dependencies=[Depends(require_admin)])
 async def prune_mempool(request: PruneMempoolRequest, node: NodeState = Depends(get_node)):
     """Elimina del mempool las transacciones más viejas que max_age_seconds."""
@@ -1489,7 +1477,7 @@ async def register_issuer(request: RegisterIssuerRequest, node: NodeState = Depe
 
 
 @router.post("/credentials/issue")
-async def issue_credential(request: CredentialRequest, node: NodeState = Depends(get_node)):
+async def issue_credential(request: CredentialRequest, http: Request, node: NodeState = Depends(get_node)):
     """Emite una credencial: firma la TX y la pone en el mempool.
 
     No toca el estado confirmado: la credencial queda PENDING hasta que un
@@ -1520,12 +1508,7 @@ async def issue_credential(request: CredentialRequest, node: NodeState = Depends
         # Registro privado (campos + sales): se entrega UNA sola vez y el nodo no lo guarda.
         # Quien lo pierda no puede revelar sus datos; la cadena solo tiene la raíz.
         "private_record": registro,
-        "qr_data": json.dumps({
-            "id": credential_id,
-            "degree": data.get("degree"),
-            "date": data.get("issue_date"),
-            "verify_url": f"upbchain://verify/{credential_id}",
-        }),
+        "verify_url": _url_verificacion(node, http, credential_id),
     }
 
 

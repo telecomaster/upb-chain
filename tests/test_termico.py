@@ -90,7 +90,6 @@ def test_bloque_minado_con_freno_es_valido_y_misma_dificultad():
     assert r1.nonce == r2.nonce and r1.hash == r2.hash       # el freno no altera el resultado
     assert r1.block.header.difficulty == 12
     assert hash_meets_bits(r1.block.hash, 12)
-    assert sin.validate_proof(r1.block)
 
 
 def test_config_termica():

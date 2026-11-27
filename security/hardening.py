@@ -125,19 +125,15 @@ HARDENING_CHECKS: List[HardeningCheck] = [
     HardeningCheck(
         id="NET-005",
         category=HardeningCategory.NETWORK,
-        title="Lista blanca de peers P2P conocidos",
+        title="Lista blanca de peers P2P con mTLS",
         description=(
-            "El nodo debe mantener una lista de peers confiables (nodos UPB) "
-            "con mayor prioridad de conexión para resistir ataques Sybil y Eclipse."
+            "P2P_ALLOWLIST con los CN de los nodos UPB y P2P_TLS=on: sin TLS la lista "
+            "blanca solo avisa; con mTLS rechaza identidades desconocidas (Sybil/Eclipse)."
         ),
         severity="MEDIUM",
-        check_command=(
-            "test -f /home/upb/blockchain_upb_ia/config/trusted_peers.json "
-            "&& python3 -m json.tool /home/upb/blockchain_upb_ia/config/trusted_peers.json"
-        ),
+        check_command="grep -n 'P2P_ALLOWLIST|P2P_TLS' .env",
         remediation=(
-            "Crear config/trusted_peers.json con las IPs y claves públicas "
-            "de los nodos UPB conocidos y cargarlos en el arranque del nodo."
+            "Definir P2P_ALLOWLIST y P2P_TLS=on (certificados con scripts/emitir_cert_nodo.py)."
         ),
     ),
 
@@ -181,39 +177,32 @@ HARDENING_CHECKS: List[HardeningCheck] = [
     HardeningCheck(
         id="CRY-003",
         category=HardeningCategory.CRYPTO,
-        title="Nonces AES-GCM únicos por operación (os.urandom)",
+        title="Llaves generadas con el CSPRNG de la librería criptográfica",
         description=(
-            "Cada operación de cifrado AES-GCM debe generar un nonce aleatorio "
-            "único (12 bytes de os.urandom). Reutilizar el nonce destruye la "
-            "confidencialidad y autenticidad del cifrado."
+            "Las llaves privadas deben salir de ec.generate_private_key (CSPRNG del "
+            "sistema), nunca de random ni de semillas predecibles."
         ),
         severity="CRITICAL",
         check_command=(
-            "grep -n 'os.urandom' "
+            "grep -n 'generate_private_key' "
             "/home/upb/blockchain_upb_ia/security/crypto_utils.py"
         ),
-        remediation=(
-            "Asegurar que encrypt_aes_gcm() llame a os.urandom(12) en cada "
-            "invocación. Nunca usar un nonce fijo o predecible."
-        ),
+        remediation="Generar llaves solo con generate_keypair() (ec.generate_private_key).",
     ),
     HardeningCheck(
         id="CRY-004",
         category=HardeningCategory.CRYPTO,
-        title="PBKDF2 con >= 100 000 iteraciones",
+        title="Sin el módulo random en las primitivas criptográficas",
         description=(
-            "La derivación de contraseñas debe usar al menos 100 000 iteraciones "
-            "para ser resistente a ataques de fuerza bruta con GPU/ASIC."
+            "random es predecible: no debe usarse para llaves, nonces ni desafíos. "
+            "Usar secrets u os.urandom."
         ),
         severity="HIGH",
         check_command=(
-            "grep -n '100_000\\|100000' "
+            "grep -nE '^(import random|from random)' "
             "/home/upb/blockchain_upb_ia/security/crypto_utils.py"
         ),
-        remediation=(
-            "Ajustar el parámetro iterations en derive_key() a >=100 000. "
-            "Para mayor seguridad, considerar Argon2id (memory-hard)."
-        ),
+        remediation="Reemplazar random por secrets u os.urandom.",
     ),
 
     # ── OS (5 checks) ─────────────────────────────────────────────────────────
@@ -661,6 +650,15 @@ class HardeningAuditor:
         cat = check.category
         cid = check.id
 
+        # NET-005 se evalúa con la configuración real (P2P_ALLOWLIST / P2P_TLS)
+        if cid == "NET-005":
+            try:
+                from config import load_settings
+                s = load_settings()
+                return "PASS" if (s.p2p_allowlist and s.p2p_tls == "on") else "FAIL"
+            except Exception:
+                return "MANUAL"
+
         # NETWORK y OS siempre requieren acceso al sistema operativo
         if cat in (HardeningCategory.NETWORK, HardeningCategory.OS):
             return "MANUAL"
@@ -684,13 +682,13 @@ class HardeningAuditor:
             elif cid == "CRY-003":
                 src = self._read_module_source("security.crypto_utils")
                 if src:
-                    return "PASS" if "os.urandom" in src else "FAIL"
+                    return "PASS" if "generate_private_key" in src else "FAIL"
 
             elif cid == "CRY-004":
                 src = self._read_module_source("security.crypto_utils")
                 if src:
-                    has_iterations = "100_000" in src or "100000" in src
-                    return "PASS" if has_iterations else "FAIL"
+                    usa_random = bool(re.search(r"^\s*(import random|from random)", src, re.MULTILINE))
+                    return "FAIL" if usa_random else "PASS"
 
             # ── APP ───────────────────────────────────────────────────────────
             elif cid == "APP-001":

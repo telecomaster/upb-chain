@@ -171,15 +171,6 @@ class ProofOfWork:
         logger.warning("mine_async_friendly: max nonce alcanzado sin solución")
         return None
 
-    def validate_proof(self, block: Block) -> bool:
-        recomputed = block.compute_hash()
-        return recomputed == block.hash and hash_meets_bits(block.hash, block.header.difficulty)
-
-    def get_avg_hash_rate(self) -> float:
-        if not self._stats:
-            return 0.0
-        return sum(r.hash_rate for r in self._stats) / len(self._stats)
-
     def get_mining_stats(self) -> dict:
         if not self._stats:
             return {}

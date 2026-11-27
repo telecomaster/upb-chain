@@ -7,7 +7,6 @@ Desde P1-13 sigue la interfaz única de contratos (``blockchain/contracts/base.p
 ``CredentialContract`` son las reglas y ``CredentialState`` el estado y sus consultas.
 """
 import hashlib
-import json
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
@@ -73,16 +72,6 @@ class AcademicCredential:
             "revocation_tx": self.revocation_tx,
             "revocation_block": self.revocation_block,
         }
-
-    def generate_qr_data(self) -> str:
-        """Datos para código QR de verificación (solo campos públicos)."""
-        return json.dumps({
-            "id": self.credential_id,
-            "degree": self.degree,
-            "institution": self.institution,
-            "date": self.issue_date,
-            "verify_url": f"upbchain://verify/{self.credential_id}",
-        })
 
     @property
     def is_valid(self) -> bool:
@@ -243,30 +232,6 @@ class CredentialState:
             "revoked": revoked,
             "registered_issuers": len(self._issuer_registry),
             "students_with_credentials": len(self._student_index),
-        }
-
-    def get_stats_by_program(self, program: str) -> dict:
-        """Retorna estadísticas de credenciales para un programa académico específico.
-
-        Solo conteos por estado: desde P1-2 las notas no están en la cadena
-        (``avg_grade``/``min_grade``/``max_grade`` se eliminaron).
-
-        Args:
-            program: Nombre exacto del programa (ej. "Ingeniería en IA").
-
-        Returns:
-            Dict con program, total, active, revoked.
-        """
-        program_creds = [
-            c for c in self._credentials.values() if c.program == program
-        ]
-        active  = sum(1 for c in program_creds if c.status == CredentialStatus.ACTIVE)
-        revoked = sum(1 for c in program_creds if c.status == CredentialStatus.REVOKED)
-        return {
-            "program": program,
-            "total": len(program_creds),
-            "active": active,
-            "revoked": revoked,
         }
 
     def search_credentials(self, query: str) -> List[dict]:

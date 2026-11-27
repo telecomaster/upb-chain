@@ -5,7 +5,7 @@ Estado verificado al 2026-11-26. Fuente de verdad para prioridades y delegación
 
 ## Resumen
 
-Estado verificado al 2026-11-26 (suite: 731 pruebas pasan y 1 `xfail`). El sistema ya es una
+Estado verificado al 2026-11-26 (suite: 722 pruebas pasan y 1 `xfail`). El sistema ya es una
 blockchain multinodo funcional en laptop:
 
 - Varios nodos locales (PoW) y 4 réplicas PBFT con certificados de commit sincronizan, resuelven

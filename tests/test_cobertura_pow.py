@@ -189,36 +189,7 @@ def test_mine_async_friendly_agota_max_nonce_sin_solucion():
         _bloque(), on_progress=lambda n, s: None, max_nonce=50, timeout=None) is None
 
 
-# ── validate_proof() ─────────────────────────────────────────────────────────
-
-def test_validate_proof_acepta_bloque_minado():
-    motor = ProofOfWork(difficulty=5)
-    resultado = motor.mine(_bloque(), timeout=30.0)
-    assert motor.validate_proof(resultado.block)
-
-
-def test_validate_proof_rechaza_nonce_alterado_sin_recalcular_hash():
-    motor = ProofOfWork(difficulty=5)
-    bloque = motor.mine(_bloque(), timeout=30.0).block
-    bloque.header.nonce += 1
-    assert not motor.validate_proof(bloque)
-
-
-def test_validate_proof_rechaza_hash_recalculado_que_no_cumple_los_bits():
-    """Hash coherente con el contenido, pero sin los bits exigidos por la cabecera."""
-    motor = ProofOfWork(difficulty=1)
-    bloque = motor.mine(_bloque(), timeout=30.0).block
-    bloque.header.difficulty = 60
-    bloque.hash = bloque.compute_hash()
-    assert bloque.hash == bloque.compute_hash()
-    assert not motor.validate_proof(bloque)
-
-
 # ── estadísticas ─────────────────────────────────────────────────────────────
-
-def test_get_avg_hash_rate_cero_sin_minados():
-    assert ProofOfWork(difficulty=2).get_avg_hash_rate() == 0.0
-
 
 def test_get_mining_stats_agrega_dos_minados():
     motor = ProofOfWork(difficulty=2)
@@ -230,7 +201,6 @@ def test_get_mining_stats_agrega_dos_minados():
     assert stats["min_time_s"] <= stats["avg_time_s"] <= stats["max_time_s"]
     assert stats["avg_hash_rate"] == pytest.approx(
         (r1.hash_rate + r2.hash_rate) / 2)
-    assert motor.get_avg_hash_rate() == pytest.approx(stats["avg_hash_rate"])
 
 
 # ── difficulty_to_expected_time() ────────────────────────────────────────────
