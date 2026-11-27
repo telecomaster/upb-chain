@@ -98,7 +98,39 @@ class Block:
         if not self.hash:
             self.hash = self.compute_hash()
 
-    def compute_hash(self) -> str:
+    def hasher_por_nonce(self):
+        """Devuelve `f(nonce) -> hash` idéntico a `compute_hash()` con ese nonce,
+        serializando el bloque una sola vez (prefijo/sufijo alrededor del nonce).
+
+        El hash no cambia (consenso): solo se evita re-serializar las TXs por intento."""
+        centinela = 987654321098765432109876543210
+        original = self.header.nonce
+        try:
+            self.header.nonce = centinela
+            texto = self._serializar()
+        finally:
+            self.header.nonce = original
+        marca = str(centinela)
+        if texto.count(marca) != 1:  # contenido ambiguo: camino lento
+            def lento(nonce: int) -> str:
+                previo = self.header.nonce
+                self.header.nonce = nonce
+                try:
+                    return self.compute_hash()
+                finally:
+                    self.header.nonce = previo
+            return lento
+        pre, suf = texto.split(marca)
+        base = hashlib.sha256(pre.encode())
+        suf_b = suf.encode()
+
+        def rapido(nonce: int) -> str:
+            h = base.copy()
+            h.update(str(nonce).encode() + suf_b)
+            return h.hexdigest()
+        return rapido
+
+    def _serializar(self) -> str:
         block_dict = {
             "index": self.header.index,
             "timestamp": self.header.timestamp,
@@ -110,8 +142,10 @@ class Block:
             "node_id": self.header.node_id,
             "transactions": self.transactions,
         }
-        block_string = json.dumps(block_dict, sort_keys=True, ensure_ascii=False)
-        return hashlib.sha256(block_string.encode()).hexdigest()
+        return json.dumps(block_dict, sort_keys=True, ensure_ascii=False)
+
+    def compute_hash(self) -> str:
+        return hashlib.sha256(self._serializar().encode()).hexdigest()
 
     def to_dict(self) -> dict:
         return {

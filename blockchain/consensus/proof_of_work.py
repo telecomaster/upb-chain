@@ -66,6 +66,7 @@ class ProofOfWork:
         block.header.difficulty = diff
         nonce = 0
         t_lote = self._reloj()
+        hash_de = block.hasher_por_nonce()  # una sola serialización por bloque
 
         while nonce < max_nonce:
             if self.freno is not None and nonce > 0 and nonce % LOTE_FRENO == 0:
@@ -83,7 +84,7 @@ class ProofOfWork:
                 return None
 
             block.header.nonce = nonce
-            block.hash = block.compute_hash()
+            block.hash = hash_de(nonce)
 
             if int(block.hash, 16) < target:
                 elapsed = time.perf_counter() - start
