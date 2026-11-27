@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     thermal_soft_c: float = 70.0   # por debajo: velocidad completa
     thermal_hard_c: float = 80.0   # desde aquí: ciclo mínimo
     thermal_min_duty: float = 0.2
+
+    # Tope del mempool y de TX pendientes por remitente (P1-5). Política local: al llenarse
+    # se rechaza la TX nueva. Cubre también las TXs recibidas por P2P.
+    mempool_max: int = 5000
+    mempool_max_per_sender: int = 64
     # Consenso (P1-1): "pow" o "pbft". Es de TODA la red: un par con otro modo se rechaza.
     consensus: str = "pow"
     # PBFT: lista ordenada de réplicas {"replicas": [{"id", "address", "public_key"}]}
@@ -128,7 +133,7 @@ class Settings(BaseSettings):
             raise ValueError("debe ser 0 o mayor")
         return v
 
-    @field_validator("tx_rate_limit")
+    @field_validator("tx_rate_limit", "mempool_max", "mempool_max_per_sender")
     @classmethod
     def _limite(cls, v: int) -> int:
         if v < 1:

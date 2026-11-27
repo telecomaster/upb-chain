@@ -133,6 +133,8 @@ class Blockchain:
         snapshot_interval: int = 100,
         consensus: str = "pow",
         replica_set=None,
+        mempool_max: int = 5000,
+        mempool_max_per_sender: int = 64,
     ):
         if revalidate_on_start not in ("fast", "full"):
             raise ValueError("revalidate_on_start debe ser 'fast' o 'full'")
@@ -166,6 +168,9 @@ class Blockchain:
 
         self.chain: List[Block] = []
         self.mempool: List[Transaction] = []
+        # Tope del mempool (política local, no consenso): total y por remitente.
+        self.mempool_max = max(1, int(mempool_max))
+        self.mempool_max_per_sender = max(1, int(mempool_max_per_sender))
         self._lock = Lock()
         # Contratos (P1-13): reglas de consenso sobre el estado derivado de la
         # cadena. El de cuentas (P0-9: saldo y nonce) va siempre primero; luego
@@ -448,6 +453,17 @@ class Blockchain:
                 return False, "Transacción ya confirmada en la cadena"
             if any(t.tx_id == tx.tx_id for t in self.mempool):
                 return False, "Transacción duplicada"
+            # Tope del mempool (política local): se rechaza la TX nueva y no se
+            # desaloja nada; así un atacante no expulsa TXs legítimas ya
+            # admitidas. Además un remitente no puede ocupar más de
+            # ``mempool_max_per_sender`` plazas (una dirección nueva con nonce 1
+            # y fee 0 es admisible, así que el límite por dirección no basta).
+            if len(self.mempool) >= self.mempool_max:
+                return False, f"Mempool lleno ({self.mempool_max} TX pendientes)"
+            if sum(1 for t in self.mempool
+                   if t.sender == tx.sender) >= self.mempool_max_per_sender:
+                return False, (f"Demasiadas TX pendientes de este remitente "
+                               f"(máximo {self.mempool_max_per_sender})")
             # Mismas reglas que en un bloque, contra confirmado + pendientes (P1-13).
             valid, reason = self.contracts.check_transaction(
                 tx.to_dict(), [t.to_dict() for t in self.mempool],

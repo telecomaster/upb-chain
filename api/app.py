@@ -90,7 +90,8 @@ logger = logging.getLogger("upb_chain.api")
 def build_node_state(data_dir: str, node_id: str, authority_address: Optional[str] = None,
                      initial_difficulty: int = 4, revalidate_on_start: str = "fast",
                      snapshot_interval: int = 100, consensus: str = "pow",
-                     replica_set: Optional[ReplicaSet] = None) -> Blockchain:
+                     replica_set: Optional[ReplicaSet] = None,
+                     mempool_max: int = 5000, mempool_max_per_sender: int = 64) -> Blockchain:
     """Carga la cadena con sus contratos (P1-13): cuentas, credenciales y votación.
 
     El estado de cada contrato se deriva reproduciendo la cadena al arrancar y
@@ -103,7 +104,8 @@ def build_node_state(data_dir: str, node_id: str, authority_address: Optional[st
                       authority_address=authority_address,
                       revalidate_on_start=revalidate_on_start,
                       snapshot_interval=snapshot_interval,
-                      consensus=consensus, replica_set=replica_set)
+                      consensus=consensus, replica_set=replica_set,
+                      mempool_max=mempool_max, mempool_max_per_sender=mempool_max_per_sender)
 
 
 def load_replica_set(settings: Settings) -> ReplicaSet:
@@ -262,7 +264,9 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
         initial_difficulty=settings.mining_difficulty,
         revalidate_on_start=settings.revalidate_on_start,
         snapshot_interval=settings.snapshot_interval,
-        consensus=settings.consensus, replica_set=replica_set)
+        consensus=settings.consensus, replica_set=replica_set,
+        mempool_max=settings.mempool_max,
+        mempool_max_per_sender=settings.mempool_max_per_sender)
     authority_wallet = load_authority_wallet(
         settings.authority_key_file, blockchain.contracts.contract("accounts").authority_address)
     tx_anomaly_detector = TransactionAnomalyDetector()
