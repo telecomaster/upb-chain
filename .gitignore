@@ -63,3 +63,9 @@ models/
 *.pkl
 *.joblib
 *.h5
+
+# ── Despliegue en Raspberry Pi (docs/despliegue_rpi.md): llaves, certificados y env por nodo ──
+/nodes/
+/keys/
+/tls/
+/pbft_replicas.json
