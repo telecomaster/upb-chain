@@ -417,10 +417,19 @@ class TransactionAnomalyDetector:
 class BlockAnomalyDetector:
     """Detecta bloques con tiempos de minado, dificultades o tamaños anómalos."""
 
+    # Las reglas suman 0.5 (intervalo), 0.2 (vacío) y 0.3 (lleno): con el umbral antiguo
+    # (> 0.7) nunca se alcanzaba. 0.5 = "el intervalo fuera de 3 desviaciones alcanza solo".
+    THRESHOLD = 0.5
+
     def __init__(self, window: int = 20):
         self._window = window
         self._block_times: List[float] = []
         self._block_sizes: List[int] = []
+
+    def reset(self) -> None:
+        """Vacía la ventana (tras una reorganización la historia previa ya no es la de la cadena)."""
+        self._block_times.clear()
+        self._block_sizes.clear()
 
     def peek_block(self, block: dict) -> AnomalyReport:
         """Evalúa un bloque contra la ventana actual SIN registrarlo (las lecturas no mutan, P1-6)."""
@@ -445,11 +454,11 @@ class BlockAnomalyDetector:
         explicacion = self._explicacion_reglas(timestamp, n_tx, times)
 
         return AnomalyReport(
-            explicacion=explicacion, resumen=resumen_explicacion(explicacion, score > 0.7),
+            explicacion=explicacion, resumen=resumen_explicacion(explicacion, score >= self.THRESHOLD),
             entity_id=block.get("hash", "")[:16],
             entity_type="block",
             score=score,
-            is_anomaly=score > 0.7,
+            is_anomaly=score >= self.THRESHOLD,
             features={
                 "n_transactions": n_tx,
                 "difficulty": difficulty,

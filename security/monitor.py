@@ -182,6 +182,17 @@ class SecurityMonitor:
                         f"(umbral {self.DIFF_DELTA_PCT} %)."),
                 ))
 
+    def on_block_anomaly(self, report: dict) -> None:
+        """Alerta del detector de bloques (intervalo/tamaño fuera de lo normal)."""
+        self._fire(SecurityAlert(
+            level=AlertLevel.WARNING,
+            event_type="BLOCK_ANOMALY",
+            message=f"Bloque anómalo {report.get('entity_id')}: {'; '.join(report.get('explanation', []))}",
+            metadata={"score": report.get("score"), "features": report.get("features"),
+                      "explicacion": report.get("explicacion") or [],
+                      "resumen": report.get("resumen", "")},
+        ))
+
     def on_chain_reorg(self, depth: int) -> None:
         self._reorg_count += 1
         level = AlertLevel.CRITICAL if depth >= self.REORG_THRESHOLD else AlertLevel.WARNING

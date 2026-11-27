@@ -9,6 +9,7 @@ mismo proceso son independientes. ``app = create_app()`` al final mantiene
 ``uvicorn api.app:app``.
 """
 import asyncio
+from collections import deque
 import base64
 import csv
 import hashlib
@@ -193,6 +194,8 @@ class NodeState:
     p2p: P2PNode
     events: EventBus                   # P2-7: bus de eventos para GET /events
     counters: EventCounters = field(default_factory=EventCounters)   # P2-10
+    _bloques_vistos: deque = field(default_factory=lambda: deque(maxlen=64))   # hashes ya vistos por el detector
+    _bloques_vistos: deque = field(default_factory=lambda: deque(maxlen=64))   # hashes ya vistos por el detector
     # P1-1: en modo pbft, la lista de réplicas; ``pbft`` solo si este nodo es réplica
     # (un nodo pbft fuera de la lista es observador: verifica certificados, no vota).
     replica_set: Optional[ReplicaSet] = None
@@ -230,6 +233,7 @@ class NodeState:
     def announce_block(self, block: dict) -> None:
         """Bloque nuevo (propio o de un par): monitor + evento ``block``."""
         self.security_monitor.on_block(block)
+        self._observar_bloque(block)
         header = block.get("header", {})
         if self.anchors is not None and block.get("hash"):
             self.anchors.on_block(header.get("index", 0), block["hash"],
@@ -238,6 +242,20 @@ class NodeState:
             "index": header.get("index"), "hash": block.get("hash"),
             "tx_count": len(block.get("transactions", [])),
             "pending": len(self.blockchain.mempool)})
+
+    def _observar_bloque(self, block: dict) -> None:
+        """Alimenta el detector de bloques una sola vez por bloque y alerta si es anómalo."""
+        h = block.get("hash")
+        if not h or h in self._bloques_vistos:
+            return
+        self._bloques_vistos.append(h)
+        try:
+            report = self.block_anomaly_detector.record_block(block)
+        except Exception:
+            logger.exception("Detector de bloques falló")
+            return
+        if report.is_anomaly:
+            self.security_monitor.on_block_anomaly(report.to_dict())
 
     def announce_tx(self, tx: dict) -> None:
         """TX admitida al mempool: monitor + evento ``tx``."""
@@ -248,6 +266,9 @@ class NodeState:
     def on_chain_reorg(self, fork_height: int, dropped: list, added: list) -> None:
         """Reorganización -> alerta (profundidad = bloques propios descartados) y bloques nuevos."""
         self.security_monitor.on_chain_reorg(len(dropped))
+        # La ventana del detector mezclaría la rama descartada: se vacía y se realimenta.
+        self.block_anomaly_detector.reset()
+        self._bloques_vistos.clear()
         self.events.publish("reorg", {"fork_height": fork_height, "dropped": len(dropped),
                                       "added": len(added)})
         for block in added:
