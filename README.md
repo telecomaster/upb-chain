@@ -289,7 +289,7 @@ venv\Scripts\python.exe -m pytest tests -q                       # toda la suite
 venv\Scripts\python.exe -m pytest tests\test_security.py -q      # un archivo
 ```
 
-Estado actual: 759 pruebas pasan y 1 está marcada `xfail`, en unos 3,5 minutos (3 min 24 s en un portátil de desarrollo; la cifra cambia al aterrizar trabajos nuevos).
+Estado actual: 793 pruebas pasan y 1 está marcada `xfail`, en unos 3,5 minutos (3 min 28 s en un portátil de desarrollo; la cifra cambia al aterrizar trabajos nuevos).
 
 Los tests que necesitan su propio nodo lo arman con `tests.helpers.make_app(tmp_path, ...)`
 (`create_app` + `Settings`), así que varias apps conviven en un mismo proceso.

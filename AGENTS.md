@@ -31,7 +31,7 @@ overstate what works).
 
 ## Commands
 
-- Tests: `venv\Scripts\python.exe -m pytest tests -q` (must stay fully green; currently 759 passed + 1 xfailed, ~3.5 min)
+- Tests: `venv\Scripts\python.exe -m pytest tests -q` (must stay fully green; currently 793 passed + 1 xfailed, ~3.5 min)
 - Run a node (from repo root, paths are relative):
   `venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8000`
   Dashboard `/`, Swagger `/docs`, health `/health`. P2P listens on 8001. No auto-reload unless `--reload`.
