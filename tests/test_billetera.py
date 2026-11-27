@@ -217,3 +217,25 @@ async def test_tx_firmada_en_js_es_aceptada_por_la_api(client, txs_js):
     # Firma corrupta: 400.
     firmada2 = {**firmada, "nonce": 2, "signature": firmada["signature"][:-6] + "AAAAAA"}
     assert (await client.http.post("/transactions", json=firmada2)).status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_tx_firmada_con_timestamp_entero_es_aceptada(client):
+    """Regresión: ``Date.now() / 1000`` es entero una vez cada 1000 ms. La API no debe convertir
+    ese timestamp a float (``1700000000`` -> ``1700000000.0``): cambiaría el tx_id y la firma
+    válida del navegador se rechazaría con "Firma inválida"."""
+    import time
+    w = Wallet.generate()
+    tx = create_data_record_transaction(w.address, OTRO, {"dato": "x"}, w.private_key_hex, nonce=1)
+    tx.timestamp = int(time.time())
+    tx.tx_id = tx._compute_id()
+    tx.sign(w.private_key_hex)
+    cuerpo = tx.to_dict()
+    assert isinstance(cuerpo["timestamp"], int)
+    r = await client.http.post("/transactions", json=cuerpo)
+    assert r.status_code == 200, r.text
+    assert r.json()["tx_id"] == tx.tx_id
+    # Un timestamp no numérico sigue rechazándose.
+    for malo in ("1700000000", True):
+        r = await client.http.post("/transactions", json={**cuerpo, "nonce": 2, "timestamp": malo})
+        assert r.status_code in (400, 422), (malo, r.text)

@@ -34,7 +34,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Depends, BackgroundTasks,
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, FiniteFloat, StrictInt
 
 from config import ConfigError, Settings, load_settings, configure_logging
 from api.metrics import EventCounters, CONTENT_TYPE as METRICS_CONTENT_TYPE, build_registry, render as render_metrics
@@ -572,7 +572,9 @@ class TransactionRequest(BaseModel):
     # Alternativa a private_key_hex: TX firmada por el cliente.
     signature: Optional[str] = None
     public_key: Optional[str] = None
-    timestamp: Optional[float] = Field(None, allow_inf_nan=False)
+    # Entero o float TAL CUAL llegó: forma parte del tx_id firmado, y convertir 1700000000 en
+    # 1700000000.0 cambiaría el JSON canónico (Date.now()/1000 es entero 1 vez cada 1000 ms).
+    timestamp: Optional[Union[StrictInt, FiniteFloat]] = None
 
 
 class CredentialRequest(BaseModel):
