@@ -157,3 +157,14 @@ def test_ids_del_dom_que_busca_el_js_existen_en_el_html(js, html, patron):
     dinamicos = {"block-detail-row-"}
     faltan = {i for i in usados - existentes if not any(i.startswith(d) for d in dinamicos)}
     assert not faltan, f"{js} busca ids que {html} no tiene: {sorted(faltan)}"
+
+
+def test_mensaje_de_postissuer_usa_campos_que_devuelve_cada_endpoint():
+    """Regresión: /laboratorio/recompensas devuelve badge_tx_id/mint_tx_id (no tx_id) y el panel
+    mostraba "Enviado (TX undefined)". Cada campo que lee el mensaje existe en alguna respuesta."""
+    html = _leer(ARCHIVOS_JS["index.html"])
+    cuerpo = html.split("async function _postIssuer")[1].split("\nfunction ")[0]
+    leidos = set(re.findall(r"data\.(\w+)", cuerpo))
+    devueltos = set(re.findall(r'"(\w+)":', _leer(RAIZ / "api" / "app.py")))
+    assert {"badge_tx_id", "mint_tx_id", "count", "tx_id"} <= leidos
+    assert leidos <= devueltos, leidos - devueltos

@@ -1232,8 +1232,12 @@ async function _postIssuer(url, extra) {
   const { ok, data } = await fetchJSON(url, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
+  // /tokens/award/csv responde count; /laboratorio/recompensas, badge_tx_id + mint_tx_id; el resto, tx_id.
+  const txs = data && (data.count ? `${data.count} TX`
+    : data.badge_tx_id ? `insignia ${data.badge_id}, TX ${data.badge_tx_id} + ${data.amount} puntos, TX ${data.mint_tx_id}`
+    : `TX ${data.tx_id}`);
   _show(el, ok, ok
-    ? `✓ Enviado${data.count ? ` (${data.count} TX)` : ` (TX ${data.tx_id})`}. Pendiente de minado.`
+    ? `✓ Enviado (${txs}). Pendiente de minado.`
     : `✗ ${_detail(data)}`);
 }
 
