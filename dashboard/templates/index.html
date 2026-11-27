@@ -862,11 +862,11 @@ async function loadStats() {
 
 // ── Bloques ───────────────────────────────────────────────
 async function loadBlocks() {
-  const { ok, data } = await fetchJSON('/blocks?page=0&size=10');
+  const { ok, data } = await fetchJSON('/blocks?page=0&size=10&order=desc');
   if (!ok || !data) return;
 
   const tbody = document.getElementById('blocks-body');
-  const blocks = [...data.blocks].reverse();
+  const blocks = data.blocks;  // ya llegan del más reciente al más antiguo
   tbody.innerHTML = blocks.map(b => {
     const ts = new Date(b.header.timestamp * 1000).toLocaleString('es-BO');
     const isGenesis = b.header.index === 0;
@@ -1344,7 +1344,7 @@ async function loadNetwork() {
 let blockTimelineChart = null;
 
 async function loadBlockTimeline() {
-  const { ok, data } = await fetchJSON('/blocks?page=0&size=20');
+  const { ok, data } = await fetchJSON('/blocks?page=0&size=20&order=desc');
   if (!ok || !data?.blocks?.length) return;
 
   const sorted = [...data.blocks].sort((a, b) => a.header.index - b.header.index);
@@ -1703,10 +1703,17 @@ setInterval(loadAnalytics, 30000);
   es.onerror = () => { sseVivo = false; };   // el sondeo retoma hasta que reconecte
   es.addEventListener('block', refrescar);
   es.addEventListener('reorg', refrescar);
+  // Throttle: una ráfaga de TXs provoca como mucho una recarga por segundo.
+  let pendientesTimer = null;
+  function refrescarPendientes() {
+    if (pendientesTimer) return;
+    pendientesTimer = setTimeout(() => { pendientesTimer = null; loadPendingTransactions(); }, 1000);
+  }
   es.addEventListener('tx', e => {
     const el = document.getElementById('pending-tx');
     const d = datos(e);
     if (el && d.pending != null) el.textContent = d.pending;
+    refrescarPendientes();
   });
   es.addEventListener('alert', () => { loadLiveAlerts(); loadStats(); });
   es.addEventListener('mining_progress', e => {

@@ -25,7 +25,7 @@ from urllib.parse import urlencode
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Literal, Optional, Union
 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -654,15 +654,23 @@ async def stats(node: NodeState = Depends(get_node)):
 # ── Endpoints: bloques ────────────────────────────────────────────────────────
 
 @router.get("/blocks")
-async def get_blocks(page: int = 0, size: int = 10, node: NodeState = Depends(get_node)):
+async def get_blocks(page: int = 0, size: int = 10, order: Literal["asc", "desc"] = "asc",
+                     node: NodeState = Depends(get_node)):
+    """Bloques paginados. ``order=asc`` (por defecto): del génesis hacia la punta;
+    ``order=desc``: el más reciente primero (lo que usa el dashboard)."""
+    cadena = node.blockchain.chain
     start = page * size
     end = start + size
-    blocks = node.blockchain.chain[start:end]
+    if order == "desc":
+        blocks = cadena[::-1][start:end]
+    else:
+        blocks = cadena[start:end]
     return {
         "blocks": [b.to_dict() for b in blocks],
         "total": len(node.blockchain.chain),
         "page": page,
         "size": size,
+        "order": order,
     }
 
 
