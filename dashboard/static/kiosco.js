@@ -125,9 +125,9 @@ async function verificar(id) {
     const anc = await getJson('/anchors?from_block=' + st.block_index);
     const a = anc && anc.anchors && anc.anchors[0];
     if (a) {
-      const conf = a.status === 'upgraded';
-      $('motivo').textContent += (st.reason ? ' · ' : '') + 'Anclada en Bitcoin: ' +
-        (conf ? 'confirmada' : 'pendiente') + ' (bloque ' + a.block_index + ')';
+      const texto = a.status === 'upgraded' ? 'Anclada en Bitcoin: confirmada'
+        : a.status === 'failed' ? 'falló el anclaje' : 'Anclada en Bitcoin: pendiente';
+      $('motivo').textContent += (st.reason ? ' · ' : '') + texto + ' (bloque ' + a.block_index + ')';
     }
     const cons = await getJson('/consensus');
     if (cons && cons.mode === 'pbft') {

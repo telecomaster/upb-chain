@@ -232,7 +232,8 @@ class NodeState:
         self.security_monitor.on_block(block)
         header = block.get("header", {})
         if self.anchors is not None and block.get("hash"):
-            self.anchors.on_block(header.get("index", 0), block["hash"])
+            self.anchors.on_block(header.get("index", 0), block["hash"],
+                                  header.get("timestamp"))
         self.events.publish("block", {
             "index": header.get("index"), "hash": block.get("hash"),
             "tx_count": len(block.get("transactions", [])),
@@ -323,7 +324,8 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
     )
     if settings.anchor_interval > 0:
         node.anchors = AnchorService(blockchain.store, settings.anchor_interval,
-                                     settings.anchor_calendars)
+                                     settings.anchor_calendars,
+                                     tip=lambda: node.blockchain.height)
     blockchain.add_reorg_listener(node.on_chain_reorg)
     blockchain.add_certified_conflict_listener(security_monitor.on_certified_conflict)
     if replica_wallet is not None:

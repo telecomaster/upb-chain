@@ -101,7 +101,13 @@ se guarda en la tabla `anchors` de `chain.db` (`block_index, block_hash, calenda
 ots_bytes, status`: `pending`, `failed`, `orphaned`; `upgraded` queda reservado). Los fallos se
 registran y se reintentan con el siguiente bloque y al arrancar. Si una reorganización descarta el
 bloque, sus anclajes pasan a `orphaned` (misma transacción que la reorg) y la API los ignora.
-Un nodo que sincroniza una cadena larga ancla también las alturas múltiplo de N que recibe.
+Regla contra anclar historia: un bloque múltiplo de N solo se ancla si está a lo sumo a N bloques
+de la punta y su marca de tiempo tiene menos de un día; así un nodo que sincroniza no sella el
+pasado. Reintentos: hasta 5 envíos por (bloque, calendario), con espera de 60 s x 2^(k-1) tras el
+intento k; agotados, la fila queda `failed` (el kiosco muestra "falló el anclaje").
+`scripts/actualizar_anclajes.py` pide a cada calendario `GET <uri>/timestamp/<commitment>` y, si la
+respuesta trae la atestación de Bitcoin (`0588960d73d71901`), sustituye la pendiente y marca
+`upgraded` (solo probado con transporte falso).
 
 `GET /anchors?from_block=N` lista los bloques anclados; `GET /anchors/{n}.ots` descarga un `.ots`
 escrito a mano (cabecera mágica + versión 1 + op SHA-256 + digest + respuestas de los calendarios

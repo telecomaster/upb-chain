@@ -8,6 +8,9 @@ from blockchain.anchoring import (
 from blockchain.core.storage import ChainStore
 from config import build_settings
 from tests.helpers import make_app, mine_and_add
+import hashlib
+from blockchain.anchoring import (
+    MAX_INTENTOS, TAG_BITCOIN, actualizar_pendientes, pendientes)
 from tests.test_storage import _dos_ramas, _nuevo
 
 CAL_A, CAL_B = "https://cal-a.test", "https://cal-b.test"
@@ -113,6 +116,9 @@ def test_fallo_se_registra_y_se_reintenta(tmp_path):
     estados = {f["calendar"]: f["status"] for f in bc.store.anchors()}
     assert estados == {CAL_A: "pending", CAL_B: "failed"}
     fake.caidos.clear()
+    svc.retry_failed()                                # sin esperar el backoff: no reintenta
+    assert {f["calendar"]: f["status"] for f in bc.store.anchors()}[CAL_B] == "failed"
+    svc.clock = lambda: 1000.0 + 61
     svc.retry_failed()
     assert {f["calendar"]: f["status"] for f in bc.store.anchors()} == \
         {CAL_A: "pending", CAL_B: "pending"}
@@ -200,3 +206,78 @@ async def test_api_con_anclaje_apagado(tmp_path):
                                  base_url="http://127.0.0.1") as c:
         assert (await c.get("/anchors")).json() == {"enabled": False, "anchors": []}
         assert (await c.get("/anchors/1.ots")).status_code == 404
+
+
+def test_reintentos_acotados_con_backoff_exponencial(tmp_path):
+    bc = _nuevo(tmp_path / "a")
+    fake = Calendarios()
+    fake.caidos.add(CAL_A)
+    svc = _servicio(bc.store, fake, cals=(CAL_A,))
+    for _ in range(2):
+        assert mine_and_add(bc)[0]
+    svc.on_block(2, bc.chain[2].hash)                 # intento 1 (t=1000)
+    t = 1000.0
+    for k in range(1, 12):
+        t += 60 * 2 ** (k - 1)                        # justo el backoff tras el intento k
+        svc.clock = lambda t=t: t
+        svc.retry_failed()
+    fila = bc.store.anchors()[0]
+    assert fila["status"] == "failed" and fila["attempts"] == MAX_INTENTOS
+    assert len(fake.llamadas) == MAX_INTENTOS         # tras el tope ya no se llama
+
+
+def test_no_ancla_historia_al_sincronizar(tmp_path):
+    bc = _nuevo(tmp_path / "a")
+    fake = Calendarios()
+    svc = _servicio(bc.store, fake, cals=(CAL_A,))
+    svc.tip = lambda: 50
+    svc.on_block(2, "aa" * 32)                        # a 48 bloques de la punta: historia
+    svc.on_block(48, "bb" * 32, timestamp=1000.0 - 3 * 86_400)   # cerca de la punta, pero viejo
+    assert fake.llamadas == []
+    svc.on_block(50, "cc" * 32, timestamp=990.0)      # en la punta y reciente
+    assert [d for _, d in fake.llamadas] == [bytes.fromhex("cc" * 32)]
+
+
+def _bloque_pendiente(tmp_path, ts_bytes):
+    bc = _nuevo(tmp_path / "a")
+    for _ in range(2):
+        assert mine_and_add(bc)[0]
+    h = bc.chain[2].hash
+    bc.store.put_anchor(2, h, CAL_A, 1000.0, ts_bytes, "pending", 1)
+    return bc, h
+
+
+def test_pendientes_calcula_el_commitment_de_la_cadena_de_ops():
+    digest = bytes(range(32))
+    # append(0x0102) -> sha256 -> pending(uri): commitment = sha256(digest || 0102)
+    ts = bytes([0xF0, 2, 1, 2, 0x08]) + RESP_A
+    (ini, fin, com, uri), = pendientes(ts, digest)
+    assert com == hashlib.sha256(digest + b"\x01\x02").digest()
+    assert uri == URI.decode() and ts[ini:fin] == RESP_A and fin == len(ts)
+
+
+def test_actualizar_pendientes_marca_upgraded_con_atestacion_bitcoin(tmp_path):
+    bc, h = _bloque_pendiente(tmp_path, RESP_A)
+    # Atestación de Bitcoin: 0x00 | tag | varbytes(varuint altura 42).
+    prueba = b"\x00" + TAG_BITCOIN + b"\x01\x2a"
+    vistos = []
+
+    def fetch(uri, commitment_hex):
+        vistos.append((uri, commitment_hex))
+        if len(vistos) == 1:
+            raise OSError("404: aún no")                # primera pasada: no listo
+        return prueba
+
+    assert actualizar_pendientes(bc.store, fetch) == 0
+    assert bc.store.anchors()[0]["status"] == "pending"
+    assert actualizar_pendientes(bc.store, fetch) == 1
+    fila = bc.store.anchors()[0]
+    assert vistos[0] == (URI.decode(), h)              # commitment = digest (sin ops)
+    assert fila["status"] == "upgraded" and fila["ots_bytes"] == prueba
+    assert actualizar_pendientes(bc.store, fetch) == 0  # idempotente
+
+
+def test_actualizar_sin_atestacion_bitcoin_sigue_pendiente(tmp_path):
+    bc, _ = _bloque_pendiente(tmp_path, RESP_A)
+    assert actualizar_pendientes(bc.store, lambda u, c: RESP_B) == 0
+    assert bc.store.anchors()[0]["status"] == "pending"

@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS anchors (
     submitted_at REAL    NOT NULL,
     ots_bytes    BLOB,
     status       TEXT    NOT NULL,
+    attempts     INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (block_hash, calendar)
 );
 """
@@ -198,6 +199,9 @@ class ChainStore:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=FULL")
         conn.executescript(_SCHEMA)
+        # anchors creada por una versión anterior (sin la columna de intentos).
+        if "attempts" not in [r[1] for r in conn.execute("PRAGMA table_info(anchors)")]:
+            conn.execute("ALTER TABLE anchors ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
         row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         if row is None:
             conn.execute("INSERT INTO meta(key, value) VALUES ('schema_version', ?)",
@@ -319,23 +323,24 @@ class ChainStore:
     # ── Anclajes públicos (idea 3) ────────────────────────────────────────────
 
     def put_anchor(self, block_index: int, block_hash: str, calendar: str,
-                   submitted_at: float, ots_bytes: Optional[bytes], status: str) -> None:
+                   submitted_at: float, ots_bytes: Optional[bytes], status: str,
+                   attempts: int = 0) -> None:
         """Inserta o reemplaza la fila (``block_hash``, ``calendar``)."""
         with self._transaction() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO anchors(block_index, block_hash, calendar, "
-                "submitted_at, ots_bytes, status) VALUES (?, ?, ?, ?, ?, ?)",
-                (block_index, block_hash, calendar, submitted_at, ots_bytes, status))
+                "submitted_at, ots_bytes, status, attempts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (block_index, block_hash, calendar, submitted_at, ots_bytes, status, attempts))
 
     def anchors(self, from_block: int = 0, include_orphaned: bool = False) -> List[dict]:
         """Filas de ``anchors`` con ``block_index >= from_block``, por altura y calendario."""
-        sql = ("SELECT block_index, block_hash, calendar, submitted_at, ots_bytes, status "
+        sql = ("SELECT block_index, block_hash, calendar, submitted_at, ots_bytes, status, attempts "
                "FROM anchors WHERE block_index >= ?")
         if not include_orphaned:
             sql += " AND status != 'orphaned'"
         rows = self._query(sql + " ORDER BY block_index, calendar", (from_block,))
         return [dict(zip(("block_index", "block_hash", "calendar", "submitted_at",
-                          "ots_bytes", "status"), r)) for r in rows]
+                          "ots_bytes", "status", "attempts"), r)) for r in rows]
 
     # ── Lectura ───────────────────────────────────────────────────────────────
 

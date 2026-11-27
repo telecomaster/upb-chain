@@ -33,6 +33,11 @@ MAGIC = b"\x00OpenTimestamps\x00\x00Proof\x00\xbf\x89\xe2\xe8\x84\xe8\x92\x94"
 VERSION = 1
 OP_SHA256 = 0x08
 TAG_FORK = 0xFF           # "hay otra rama después de esta"
+MAX_INTENTOS = 5          # envíos fallidos permitidos por (bloque, calendario); luego queda failed
+BACKOFF_BASE = 60.0       # segundos; tras el intento k se espera BASE * 2**(k-1)
+MAX_EDAD_BLOQUE = 86_400  # no se ancla un bloque de más de un día (historia al sincronizar)
+TAG_BITCOIN = bytes.fromhex("0588960d73d71901")   # atestación de Bitcoin
+TAG_PENDING = bytes.fromhex("83dfe30d2ef90c8e")   # atestación pendiente en un calendario
 MAX_RESPUESTA = 10_000    # un timestamp pendiente pesa unas decenas de bytes
 
 Transport = Callable[[str, bytes], bytes]   # (url del calendario, digest) -> timestamp serializado
@@ -77,12 +82,14 @@ class AnchorService:
 
     def __init__(self, store, interval: int, calendars: Sequence[str],
                  transport: Transport = transporte_http, background: bool = True,
+                 tip: Callable[[], int] = lambda: 0,
                  clock: Callable[[], float] = time.time) -> None:
         self.store = store
         self.interval = interval
         self.calendars = list(calendars)
         self.transport = transport
         self.clock = clock
+        self.tip = tip   # altura actual de la cadena
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="anchor") \
             if background else None
         self._lock = threading.Lock()
@@ -94,11 +101,23 @@ class AnchorService:
     def should_anchor(self, index: int) -> bool:
         return self.enabled and index > 0 and index % self.interval == 0
 
-    def on_block(self, index: int, block_hash: str) -> None:
-        """Llamado con cada bloque nuevo: si toca, sella (en segundo plano) y reintenta fallos."""
+    def on_block(self, index: int, block_hash: str, timestamp: Optional[float] = None) -> None:
+        """Llamado con cada bloque nuevo: si toca, sella (en segundo plano) y reintenta fallos.
+
+        Regla contra anclar historia (sincronización, reorg larga): un bloque múltiplo de N solo
+        se ancla si está a lo sumo a N bloques de la punta Y su ``timestamp`` (si se conoce) tiene
+        menos de ``MAX_EDAD_BLOQUE`` segundos. Los reintentos no pasan por esta regla.
+        """
         if not self.enabled:
             return
+        if not self._es_reciente(index, timestamp):
+            index = None
         self._run(self._work, index, block_hash)
+
+    def _es_reciente(self, index: int, timestamp: Optional[float]) -> bool:
+        if self.tip() - index > self.interval:
+            return False
+        return timestamp is None or self.clock() - timestamp <= MAX_EDAD_BLOQUE
 
     def retry_failed(self) -> None:
         """Reintenta los envíos fallidos (al arrancar y con cada bloque nuevo)."""
@@ -129,24 +148,30 @@ class AnchorService:
             if index is not None and self.should_anchor(index):
                 self._enviar(index, block_hash, self.calendars, filas)
             # Reintentos: filas fallidas cuyo bloque sigue en la cadena (no huérfanas).
+            ahora = self.clock()
             for f in filas:
-                if f["status"] == "failed" and f["calendar"] in self.calendars:
-                    self._enviar(f["block_index"], f["block_hash"], [f["calendar"]], [])
+                espera = BACKOFF_BASE * 2 ** max(f["attempts"] - 1, 0)
+                if (f["status"] == "failed" and f["calendar"] in self.calendars
+                        and f["attempts"] < MAX_INTENTOS
+                        and ahora - f["submitted_at"] >= espera):
+                    self._enviar(f["block_index"], f["block_hash"], [f["calendar"]], [],
+                                 f["attempts"])
 
-    def _enviar(self, index: int, block_hash: str, calendars: List[str], existentes: list) -> None:
+    def _enviar(self, index: int, block_hash: str, calendars: List[str], existentes: list,
+                intentos: int = 0) -> None:
         digest = digest_de_bloque(block_hash)
-        hechos = {f["calendar"] for f in existentes
-                  if f["block_hash"] == block_hash and f["status"] != "failed"}
+        # Cualquier fila previa (incluida failed) la maneja el reintento con su backoff.
+        hechos = {f["calendar"] for f in existentes if f["block_hash"] == block_hash}
         for cal in calendars:
             if cal in hechos:
                 continue
             ahora = self.clock()
             try:
                 ots = self.transport(cal, digest)
-                self.store.put_anchor(index, block_hash, cal, ahora, bytes(ots), "pending")
+                self.store.put_anchor(index, block_hash, cal, ahora, bytes(ots), "pending", intentos)
                 logger.info(f"Anclaje: bloque {index} enviado a {cal}")
             except Exception as e:
-                self.store.put_anchor(index, block_hash, cal, ahora, None, "failed")
+                self.store.put_anchor(index, block_hash, cal, ahora, None, "failed", intentos + 1)
                 logger.warning(f"Anclaje: falló el envío del bloque {index} a {cal}: {e}")
 
     # ── Lectura para la API ───────────────────────────────────────────────────
@@ -172,3 +197,97 @@ class AnchorService:
                  if f["block_index"] == index and f["block_hash"] == block_hash
                  and f["ots_bytes"] and f["status"] in ("pending", "upgraded")]
         return construir_ots(digest_de_bloque(block_hash), ramas) if ramas else None
+
+
+# ── Mejora de pendiente a confirmada (``scripts/actualizar_anclajes.py``) ─────
+
+def _varuint(b: bytes, pos: int):
+    n, shift = 0, 0
+    while True:
+        byte = b[pos]
+        pos += 1
+        n |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return n, pos
+        shift += 7
+
+
+def _varbytes(b: bytes, pos: int):
+    n, pos = _varuint(b, pos)
+    if pos + n > len(b):
+        raise ValueError("timestamp truncado")
+    return b[pos:pos + n], pos + n
+
+
+def pendientes(ts: bytes, msg: bytes) -> List[tuple]:
+    """Atestaciones pendientes de un timestamp serializado que parte del mensaje ``msg``.
+
+    Devuelve ``(inicio, fin, commitment, uri)``: el rango de bytes de la atestación y el mensaje
+    (resultado de aplicar las operaciones al digest) que hay que pedir al calendario.
+    Solo entiende append/prepend/sha256/fork (lo que emiten los calendarios); otra op -> ValueError.
+    """
+    import hashlib
+    out: List[tuple] = []
+
+    def timestamp(pos: int, m: bytes) -> int:
+        while ts[pos] == TAG_FORK:
+            pos = item(pos + 1, m)
+        return item(pos, m)
+
+    def item(pos: int, m: bytes) -> int:
+        tag = ts[pos]
+        if tag == 0x00:
+            tipo, p = ts[pos + 1:pos + 9], pos + 9
+            carga, fin = _varbytes(ts, p)
+            if tipo == TAG_PENDING:
+                uri, _ = _varbytes(carga, 0)
+                out.append((pos, fin, m, uri.decode("utf-8")))
+            return fin
+        if tag in (0xF0, 0xF1):
+            arg, p = _varbytes(ts, pos + 1)
+            return timestamp(p, m + arg if tag == 0xF0 else arg + m)
+        if tag == OP_SHA256:
+            return timestamp(pos + 1, hashlib.sha256(m).digest())
+        raise ValueError(f"operación OTS no soportada: {tag:#x}")
+
+    timestamp(0, msg)
+    return out
+
+
+def actualizar_pendientes(store, fetch: Callable[[str, str], bytes]) -> int:
+    """Para cada anclaje ``pending``, pide a su calendario ``GET <uri>/timestamp/<commitment hex>``
+    (``fetch(uri, commitment_hex)``), sustituye la atestación pendiente por la respuesta y marca
+    ``upgraded`` si trae la atestación de Bitcoin. Un calendario que aún no la tiene (404, red)
+    se omite. Devuelve cuántas filas pasaron a ``upgraded``."""
+    mejoradas = 0
+    for f in store.anchors():
+        if f["status"] != "pending" or not f["ots_bytes"]:
+            continue
+        ots, bitcoin = f["ots_bytes"], False
+        try:
+            lista = pendientes(ots, digest_de_bloque(f["block_hash"]))
+        except (ValueError, IndexError) as e:
+            logger.warning(f"Anclaje: timestamp ilegible del bloque {f['block_index']}: {e}")
+            continue
+        for inicio, fin, commitment, uri in reversed(lista):
+            try:
+                resp = fetch(uri, commitment.hex())
+            except Exception as e:
+                logger.info(f"Anclaje: {uri} aún no tiene la prueba ({e})")
+                continue
+            if TAG_BITCOIN in resp:
+                ots = ots[:inicio] + resp + ots[fin:]
+                bitcoin = True
+        if bitcoin:
+            store.put_anchor(f["block_index"], f["block_hash"], f["calendar"],
+                             f["submitted_at"], ots, "upgraded", f["attempts"])
+            mejoradas += 1
+    return mejoradas
+
+
+def fetch_http(uri: str, commitment_hex: str, timeout: float = 10.0) -> bytes:
+    req = urllib.request.Request(
+        uri.rstrip("/") + "/timestamp/" + commitment_hex,
+        headers={"Accept": "application/vnd.opentimestamps.v1", "User-Agent": "upb-chain-anchor"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:   # noqa: S310
+        return r.read(MAX_RESPUESTA)
