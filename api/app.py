@@ -292,18 +292,23 @@ class NodeState:
             "tx_count": len(block.get("transactions", [])),
             "pending": len(self.blockchain.mempool)})
 
+    _VENTANA_BLOQUE_S = 600.0   # bloques más viejos no alimentan el detector
+
     def _observar_bloque(self, block: dict) -> None:
         """Alimenta el detector de bloques una sola vez por bloque y alerta si es anómalo."""
         h = block.get("hash")
         if not h or h in self._bloques_vistos:
             return
+        ts = block.get("header", {}).get("timestamp")
+        viejo = isinstance(ts, (int, float)) and time.time() - ts > self._VENTANA_BLOQUE_S
         self._bloques_vistos.append(h)
         try:
             report = self.block_anomaly_detector.record_block(block)
         except Exception:
             logger.exception("Detector de bloques falló")
             return
-        if report.is_anomaly:
+        # Un bloque viejo (puesta al día) entra a la ventana pero no levanta alerta.
+        if report.is_anomaly and not viejo:
             self.security_monitor.on_block_anomaly(report.to_dict())
 
     def announce_tx(self, tx: dict) -> None:
@@ -314,7 +319,8 @@ class NodeState:
 
     def on_chain_reorg(self, fork_height: int, dropped: list, added: list) -> None:
         """Reorganización -> alerta (profundidad = bloques propios descartados) y bloques nuevos."""
-        self.security_monitor.on_chain_reorg(len(dropped))
+        if dropped:    # una puesta al día (nada descartado) no es una reorganización
+            self.security_monitor.on_chain_reorg(len(dropped))
         # La ventana del detector mezclaría la rama descartada: se vacía y se realimenta.
         self.block_anomaly_detector.reset()
         self._bloques_vistos.clear()

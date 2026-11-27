@@ -12,9 +12,10 @@ def _bloque(i, ts, n_tx=1):
 
 
 def test_detector_de_bloques_alimentado_por_el_nodo(tmp_path):
+    import time
     node = make_app(tmp_path).state.node
-    ts = 1_000_000.0
-    for i in range(1, 13):                       # intervalos regulares de 10 s
+    ts = time.time() - 300.0                     # recientes: los bloques viejos no alertan
+    for i in range(1, 13):                      # intervalos regulares de 10 s
         ts += 10 + (i % 2)
         node.announce_block(_bloque(i, ts))
     assert not [a for a in node.security_monitor.get_alerts() if a["event_type"] == "BLOCK_ANOMALY"]
