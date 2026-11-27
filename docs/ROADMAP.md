@@ -112,7 +112,9 @@ Flujos de trabajo y orden de dependencias:
   emisores y poda; CORS restringido.
 - [ ] **P1-10 Mediciones en RPi.** `scripts/bench_rpi.py` → `docs/benchmark_hardware.md` (hash rate,
   curva dificultad/tiempo, temperatura con `vcgencmd`, RAM, TPS); script de semilla de 50+ bloques;
-  `pytest-cov` > 80 %. Lo ejecuta el dueño de las RPi. *(herramientas listas; faltan las mediciones en RPi)*
+  `pytest-cov` > 80 %. Lo ejecuta el dueño de las RPi. *(herramientas listas; faltan las mediciones en RPi.
+  Despliegue 2 Pi × 2 réplicas: [`docs/despliegue_rpi.md`](despliegue_rpi.md), con
+  `scripts/preparar_despliegue_rpi.py` y `scripts/verificar_red.py`)*
 - [x] **P1-11 Errores del simulador.** Con 50 % el reorg siempre ocurre pero se reporta
   `success=False` (usa `> 0.5`); el génesis infla el tiempo promedio de bloque.
 - [x] **P1-12 Tokens y insignias para estudiantes.** TXs `TOKEN_MINT` (solo emisores, con `reason`,

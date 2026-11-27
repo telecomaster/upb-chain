@@ -191,17 +191,25 @@ upb-chain/
 
 ## Instalación en Raspberry Pi 5
 
+**Despliegue previsto (4 réplicas PBFT, 2 por Pi, mTLS): seguir la guía paso a paso
+[`docs/despliegue_rpi.md`](docs/despliegue_rpi.md)** (genera llaves y certificados con
+`scripts/preparar_despliegue_rpi.py`, instala con `setup_rpi.sh` y comprueba con
+`scripts/verificar_red.py`).
+
+Dos nodos PoW sencillos, uno por Pi:
+
 ```bash
-# En el Nodo 1 (RPi5 #1):
+# En el Nodo 1 (RPi5 #1), desde la raíz del repo clonado en ~/upb-chain:
 sudo bash scripts/setup_rpi.sh node_1 8000 8001
 
 # En el Nodo 2 (RPi5 #2):
-sudo bash scripts/setup_rpi.sh node_2 8002 8003
-# Luego agregar el par: PEERS=<IP_NODO1>:8001 en .env y reiniciar el servicio
+sudo bash scripts/setup_rpi.sh node_2 8000 8001
+# Luego agregar el par: PEERS=<IP_NODO1>:8001 en nodes/node_2.env y reiniciar upbchain-node_2
 ```
 
-El script crea el venv, el `.env`, un servicio systemd (un solo worker por nodo) y reglas de firewall.
-Toda la configuración está en `.env` (ver `.env.example`, comentado variable por variable):
+El script crea el venv, `nodes/<node_id>.env`, un servicio systemd `upbchain-<node_id>` (un solo
+worker por nodo; se puede ejecutar varias veces para varias réplicas por Pi) y reglas de firewall.
+Toda la configuración está en ese archivo (ver `.env.example`, comentado variable por variable):
 dificultad en bits (`MINING_DIFFICULTY`, 16 por defecto), `CONSENSUS`, `P2P_TLS`, `ADMIN_API_KEY`,
 `PUBLIC_BASE_URL` (URL de los QR), `DID_WEB_DOMAIN`, `TX_RATE_LIMIT`, `REVALIDATE_ON_START`,
 `SNAPSHOT_INTERVAL`, `METRICS_PUBLIC`, `CORS_ORIGINS`.
