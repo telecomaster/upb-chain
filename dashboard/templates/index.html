@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>UPB-Chain — Dashboard Blockchain Académico</title>
   <link rel="icon" type="image/svg+xml" href="/static/upb-icon.svg"/>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Sin CDN: el nodo funciona en una LAN sin internet (ver static/vendor/README.md) -->
+  <link rel="stylesheet" href="/static/vendor/tailwind.css"/>
+  <script src="/static/vendor/chart.umd.js"></script>
   <style>
     /* ── Paleta institucional UPB ─────────────────────────── */
     :root {

@@ -1,2 +1,4 @@
 dashboard/static/vendor/noble-secp256k1.bundle.js -text
 *.sh text eol=lf
+dashboard/static/vendor/chart.umd.js -text
+dashboard/static/vendor/tailwind.css -text
