@@ -179,3 +179,25 @@ def test_cli_json_invalido_sin_traceback(tmp_path):
     assert r.returncode == 1
     assert "Traceback" not in err
     assert "no se pudo leer" in err
+
+
+async def test_aviso_al_arrancar_red_multinodo_sin_dominio(tmp_path, caplog):
+    """Con PEERS y sin DID_WEB_DOMAIN ni PUBLIC_BASE_URL, el arranque avisa (did:web por host)."""
+    from tests.helpers import make_app
+    app = make_app(tmp_path, peers=["127.0.0.1:1"])
+    with caplog.at_level("WARNING", logger="upb_chain.api"):
+        async with app.router.lifespan_context(app):
+            pass
+    assert any("DID_WEB_DOMAIN" in r.getMessage() for r in caplog.records)
+
+
+async def test_sin_aviso_si_hay_dominio_o_nodo_unico(tmp_path, caplog):
+    from tests.helpers import make_app
+    con_dominio = make_app(tmp_path / "a", peers=["127.0.0.1:1"], did_web_domain="upb.test")
+    unico = make_app(tmp_path / "b")
+    with caplog.at_level("WARNING", logger="upb_chain.api"):
+        async with con_dominio.router.lifespan_context(con_dominio):
+            pass
+        async with unico.router.lifespan_context(unico):
+            pass
+    assert not any("DID_WEB_DOMAIN" in r.getMessage() for r in caplog.records)

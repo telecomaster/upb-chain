@@ -2071,6 +2071,13 @@ def create_app(settings: Optional[Settings] = None,
         if node.pbft is not None:
             node.pbft_transport.start()
             node.pbft.start()
+        # did:web (P2-3): sin dominio fijo, cada nodo firma/exporta con el host de la petición
+        # y un VC no verifica contra otro nodo de la red.
+        multinodo = bool(settings.peers) or settings.consensus == "pbft"
+        if multinodo and not (settings.did_web_domain or settings.public_base_url):
+            logger.warning("Red multinodo sin DID_WEB_DOMAIN ni PUBLIC_BASE_URL: los VC exportados "
+                           "por este nodo no verificarán contra los demás; definir el mismo "
+                           "DID_WEB_DOMAIN (o PUBLIC_BASE_URL) en todos los nodos")
         logger.info(f"UPB-Chain nodo {settings.node_id} iniciado ({settings.consensus})")
         yield
         node.mining_stop.set()
