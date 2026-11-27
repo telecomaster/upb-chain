@@ -32,3 +32,12 @@ def test_carrera_mide_latencia_en_ambos_modos(modo, tmp_path):
         "tx": 3, "tasa": 20.0, "semilla": 1, "bits": 4})())
     texto = (tmp_path / "carrera_consensos.md").read_text(encoding="utf-8")
     assert "NO son mediciones en Raspberry Pi" in texto
+
+
+def test_p95_por_rango_mas_cercano():
+    """Regresión: con 3 latencias el p95 salía igual a la mediana (y menor que la media)."""
+    carrera = _modulo()
+    assert carrera._percentil([21.8, 22.0, 350.6], 0.95) == 350.6
+    assert carrera._percentil(list(range(1, 41)), 0.95) == 38      # n = 40 (por defecto): sin cambio
+    assert carrera._percentil(list(range(1, 21)), 0.95) == 19
+    assert carrera._percentil([5.0], 0.95) == 5.0

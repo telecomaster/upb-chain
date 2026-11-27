@@ -31,6 +31,7 @@ import contextlib
 import csv
 import json
 import logging
+import math
 import platform
 import random
 import socket
@@ -100,6 +101,16 @@ def _construir_apps(modo, directorio, bits):
             peers=[f"127.0.0.1:{p}" for p in puertos if p != puerto], **comunes, **extra)
         apps.append(create_app(settings))
     return apps
+
+
+def _percentil(valores, q):
+    """Percentil por rango más cercano: el menor valor con al menos ``q`` de los datos debajo.
+
+    Con pocos datos (``--rapido``) ``int(0.95 * n) - 1`` caía en la mediana (n = 3); el rango
+    más cercano usa ``ceil``.
+    """
+    ordenados = sorted(valores)
+    return ordenados[max(0, math.ceil(q * len(ordenados)) - 1)]
 
 
 def _carga(n_tx, tasa, semilla):
@@ -246,7 +257,7 @@ def correr(modo, n_tx=40, tasa=10.0, semilla=7, bits=14, limite=180.0, convergen
         "modo": modo, "tx_enviadas": n_tx, "tx_confirmadas": len(lat),
         "latencia_media_ms": round(statistics.mean(lat), 1) if lat else None,
         "latencia_p50_ms": round(statistics.median(lat), 1) if lat else None,
-        "latencia_p95_ms": round(sorted(lat)[max(0, int(0.95 * len(lat)) - 1)], 1) if lat else None,
+        "latencia_p95_ms": round(_percentil(lat, 0.95), 1) if lat else None,
         "latencia_max_ms": round(max(lat), 1) if lat else None,
         "tps": round(len(lat) / (ultimo - primero), 2) if lat and ultimo > primero else None,
         "bloques": max(alturas), "alturas_finales": "/".join(map(str, alturas)),
