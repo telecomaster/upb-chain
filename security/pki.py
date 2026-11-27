@@ -56,7 +56,7 @@ def crear_ca(directorio, nombre: str = "UPB-Chain CA", dias: int = DIAS_CA) -> P
     cert = (x509.CertificateBuilder()
             .subject_name(sujeto).issuer_name(sujeto).public_key(key.public_key())
             .serial_number(x509.random_serial_number())
-            .not_valid_before(_ahora() - datetime.timedelta(minutes=5))
+            .not_valid_before(_ahora() - datetime.timedelta(days=1))
             .not_valid_after(_ahora() + datetime.timedelta(days=dias))
             .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
             .add_extension(x509.KeyUsage(
@@ -96,7 +96,7 @@ def emitir_cert_nodo(directorio, node_id: str, hosts: Optional[Iterable[str]] = 
             .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, node_id)]))
             .issuer_name(ca_cert.subject).public_key(key.public_key())
             .serial_number(x509.random_serial_number())
-            .not_valid_before(_ahora() - datetime.timedelta(minutes=5))
+            .not_valid_before(_ahora() - datetime.timedelta(days=1))
             .not_valid_after(_ahora() + datetime.timedelta(days=dias))
             .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
             .add_extension(x509.SubjectAlternativeName(sans), critical=False)

@@ -171,3 +171,16 @@ def test_tls_activado_sin_certificados_es_error_de_configuracion(tmp_path):
     from tests.helpers import make_app
     with pytest.raises(ConfigError, match="P2P_TLS_DIR"):
         make_app(tmp_path, "n1", p2p_tls="on", p2p_tls_dir=str(tmp_path / "no_hay"))
+
+
+def test_certificados_retroceden_la_fecha_de_inicio_un_dia(tmp_path):
+    """Una Pi sin RTC/NTP con el reloj atrasado horas no debe rechazar los certificados."""
+    import datetime
+    from cryptography import x509
+    d = tmp_path / "tls"
+    crear_ca(d)
+    emitir_cert_nodo(d, "n1", [HOST])
+    ahora = datetime.datetime.now(datetime.timezone.utc)
+    for nombre in ("ca.crt", "n1.crt"):
+        cert = x509.load_pem_x509_certificate((d / nombre).read_bytes())
+        assert cert.not_valid_before_utc <= ahora - datetime.timedelta(hours=23)
