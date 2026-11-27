@@ -116,6 +116,13 @@ CREATE TABLE IF NOT EXISTS anchors (
     attempts     INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (block_hash, calendar)
 );
+-- Mempool persistido (política local, fuera del consenso): TXs firmadas pendientes,
+-- en orden de llegada (``seq``). Se recarga al arrancar por la puerta normal de admisión.
+CREATE TABLE IF NOT EXISTS mempool (
+    seq   INTEGER PRIMARY KEY AUTOINCREMENT,
+    tx_id TEXT NOT NULL UNIQUE,
+    data  TEXT NOT NULL
+);
 """
 
 
@@ -238,6 +245,38 @@ class ChainStore:
                 self._conn.execute("ROLLBACK")
                 raise
             self._conn.execute("COMMIT")
+
+    # ── Mempool persistido ────────────────────────────────────────────────────
+
+    def mempool_add(self, tx_id: str, data: str) -> None:
+        """Guarda una TX pendiente (idempotente). Commit WAL sin fsync (NORMAL).
+
+        Perder las últimas TX pendientes en un corte de luz es aceptable (el
+        alumno reenvía); el siguiente commit de bloque (FULL) las sincroniza.
+        La base nunca queda corrupta.
+        """
+        with self._lock:
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            try:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO mempool(tx_id, data) VALUES (?, ?)", (tx_id, data))
+            finally:
+                self._conn.execute("PRAGMA synchronous=FULL")
+
+    def mempool_remove(self, tx_ids) -> None:
+        """Borra TXs pendientes (confirmadas, expulsadas o podadas)."""
+        ids = [(i,) for i in tx_ids]
+        if not ids:
+            return
+        with self._transaction() as conn:
+            conn.executemany("DELETE FROM mempool WHERE tx_id=?", ids)
+
+    def mempool_ids(self) -> List[str]:
+        return [r[0] for r in self._query("SELECT tx_id FROM mempool ORDER BY seq")]
+
+    def mempool_load(self) -> List[str]:
+        """JSON de las TXs pendientes, en orden de llegada."""
+        return [r[0] for r in self._query("SELECT data FROM mempool ORDER BY seq")]
 
     # ── Escritura ─────────────────────────────────────────────────────────────
 

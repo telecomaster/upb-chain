@@ -160,6 +160,7 @@ guarda `<DATA_DIR>/chain.db`:
 | `txs` | `tx_id` PK, `height`, `position`, `type`, `sender`, `recipient` (+ índices por `sender`, `recipient`, `height`) | TX por id → (altura, posición) para la prueba Merkle; TXs de una dirección |
 | `snapshots` | `height` PK, `block_hash`, `contracts`, `states` (JSON), `digest` (SHA-256) | foto del estado de los contratos cada `SNAPSHOT_INTERVAL` bloques (100); se guardan las 3 últimas |
 | `meta` | `key`, `value` | versión del esquema |
+| `mempool` | `seq` PK, `tx_id` UNIQUE, `data` (JSON de la TX) | TX pendientes en orden de llegada; se borran al confirmarse, expulsarse o podarse |
 
 - **Agregar un bloque** = una transacción SQLite: INSERT del bloque, de sus TXs y, si toca, de la
   foto. **Reorganización** = una transacción: DELETE de las alturas mayores que la bifurcación
@@ -171,6 +172,13 @@ guarda `<DATA_DIR>/chain.db`:
   `synchronous=FULL` hace fsync del WAL en cada COMMIT: en una microSD un bloque confirmado
   sobrevive a un corte de luz. Con `NORMAL` la base tampoco se corrompe, pero se pueden perder los
   últimos bloques; se eligió FULL porque a ~1 bloque cada 10 s el fsync extra no importa.
+- **Mempool persistido.** Cada TX admitida se guarda en `mempool` (commit WAL con
+  `synchronous=NORMAL`, sin fsync propio: perder las últimas pendientes en un corte de luz es
+  aceptable y el siguiente bloque las sincroniza). Al arrancar se re-admiten por
+  `add_transaction` (firma, nonce, topes `MEMPOOL_MAX`/`MEMPOOL_MAX_PER_SENDER`, contratos); las
+  inválidas o ya confirmadas se descartan y se borran de disco. Bloque nuevo, poda y
+  reorganizaciones (TX huérfanas devueltas al mempool) mantienen la tabla al día. Medido en
+  laptop: admitir 2000 TX tardó ~2,7 s con persistencia y ~2,9 s sin ella (ruido de medición).
 - **chain.db dañado** (no es SQLite o falla `PRAGMA quick_check`): el nodo no arranca y explica
   qué hacer (mover `chain.db*` y resincronizar desde los pares, o reimportar `chain.json.migrated`
   renombrándolo a `chain.json`). Nunca se borra nada automáticamente.

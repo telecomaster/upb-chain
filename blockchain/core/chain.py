@@ -202,6 +202,7 @@ class Blockchain:
         self.last_replace_validated = 0
 
         self._load_or_init()
+        self._reload_mempool()
 
     # ── Inicialización (P2-4: chain.db) ──────────────────────────────────────
 
@@ -224,6 +225,43 @@ class Blockchain:
         self._confirmed_ids = self._collect_ids(self.chain)
         self.contracts.rebuild(self.chain)
         logger.info("Génesis creado")
+
+    def _persist_tx(self, tx: Transaction) -> None:
+        """Guarda una TX admitida en chain.db (fallo de disco: solo aviso, la TX sigue en memoria)."""
+        try:
+            self.store.mempool_add(tx.tx_id, json.dumps(tx.to_dict(), sort_keys=True))
+        except sqlite3.Error:
+            logger.warning("No se pudo persistir la TX pendiente", exc_info=True)
+
+    def _sync_mempool_store(self) -> None:
+        """Borra de chain.db las TX que ya no están en el mempool."""
+        try:
+            keep = {t.tx_id for t in self.mempool}
+            gone = [i for i in self.store.mempool_ids() if i not in keep]
+            self.store.mempool_remove(gone)
+        except sqlite3.Error:
+            logger.warning("No se pudo actualizar el mempool persistido", exc_info=True)
+
+    def _reload_mempool(self) -> None:
+        """Re-admite las TX pendientes guardadas por la puerta normal (``add_transaction``).
+
+        Se descartan las que ya no son válidas, ya están confirmadas o superan los topes.
+        """
+        try:
+            rows = self.store.mempool_load()
+        except sqlite3.Error:
+            logger.warning("No se pudo leer el mempool persistido", exc_info=True)
+            return
+        for raw in rows:
+            try:
+                tx = Transaction.from_dict(json.loads(raw))
+            except (KeyError, ValueError, TypeError, AttributeError):
+                continue
+            self.add_transaction(tx)
+        with self._lock:
+            self._sync_mempool_store()
+        if rows:
+            logger.info(f"Mempool recargado: {len(self.mempool)} de {len(rows)} TX pendientes")
 
     def close(self) -> None:
         """Cierra chain.db (opcional: el recolector de basura también la cierra)."""
@@ -490,6 +528,7 @@ class Blockchain:
             if not valid:
                 return False, reason
             self.mempool.append(tx)
+            self._persist_tx(tx)
             spec["n"] += 1
             spec["last"] = tx
             spec["per_sender"][tx.sender] = spec["per_sender"].get(tx.sender, 0) + 1
@@ -627,6 +666,7 @@ class Blockchain:
             confirmed_ids = {tx.get("tx_id") for tx in block.transactions}
             self.mempool = self._still_valid(
                 [t for t in self.mempool if t.tx_id not in confirmed_ids])
+            self._sync_mempool_store()
         logger.info(f"Bloque #{block.header.index} añadido (hash={block.hash[:12]}…)")
         return True, "OK"
 
@@ -903,6 +943,7 @@ class Blockchain:
                 tx for tx in self.mempool
                 if (now - tx.timestamp) <= max_age_seconds
             ]
+            self._sync_mempool_store()
         pruned = before - len(self.mempool)
         if pruned:
             logger.info(f"Mempool podado: {pruned} TX(s) eliminadas (max_age={max_age_seconds}s)")
@@ -1091,6 +1132,8 @@ class Blockchain:
         # y check_transaction de los contratos ya reconstruidos (P1-13).
         for tx in readmit:
             self.add_transaction(tx)
+        with self._lock:
+            self._sync_mempool_store()
         logger.info(
             f"Cadena reemplazada: altura {self.height}, bifurcación en {fork}, "
             f"{len(dropped)} bloque(s) descartado(s), {len(added)} nuevo(s)"
