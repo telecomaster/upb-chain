@@ -187,6 +187,31 @@ class ContractRegistry:
                 return False, reason
         return True, "OK"
 
+    # ── Admisión incremental (política local) ─────────────────────────────────
+
+    def speculative_start(self) -> Tuple[States, Set[str], States]:
+        """Copia de trabajo vacía sobre el estado confirmado: ``(working, copied, base)``.
+
+        ``base`` es el objeto de estado confirmado del que parte; si la cadena
+        adopta otro (bloque nuevo, reorg), la copia de trabajo ya no sirve.
+        """
+        return dict(self._states), set(), self._states
+
+    def speculative_admit(self, working: States, copied: Set[str], tx: dict,
+                          timestamp: Optional[float] = None) -> Tuple[bool, str]:
+        """Valida ``tx`` sobre ``working`` y, si es válida, la aplica ahí mismo.
+
+        Equivale a ``check_transaction`` pero sin reproducir las pendientes: la
+        copia de trabajo ya las contiene. El motivo es el del contrato, sin prefijo.
+        """
+        ctx = self._mempool_ctx(working, timestamp)
+        for contract in self.handlers(tx):
+            ok, reason = contract.validate(working[contract.NAME], tx, ctx)
+            if not ok:
+                return False, reason
+        self._try_tx(working, copied, tx, ctx)
+        return True, "OK"
+
     def filter_valid(self, txs: Iterable[dict],
                      timestamp: Optional[float] = None) -> List[dict]:
         """Las TXs de ``txs`` que, aplicadas en orden, serían válidas (sin mutar).

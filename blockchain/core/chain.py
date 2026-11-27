@@ -171,6 +171,8 @@ class Blockchain:
         # Tope del mempool (política local, no consenso): total y por remitente.
         self.mempool_max = max(1, int(mempool_max))
         self.mempool_max_per_sender = max(1, int(mempool_max_per_sender))
+        # Estado especulativo = confirmado + mempool, mantenido de forma incremental.
+        self._spec: Optional[dict] = None
         self._lock = Lock()
         # Contratos (P1-13): reglas de consenso sobre el estado derivado de la
         # cadena. El de cuentas (P0-9: saldo y nonce) va siempre primero; luego
@@ -460,19 +462,46 @@ class Blockchain:
             # y fee 0 es admisible, así que el límite por dirección no basta).
             if len(self.mempool) >= self.mempool_max:
                 return False, f"Mempool lleno ({self.mempool_max} TX pendientes)"
-            if sum(1 for t in self.mempool
-                   if t.sender == tx.sender) >= self.mempool_max_per_sender:
+            spec = self._speculative()
+            if spec["per_sender"].get(tx.sender, 0) >= self.mempool_max_per_sender:
                 return False, (f"Demasiadas TX pendientes de este remitente "
                                f"(máximo {self.mempool_max_per_sender})")
-            # Mismas reglas que en un bloque, contra confirmado + pendientes (P1-13).
-            valid, reason = self.contracts.check_transaction(
-                tx.to_dict(), [t.to_dict() for t in self.mempool],
-                self._next_block_timestamp())
+            # Mismas reglas que en un bloque, contra confirmado + pendientes (P1-13),
+            # sobre la copia de trabajo incremental (sin reproducir el mempool).
+            valid, reason = self.contracts.speculative_admit(
+                spec["working"], spec["copied"], tx.to_dict(), self._next_block_timestamp())
             if not valid:
                 return False, reason
             self.mempool.append(tx)
+            spec["n"] += 1
+            spec["last"] = tx
+            spec["per_sender"][tx.sender] = spec["per_sender"].get(tx.sender, 0) + 1
         logger.debug(f"TX {tx.tx_id[:8]}… añadida al mempool")
         return True, "OK"
+
+    def _speculative(self) -> dict:
+        """Copia de trabajo confirmado + mempool (llamar con ``_lock``).
+
+        Se reconstruye (una pasada, O(m)) si cambió el estado confirmado o el
+        mempool se modificó por otra vía (bloque nuevo, reorg, poda); entre
+        cambios, cada admisión solo valida y aplica SU TX.
+        """
+        spec = self._spec
+        if (spec is not None and spec["base"] is self.contracts._states
+                and spec["n"] == len(self.mempool)
+                and (not self.mempool or spec["last"] is self.mempool[-1])):
+            return spec
+        working, copied, base = self.contracts.speculative_start()
+        ts = self._next_block_timestamp()
+        per_sender: Dict[str, int] = {}
+        for t in self.mempool:
+            # Las pendientes que ya no son válidas se saltan (el minero tampoco las incluye).
+            self.contracts.speculative_admit(working, copied, t.to_dict(), ts)
+            per_sender[t.sender] = per_sender.get(t.sender, 0) + 1
+        self._spec = {"base": base, "working": working, "copied": copied,
+                      "n": len(self.mempool), "per_sender": per_sender,
+                      "last": self.mempool[-1] if self.mempool else None}
+        return self._spec
 
     def check_batch(self, txs: List[Transaction]) -> List[Tuple[bool, str]]:
         """Simula admitir ``txs`` en orden, sin tocar el mempool (P1-12, carga CSV).
