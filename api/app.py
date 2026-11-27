@@ -359,6 +359,26 @@ def _admit_tx(node: NodeState, tx: Transaction):
 _HOSTS_LOCALES = {"127.0.0.1", "::1", "localhost", "testclient"}
 
 
+def _host_de_cabecera(valor: str) -> str:
+    """Nombre de host sin puerto, en minúsculas ('[::1]:8000' -> '::1')."""
+    valor = valor.strip().lower()
+    if valor.startswith("["):
+        return valor[1:].split("]", 1)[0]
+    return valor.rsplit(":", 1)[0] if valor.count(":") == 1 else valor
+
+
+def _nombre_loopback(nombre: str) -> bool:
+    return nombre in {"127.0.0.1", "localhost", "::1"}
+
+
+def _origen_loopback(origen: str) -> bool:
+    """``Origin`` http(s) cuyo host es loopback (``null`` y otros esquemas: no)."""
+    esquema, sep, resto = origen.strip().lower().partition("://")
+    if not sep or esquema not in ("http", "https"):
+        return False
+    return _nombre_loopback(_host_de_cabecera(resto.split("/", 1)[0]))
+
+
 async def require_admin(request: Request) -> None:
     """Dependencia para endpoints de administración (P1-9).
 
@@ -375,6 +395,15 @@ async def require_admin(request: Request) -> None:
     host = request.client.host if request.client else ""
     if host not in _HOSTS_LOCALES:
         raise HTTPException(403, "endpoint de administración: solo local o con ADMIN_API_KEY")
+    # Sin llave, la IP de origen no basta: una página web abierta en el navegador del
+    # propio nodo conecta desde loopback (CSRF) y con DNS rebinding llega con otro Host.
+    if not _nombre_loopback(_host_de_cabecera(request.headers.get("host", ""))):
+        raise HTTPException(403, "endpoint de administración: la cabecera Host debe ser local "
+                                 "(127.0.0.1, localhost, [::1]) o definir ADMIN_API_KEY")
+    origen = request.headers.get("origin")
+    if origen is not None and not _origen_loopback(origen):
+        raise HTTPException(403, "endpoint de administración: Origin no local rechazado "
+                                 "(posible CSRF); defina ADMIN_API_KEY para uso remoto")
 
 
 async def require_metrics_access(request: Request) -> None:

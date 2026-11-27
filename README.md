@@ -155,7 +155,9 @@ quien ejecuta `scripts/bench_rpi.py` en las Pi.
 - Los endpoints que reciben `private_key_hex` (emitir, revocar, transferir, etc.) firman en el servidor;
   es solo educativo y está **en desuso**. La firma real va en el navegador (`/billetera`).
 - Los endpoints de administración exigen `ADMIN_API_KEY` (cabecera `X-API-Key`; 401 si falta o es
-  incorrecta). Sin llave solo aceptan loopback (403 desde otra IP). Con Docker la llave es obligatoria.
+  incorrecta). Sin llave solo aceptan loopback (403 desde otra IP) y además exigen `Host` y `Origin`
+  locales (defensa contra CSRF y DNS rebinding desde el navegador del nodo). **Recomendado definir
+  `ADMIN_API_KEY` en las Raspberry Pi.** Con Docker la llave es obligatoria.
 - `/metrics` sigue la misma regla salvo con `METRICS_PUBLIC=true` (solo red interna).
 - **Nunca versionar** `data/`, `.env`, `venv/`, wallets ni llaves (`authority.json`, llaves de réplica
   PBFT, `ca.key`).

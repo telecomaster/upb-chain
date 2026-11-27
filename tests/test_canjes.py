@@ -367,7 +367,7 @@ def test_determinismo_replace_chain_y_recarga(mundo):
 async def api(tmp_path):
     autoridad, caja, ana = Wallet.generate(), Wallet.generate(), Wallet.generate()
     app = make_app(tmp_path, autoridad=autoridad, mining_difficulty=DIFICULTAD, tx_rate_limit=1000)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1") as client:
         yield SimpleNamespace(c=client, a=autoridad, caja=caja, ana=ana,
                               bc=app.state.node.blockchain)
 

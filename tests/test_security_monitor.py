@@ -41,7 +41,7 @@ def node(fastapi):
 
 @pytest_asyncio.fixture
 async def client(fastapi):
-    async with AsyncClient(transport=ASGITransport(app=fastapi), base_url="http://test") as ac:
+    async with AsyncClient(transport=ASGITransport(app=fastapi), base_url="http://127.0.0.1") as ac:
         yield ac
 
 

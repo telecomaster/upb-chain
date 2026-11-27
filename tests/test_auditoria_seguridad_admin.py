@@ -13,7 +13,7 @@ el dashboard abierto en la RPi) conecta desde 127.0.0.1, así que:
 
 Arreglo mínimo: en modo sin llave, exigir además ``Host`` local (127.0.0.1, localhost,
 ::1 con o sin puerto) y, si viene ``Origin``, que sea un origen local permitido.
-Los tests quedan en xfail estricto hasta el arreglo.
+
 """
 import pytest
 
@@ -28,7 +28,6 @@ def app_sin_llave(tmp_path):
     return app
 
 
-@pytest.mark.xfail(strict=True, reason="require_admin no valida Origin: CSRF desde el navegador del nodo")
 def test_csrf_origen_ajeno_en_loopback_rechazado(app_sin_llave):
     # Cliente loopback (el navegador del propio nodo) con Origin de otra web.
     c = ClienteASGI(app_sin_llave, client=("127.0.0.1", 50000))
@@ -36,7 +35,6 @@ def test_csrf_origen_ajeno_en_loopback_rechazado(app_sin_llave):
     assert r.status_code == 403, r.text
 
 
-@pytest.mark.xfail(strict=True, reason="require_admin no valida Host: DNS rebinding alcanza la API admin")
 def test_dns_rebinding_host_ajeno_en_loopback_rechazado(app_sin_llave):
     c = ClienteASGI(app_sin_llave, client=("127.0.0.1", 50000))
     r = c.post("/mempool/prune", json={},

@@ -158,7 +158,7 @@ def test_mitigaciones_no_cambian_el_ratio_crudo_de_control():
 @pytest.mark.asyncio
 async def test_endpoint_eclipse_usa_los_parametros_y_valida_limites(tmp_path):
     app = make_app(tmp_path)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1") as ac:
         ok = await ac.post("/security/eclipse-simulation",
                            params={"max_connections": 32, "attacker_nodes": 32, "network_size": 50})
         assert ok.status_code == 200

@@ -23,7 +23,7 @@ def app(tmp_path):
 @pytest_asyncio.fixture
 async def client(app):
     async with AsyncClient(transport=ASGITransport(app=app),
-                           base_url="http://test") as ac:
+                           base_url="http://127.0.0.1") as ac:
         yield ac
 
 
@@ -85,7 +85,7 @@ async def test_minado_usa_dificultad_de_la_cadena(tmp_path):
     bc = app.state.node.blockchain
     # Un valor fijo distinto en el motor no debe influir.
     app.state.node.pow_engine.difficulty = 5
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1") as client:
         r = await client.post("/blocks/mine", json={"miner_address": "M"})
     assert r.status_code == 200
     blk = r.json()["block"]

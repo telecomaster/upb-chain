@@ -47,7 +47,7 @@ def nodo(tmp_path):
 
 @pytest_asyncio.fixture
 async def client(nodo):
-    async with AsyncClient(transport=ASGITransport(app=nodo.fastapi), base_url="http://test") as ac:
+    async with AsyncClient(transport=ASGITransport(app=nodo.fastapi), base_url="http://127.0.0.1") as ac:
         yield ac
 
 

@@ -18,7 +18,7 @@ import httpx
 
 
 class ClienteASGI:
-    def __init__(self, app, client=("testclient", 50000), base_url="http://testserver"):
+    def __init__(self, app, client=("testclient", 50000), base_url="http://127.0.0.1"):
         self._app = app
         self._client = client
         self._base_url = base_url

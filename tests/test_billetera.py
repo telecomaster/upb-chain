@@ -180,7 +180,7 @@ def test_hash_de_la_libreria_vendida_coincide_con_el_readme():
 @pytest_asyncio.fixture
 async def client(tmp_path):
     app = make_app(tmp_path, autoridad=Wallet.generate(), mining_difficulty=1)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1") as ac:
         yield SimpleNamespace(http=ac, app=app)
 
 

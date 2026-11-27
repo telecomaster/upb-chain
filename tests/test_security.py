@@ -250,7 +250,7 @@ class TestSecurityEndpoints:
     async def client(self):
         from httpx import AsyncClient, ASGITransport
         from api.app import app
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1") as ac:
             yield ac
 
     @pytest.mark.asyncio

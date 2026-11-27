@@ -212,7 +212,7 @@ def test_dificultad_esperada_es_funcion_pura_y_acotada(tmp_path, w):
 @pytest_asyncio.fixture
 async def client(tmp_path):
     app = make_app(tmp_path, "api")
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1") as ac:
         ac.node = app.state.node
         yield ac
 

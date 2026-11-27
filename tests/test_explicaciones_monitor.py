@@ -84,7 +84,7 @@ def test_cada_alerta_lleva_explicacion_bien_formada(tipo, disparar):
 async def client(tmp_path):
     app = make_app(tmp_path)
     app.state.node.security_monitor.on_chain_reorg(5)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1") as ac:
         yield ac
 
 

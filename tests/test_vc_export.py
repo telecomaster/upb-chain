@@ -49,15 +49,15 @@ async def test_did_json_forma_y_llaves(client, nodo):
     r = await client.get("/.well-known/did.json")
     assert r.status_code == 200
     doc = r.json()
-    assert doc["id"] == "did:web:test"
+    assert doc["id"] == "did:web:127.0.0.1"
     ids = {m["id"]: m for m in doc["verificationMethod"]}
     for addr in (emisor.address, nodo.autoridad.address):
-        m = ids[f"did:web:test#{addr}"]
-        assert m["type"] == "JsonWebKey" and m["controller"] == "did:web:test"
+        m = ids[f"did:web:127.0.0.1#{addr}"]
+        assert m["type"] == "JsonWebKey" and m["controller"] == "did:web:127.0.0.1"
         assert m["publicKeyJwk"]["kty"] == "EC" and m["publicKeyJwk"]["crv"] == "secp256k1"
     # La llave publicada es exactamente la del emisor.
     from blockchain.contracts.vc_export import jwk_from_public_key_hex
-    assert ids[f"did:web:test#{emisor.address}"]["publicKeyJwk"] == jwk_from_public_key_hex(emisor.public_key_hex)
+    assert ids[f"did:web:127.0.0.1#{emisor.address}"]["publicKeyJwk"] == jwk_from_public_key_hex(emisor.public_key_hex)
     assert set(doc["assertionMethod"]) == set(ids)
 
 
@@ -76,7 +76,7 @@ async def test_vc_miembros_y_anclas(client, nodo):
     assert vc["@context"][0] == "https://www.w3.org/ns/credentials/v2"
     assert vc["type"] == ["VerifiableCredential", "OpenBadgeCredential"]
     assert "proof" not in vc
-    assert vc["issuer"]["id"] == f"did:web:test#{emisor.address}"
+    assert vc["issuer"]["id"] == f"did:web:127.0.0.1#{emisor.address}"
     assert vc["credentialSubject"]["id"].endswith(estudiante.address)
     assert vc["credentialSubject"]["achievement"]["name"].startswith("Licenciatura en IA")
     assert vc["credentialStatus"]["status"] == "CONFIRMED"

@@ -56,7 +56,7 @@ def test_carga_rechaza_otro_genesis(tmp_path):
 async def test_api_bloque_0_es_el_genesis_constante():
     from api.app import app
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as c:
         r = await c.get("/blocks/0")
     assert r.status_code == 200
     assert r.json()["hash"] == GENESIS_HASH

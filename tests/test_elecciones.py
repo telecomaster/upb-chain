@@ -62,7 +62,7 @@ def test_elegibilidad_programa_distinto_y_titulo_invalido(mundo):
 async def api(tmp_path):
     a, ana = Wallet.generate(), Wallet.generate()
     app = make_app(tmp_path, autoridad=a, mining_difficulty=1, tx_rate_limit=1000)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1") as c:
         yield SimpleNamespace(c=c, a=a, ana=ana, bc=app.state.node.blockchain)
 
 

@@ -32,7 +32,7 @@ async def client():
     """Cliente asíncrono conectado al ASGI de la app (lifespan incluido)."""
     async with AsyncClient(
         transport=ASGITransport(app=app),
-        base_url="http://test",
+        base_url="http://127.0.0.1",
     ) as ac:
         yield ac
 

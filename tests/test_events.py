@@ -82,7 +82,7 @@ def test_minar_por_la_api_emite_progreso_y_bloque(tmp_path):
     async def main():
         sub = node.events.subscribe()
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as c:
             r = await asyncio.wait_for(c.post("/blocks/mine", json={}), 80)
             assert r.status_code == 200, r.text
         eventos, intentos = [], 0
