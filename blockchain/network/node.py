@@ -129,6 +129,7 @@ class Peer:
     failed_attempts: int = 0       # fallos consecutivos (para el backoff)
     next_retry: float = 0.0        # instante del próximo intento de reconexión
     next_status: float = 0.0       # instante de la próxima consulta de estado
+    missed_pings: int = 0          # latidos consecutivos sin respuesta (por timeout)
     height: int = 0
     work: int = 0
 
@@ -232,6 +233,8 @@ class P2PNode:
         idle_timeout: float = 120.0,
         on_ai_message: Optional[Callable] = None,
         on_peer_connected: Optional[Callable] = None,
+        ping_timeout: float = 3.0,
+        ping_misses: int = 2,
     ):
         """
         - ``blockchain``: si se pasa, el nodo valida y añade bloques/TXs recibidos,
@@ -246,7 +249,11 @@ class P2PNode:
         - ``allowlist``: node_ids permitidos (CN del certificado con TLS; informativa sin TLS).
         - ``idle_timeout``: segundos sin tráfico tras los que el servidor cierra una conexión.
         - ``port=0`` elige un puerto libre (útil en tests); ver ``self.port`` tras ``start()``.
-        - ``sync_interval``: cada cuánto se consulta el estado de los pares activos.
+        - ``sync_interval``: latido: cada cuánto se consulta (SYNC_REQUEST) a los pares activos; un
+          par caído se detecta en ese plazo. ``ping_timeout``: espera máxima de la respuesta al latido
+          (par colgado o cable desconectado, sin RST); ``ping_misses``: latidos seguidos sin
+          respuesta por timeout antes de marcarlo caído (un rechazo/RST de conexión lo marca de
+          inmediato). La reconexión sigue con backoff, así que no hay tormentas de intentos.
         - ``retry_base``/``retry_max``: backoff exponencial de reconexión (segundos).
         """
         self.node_id = node_id
@@ -260,6 +267,9 @@ class P2PNode:
         self.retry_base = retry_base
         self.retry_max = retry_max
         self.timeout = timeout
+        self.ping_timeout = ping_timeout
+        self.ping_misses = max(1, ping_misses)
+        self._despertar = threading.Event()   # add_peer despierta el bucle de mantenimiento
 
         # ``peers`` lo modifican los hilos que atienden conexiones, el de mantenimiento y los
         # de sincronización. Toda mutación va bajo ``_peers_lock`` y quien lo RECORRA debe usar
@@ -339,6 +349,7 @@ class P2PNode:
         """Detiene los hilos y cierra el socket de escucha (espera hasta ~2 s)."""
         self._running = False
         self._stop_event.set()
+        self._despertar.set()
         if self._server:
             try:
                 self._server.close()
@@ -817,6 +828,7 @@ class P2PNode:
             peer.work = int(status.get("work", 0))
             peer.is_active = True
             peer.failed_attempts = 0
+            peer.missed_pings = 0
             peer.last_seen = now
             peer.next_status = now + self.sync_interval
             if latency_ms is not None:
@@ -852,6 +864,7 @@ class P2PNode:
             return
         with self._peers_lock:
             self.peers.setdefault(f"{host}:{port}", Peer(host=host, port=port))
+        self._despertar.set()   # conectar ya, sin esperar al siguiente tic del mantenimiento
 
     @staticmethod
     def _direccion_valida(address: object) -> Optional[tuple]:
@@ -888,6 +901,7 @@ class P2PNode:
             if peer.is_active:
                 logger.warning(f"Par {peer.address} desconectado")
             peer.is_active = False
+            peer.missed_pings = 0
             peer.failed_attempts += 1
             delay = min(self.retry_max, self.retry_base * 2 ** (peer.failed_attempts - 1))
             peer.next_retry = time.time() + delay
@@ -1097,8 +1111,15 @@ class P2PNode:
         """Consulta periódica (SYNC_REQUEST): latencia, altura y trabajo del par."""
         try:
             start = time.perf_counter()
-            reply = self._request(peer.host, peer.port, {"type": MSG_SYNC_REQUEST})
-        except Exception:
+            reply = self._request(peer.host, peer.port, {"type": MSG_SYNC_REQUEST},
+                                  timeout=self.ping_timeout)
+        except Exception as e:
+            # Un timeout puede ser carga puntual (p. ej. minando en una Pi): se tolera
+            # ``ping_misses - 1`` veces. Conexión rechazada/cerrada = el proceso murió.
+            if isinstance(e, socket.timeout) and peer.missed_pings + 1 < self.ping_misses:
+                peer.missed_pings += 1
+                peer.next_status = time.time() + self.sync_interval
+                return
             self._mark_failed(peer)
             return
         if reply.get("type") != MSG_SYNC_RESPONSE or self._incompatible(reply):
@@ -1121,7 +1142,8 @@ class P2PNode:
                     self.connect_to_peer(peer.host, peer.port)
                 elif peer.is_active and now >= peer.next_status:
                     self._check_status(peer)
-            self._stop_event.wait(tick)
+            self._despertar.wait(tick)
+            self._despertar.clear()
 
     @staticmethod
     def _spawn(target, *args) -> None:

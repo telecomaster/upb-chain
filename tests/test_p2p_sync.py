@@ -370,3 +370,42 @@ def test_nodo_reiniciado_vuelve_a_registrar_a_sus_pares_entrantes(red):
 
     _minar(a2)                                             # ahora A le empuja el bloque a B
     assert _esperar(_alcanzo(b, a2), timeout=5), "el bloque de A no llegó a B sin esperar el sondeo"
+
+
+# ── Latido (P2-6): detección de un par caído ─────────────────────────────────
+
+def test_par_caido_se_detecta_en_el_plazo_del_latido(tmp_path):
+    """Dos apps reales con la configuración por defecto: al caer una, la otra deja de verla
+    activa en pocos segundos (antes ~15 s, el intervalo de consulta fijo)."""
+    from api.cliente_asgi import ClienteASGI
+    from tests.helpers import make_app
+    puerto_a = _puerto_libre()
+    app_a = make_app(tmp_path, "a", node_host=HOST, node_advertise_host=HOST, node_port=puerto_a)
+    app_b = make_app(tmp_path, "b", node_host=HOST, node_advertise_host=HOST,
+                     peers=[f"{HOST}:{puerto_a}"])
+    cli_a = ClienteASGI(app_a)
+    cli_a.__enter__()
+    try:
+        with ClienteASGI(app_b):
+            p2p_b = app_b.state.node.p2p
+            assert _esperar(lambda: p2p_b.get_network_stats()["active_peers"] == 1)
+            cli_a.__exit__(None, None, None)
+            cli_a = None
+            inicio = time.time()
+            assert _esperar(lambda: p2p_b.get_network_stats()["active_peers"] == 0, timeout=8.0)
+            assert time.time() - inicio < 6.0
+    finally:
+        if cli_a is not None:
+            cli_a.__exit__(None, None, None)
+
+
+def test_par_colgado_sin_rst_se_marca_caido_tras_los_timeouts_del_latido(red):
+    """Un par que acepta pero ya no responde (cable desconectado) se declara caído tras
+    ``ping_misses`` timeouts seguidos; un solo timeout no basta."""
+    a = red.nodo("a")
+    b = red.nodo("b", peers=[a], sync_interval=0.2, ping_timeout=0.3, ping_misses=2)
+    assert _esperar(lambda: b.get_network_stats()["active_peers"] == 1)
+    a._dispatch = lambda mensaje, conn: time.sleep(5)   # a deja de contestar
+    inicio = time.time()
+    assert _esperar(lambda: b.get_network_stats()["active_peers"] == 0, timeout=5.0)
+    assert time.time() - inicio >= 0.3 + 0.2   # hizo falta más de un latido fallido

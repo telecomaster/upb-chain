@@ -230,6 +230,8 @@ de vista de PBFT. Revisar `timedatectl status` en las dos Pi. Sin internet: `sud
 set-ntp false && sudo timedatectl set-time "AAAA-MM-DD HH:MM:SS"` en ambas, y comprobar el desfase
 con `verificar_red.py` (línea `reloj`).
 
+**Un nodo caído sigue figurando como par activo.** El latido P2P (`P2P_PING_INTERVAL`, 3 s por defecto) consulta a cada par activo; si el proceso murió, el par se marca caído en ese plazo y se reconecta con backoff. Un par colgado o con el cable desconectado (sin RST) tarda `P2P_PING_MISSES` x (`P2P_PING_INTERVAL` + `P2P_PING_TIMEOUT`) en declararse caído (por defecto 2 timeouts de 3 s: unos 9 s). En una red muy cargada (PoW minando en las dos Pi) subir `P2P_PING_TIMEOUT` evita falsos positivos. Medido en portátil con 4 procesos: ~2,6 s (antes ~15 s); no es una medida en Raspberry Pi.
+
 **`verificar_red.py` da FAIL**
 
 | Línea | Causa probable |

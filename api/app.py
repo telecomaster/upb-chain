@@ -393,6 +393,9 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
         known_peers=settings.peers,
         # P2-6: TLS mutuo y lista blanca (por defecto, en pbft, los ids de las réplicas).
         tls=load_p2p_tls(settings),
+        sync_interval=settings.p2p_ping_interval,
+        ping_timeout=settings.p2p_ping_timeout,
+        ping_misses=settings.p2p_ping_misses,
         allowlist=settings.p2p_allowlist or ([r.id for r in replica_set.replicas]
                                              if replica_set is not None else []),
     )

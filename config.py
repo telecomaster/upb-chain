@@ -108,6 +108,12 @@ class Settings(BaseSettings):
     # node_ids permitidos (CN del certificado). Vacía = en pbft los ids de las réplicas; en pow,
     # cualquier certificado de la CA. Sin TLS solo avisa (el node_id anunciado no está autenticado).
     p2p_allowlist: Annotated[List[str], NoDecode] = []
+    # Latido P2P: cada P2P_PING_INTERVAL s se consulta a cada par activo; un par que murió se
+    # marca caído en ese plazo. P2P_PING_TIMEOUT: espera de la respuesta (par colgado, sin RST) y
+    # P2P_PING_MISSES: timeouts seguidos antes de darlo por caído. La reconexión sigue con backoff.
+    p2p_ping_interval: float = 3.0
+    p2p_ping_timeout: float = 3.0
+    p2p_ping_misses: int = 2
 
     @field_validator("peers", "cors_origins", "p2p_allowlist", "anchor_calendars", mode="before")
     @classmethod
