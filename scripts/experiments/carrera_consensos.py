@@ -145,6 +145,16 @@ def _minero(node, fin):
             node.p2p.broadcast_block(res.block.to_dict())
 
 
+def _bloque_de_cierre(node):
+    """Mina y propaga un bloque vacío: desempata las bifurcaciones de igual trabajo."""
+    bc = node.blockchain
+    cand = bc.create_candidate_block()
+    res = node.pow_engine.mine(cand, timeout=60, difficulty=cand.header.difficulty)
+    if res is not None and bc.add_block(res.block)[0]:
+        node.announce_block(res.block.to_dict())
+        node.p2p.broadcast_block(res.block.to_dict())
+
+
 def correr(modo, n_tx=40, tasa=10.0, semilla=7, bits=14, limite=180.0, convergencia=10.0,
            conexion=20.0):
     """Ejecuta un modo y devuelve ``(resumen, filas)``."""
@@ -201,15 +211,25 @@ def correr(modo, n_tx=40, tasa=10.0, semilla=7, bits=14, limite=180.0, convergen
         cpu = time.process_time() - cpu0
         msgs = sum(n.p2p.get_network_stats()["messages_sent"] for n in nodos) - msgs0
 
+        def misma_punta():
+            return len({n.blockchain.last_block.hash for n in nodos}) == 1
+
         def convergieron():
             # PoW: un bloque minado al final puede seguir propagándose; se fuerza la
             # sincronización (fuera de la medición) y se espera hasta `convergencia` s.
             for n in nodos:
                 n.p2p.sync_with_peers()
-            return len({n.blockchain.last_block.hash for n in nodos}) == 1
+            return misma_punta()
         _esperar(convergieron, convergencia)
+        # Una bifurcación de igual trabajo no se resuelve sola (gana más trabajo acumulado;
+        # el empate conserva la cadena propia): hace falta un bloque más. Se registra si
+        # había bifurcación y se mina un bloque de cierre, fuera de la medición.
+        bifurcacion = not misma_punta()
+        if modo == "pow" and bifurcacion:
+            _bloque_de_cierre(nodos[0])
+            _esperar(convergieron, convergencia)
         alturas = [n.blockchain.height for n in nodos]
-        iguales = len({n.blockchain.last_block.hash for n in nodos}) == 1
+        iguales = misma_punta()
         cambios_vista = max((n.pbft.view_changes_total for n in nodos if n.pbft), default=0)
         reorgs = sum(1 for n in nodos for a in n.security_monitor.get_alerts()
                      if a["event_type"] == "CHAIN_REORG")
@@ -230,7 +250,7 @@ def correr(modo, n_tx=40, tasa=10.0, semilla=7, bits=14, limite=180.0, convergen
         "latencia_max_ms": round(max(lat), 1) if lat else None,
         "tps": round(len(lat) / (ultimo - primero), 2) if lat and ultimo > primero else None,
         "bloques": max(alturas), "alturas_finales": "/".join(map(str, alturas)),
-        "cadenas_iguales": iguales,
+        "cadenas_iguales": iguales, "bifurcacion_al_parar": bifurcacion,
         "cpu_proceso_s": round(cpu, 2), "mensajes_p2p": msgs,
         "reorgs": reorgs, "cambios_de_vista": cambios_vista,
         "bits_pow": bits if modo == "pow" else 0,
@@ -248,7 +268,7 @@ def _escribir(salida, resumenes, filas, args):
     maquina = f"{platform.system()} {platform.release()}, {platform.machine()}, Python {platform.python_version()}"
     cols = ["modo", "tx_confirmadas", "latencia_media_ms", "latencia_p50_ms", "latencia_p95_ms",
             "latencia_max_ms", "tps", "bloques", "cpu_proceso_s", "mensajes_p2p", "reorgs",
-            "cambios_de_vista", "alturas_finales", "cadenas_iguales"]
+            "cambios_de_vista", "alturas_finales", "bifurcacion_al_parar", "cadenas_iguales"]
     lineas = [
         "# Carrera de consensos: PoW vs PBFT (P1-1)", "",
         "> **Medido en un portátil de desarrollo, red en proceso (loopback), 4 nodos en un "
@@ -265,8 +285,10 @@ def _escribir(salida, resumenes, filas, args):
         "- `cpu_proceso_s` = CPU de todo el proceso (los 4 nodos juntos). `mensajes_p2p` = mensajes "
         "enviados por los 4 nodos durante la carga.",
         "- `cadenas_iguales` = misma punta en los 4 nodos al terminar (tras forzar una sincronización). "
-        "En PoW puede ser False por un empate: dos puntas con el mismo trabajo, cada nodo conserva "
-        "la suya hasta el próximo bloque (regla de Nakamoto); ver `alturas_finales`.",
+        "`bifurcacion_al_parar` = al detener a los mineros los nodos tenían puntas distintas de igual "
+        "altura (empate de trabajo: cada nodo conserva la suya hasta el próximo bloque, regla de "
+        "Nakamoto). En ese caso el arnés mina un bloque de cierre fuera de la medición y "
+        "`cadenas_iguales` se evalúa después; debe ser True.",
         "- Regenerar: `venv\\Scripts\\python.exe scripts\\experiments\\carrera_consensos.py`",
         "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
     for r in resumenes:

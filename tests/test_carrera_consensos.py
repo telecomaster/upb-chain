@@ -20,11 +20,14 @@ def _modulo():
 def test_carrera_mide_latencia_en_ambos_modos(modo, tmp_path):
     carrera = _modulo()
     resumen, filas = carrera.correr(modo, n_tx=3, tasa=20.0, semilla=1, bits=4, limite=120,
-                                     convergencia=0.5, conexion=90)
+                                     convergencia=10, conexion=90)
     assert resumen["tx_confirmadas"] == 3 and len(filas) == 3
     assert resumen["latencia_media_ms"] > 0 and resumen["tps"] > 0
+    # Regresión: en PoW una bifurcación de igual trabajo al parar no converge sola; el
+    # arnés mina un bloque de cierre y las 4 cadenas deben terminar iguales.
+    assert resumen["cadenas_iguales"]
     if modo == "pbft":
-        assert resumen["cadenas_iguales"] and resumen["reorgs"] == 0
+        assert resumen["reorgs"] == 0 and not resumen["bifurcacion_al_parar"]
     carrera._escribir(tmp_path, [resumen], filas, type("A", (), {
         "tx": 3, "tasa": 20.0, "semilla": 1, "bits": 4})())
     texto = (tmp_path / "carrera_consensos.md").read_text(encoding="utf-8")
