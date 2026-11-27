@@ -93,9 +93,22 @@ def test_desfase_de_la_segunda_pi_para_simular_en_una_maquina(tmp_path):
                          "http://127.0.0.1:9340", "http://127.0.0.1:9350"]
 
 
-def test_llave_de_autoridad_solo_en_node_1(tmp_path):
+def test_llave_de_autoridad_distinta_del_genesis_aborta(tmp_path):
+    from blockchain.core.wallet import Wallet
+    clave = tmp_path / "otra.json"
+    Wallet.generate().export(str(clave))
+    with pytest.raises(SystemExit) as e:
+        pd.preparar(tmp_path / "s", "10.0.0.1", "10.0.0.2", "/x", autoridad_llave=clave)
+    assert "NO es la autoridad" in str(e.value)
+    assert not (tmp_path / "s").exists()
+
+
+def test_llave_de_autoridad_solo_en_node_1(tmp_path, monkeypatch):
+    from blockchain.core.wallet import Wallet
     clave = tmp_path / "authority.json"
-    clave.write_text("{}", encoding="utf-8")
+    w = Wallet.generate()
+    w.export(str(clave))
+    monkeypatch.setattr("blockchain.core.block.GENESIS_AUTHORITY_ADDRESS", w.address)
     pd.preparar(tmp_path / "s", "10.0.0.1", "10.0.0.2", "/x", autoridad_llave=clave)
     assert (tmp_path / "s/pi1/keys/authority.json").exists()
     assert not (tmp_path / "s/pi2/keys/authority.json").exists()

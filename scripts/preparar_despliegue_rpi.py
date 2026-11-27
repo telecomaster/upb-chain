@@ -67,6 +67,21 @@ def _env(nodo: str, ip: str, api: int, p2p: int, d: str, admin_key: str,
     return "\n".join(lineas) + "\n"
 
 
+def _verificar_autoridad(ruta: Path) -> None:
+    """Sale con error si la llave no es la autoridad del génesis (si no, mint/emisores dan 503)."""
+    from blockchain.core.block import GENESIS_AUTHORITY_ADDRESS
+    from blockchain.core.wallet import Wallet, derive_address, public_key_from_private
+    try:
+        w = Wallet.load(str(ruta))
+        direccion = derive_address(public_key_from_private(w.private_key_hex))
+    except Exception as e:
+        sys.exit(f"La llave de autoridad {ruta} es ilegible ({e}).")
+    if direccion != GENESIS_AUTHORITY_ADDRESS:
+        sys.exit(f"La llave {ruta} tiene la dirección {direccion}, que NO es la autoridad del "
+                 f"génesis ({GENESIS_AUTHORITY_ADDRESS}). Usar la llave original de la autoridad; "
+                 "con otra, los endpoints de emisión/mint devolverían 503.")
+
+
 def preparar(salida: Path, ip_pi1: str, ip_pi2: str, dir_proyecto: str, api_base: int = 8000,
              p2p_base: int = 8001, desfase_pi2: int = 0, admin_key: Optional[str] = None,
              autoridad_llave: Optional[Path] = None) -> Dict[str, object]:
@@ -75,6 +90,8 @@ def preparar(salida: Path, ip_pi1: str, ip_pi2: str, dir_proyecto: str, api_base
         sys.exit(f"{salida} ya existe y no está vacío: borrarlo antes (no se sobrescriben llaves).")
     if autoridad_llave is not None and not autoridad_llave.is_file():
         sys.exit(f"No existe la llave de autoridad {autoridad_llave}")
+    if autoridad_llave is not None:
+        _verificar_autoridad(autoridad_llave)
     admin_key = admin_key or secrets.token_hex(24)
     d = dir_proyecto.rstrip("/")
     ips = {"pi1": ip_pi1, "pi2": ip_pi2}

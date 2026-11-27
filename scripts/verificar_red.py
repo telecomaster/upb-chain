@@ -16,6 +16,8 @@ Recibe las URL base de las APIs de todos los nodos (réplicas) y comprueba, solo
   8. Desfase de reloj entre nodos (``timestamp`` de ``/health`` corregido por la mitad del RTT)
      menor que ``--tolerancia-reloj`` segundos: un reloj desviado rompe los certificados TLS y
      los plazos de cambio de vista de PBFT.
+  9. Llave de la autoridad: al menos un nodo informa ``authority_key_loaded`` en ``/health``
+     (si ninguno la tiene, mint y alta de emisores devuelven 503): FAIL; WARN si no informan.
 
 Imprime una tabla OK / FAIL / WARN y termina con código 0 solo si no hay ningún FAIL.
 
@@ -191,6 +193,20 @@ def evaluar(muestras: List[Muestra], pares_min: Optional[int] = None, tol_altura
         out += _evaluar_pbft(vivos)
     else:
         out.append(Chequeo("PBFT", OK, "no aplica (modo pow)"))
+
+    # llave de la autoridad (mint/emisores): al menos un nodo debe tenerla cargada
+    aut = {m.url: m.health.get("authority_key_loaded") for m in vivos}
+    if all(v is None for v in aut.values()):
+        out.append(Chequeo("llave de autoridad", WARN,
+                           "los nodos no informan authority_key_loaded (versión antigua)"))
+    elif any(v is True for v in aut.values()):
+        out.append(Chequeo("llave de autoridad", OK,
+                           "cargada en " + ", ".join(u for u, v in aut.items() if v is True)))
+    else:
+        out.append(Chequeo("llave de autoridad", FAIL,
+                           "ningún nodo tiene la llave de la autoridad del génesis: mint y alta de "
+                           "emisores devolverán 503 (revisar AUTHORITY_KEY_FILE y que la llave "
+                           "sea la original)"))
 
     # reloj
     rel = {m.url: m.reloj_s for m in vivos if m.reloj_s is not None}

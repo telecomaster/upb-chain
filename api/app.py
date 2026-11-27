@@ -739,6 +739,8 @@ async def health(node: NodeState = Depends(get_node)):
         "genesis_hash": node.blockchain.chain[0].hash,
         "consensus": node.settings.consensus,
         "p2p_tls": node.settings.p2p_tls,
+        # ¿Este nodo tiene la llave de la autoridad del génesis? (mint/emisores dan 503 sin ella)
+        "authority_key_loaded": node.authority_wallet is not None,
         # Freno térmico local (idea 5): None si está apagado. No afecta al consenso.
         "thermal": node.pow_engine.freno.estado() if node.pow_engine.freno else None,
     }

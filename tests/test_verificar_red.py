@@ -27,7 +27,11 @@ def _fetch_de(clientes, alterar=None):
 
 @pytest.fixture
 def red(tmp_path):
-    apps = {f"http://nodo_{c}": make_app(tmp_path, f"nodo_{c}") for c in "abc"}
+    from blockchain.core.wallet import Wallet
+    autoridad = Wallet.generate()   # solo nodo_a tiene la llave de la autoridad
+    apps = {f"http://nodo_{c}": make_app(tmp_path, f"nodo_{c}",
+                                         autoridad=autoridad if c == "a" else None)
+            for c in "abc"}
     clientes = {u: TestClient(a) for u, a in apps.items()}
     for c in clientes.values():
         c.__enter__()
@@ -157,3 +161,25 @@ def test_health_expone_genesis_consenso_y_tls(red):
     from blockchain.core.block import GENESIS_HASH
     h = next(iter(red.values())).get("/health").json()
     assert h["genesis_hash"] == GENESIS_HASH and h["consensus"] == "pow" and h["p2p_tls"] == "off"
+
+
+def _con_autoridad(valor):
+    ms = [_muestra_pbft(f"http://n{i}", f"n{i}", _replicas()) for i in range(1, 5)]
+    for m in ms:
+        if valor is not None:
+            m.health["authority_key_loaded"] = False
+    if valor:
+        ms[0].health["authority_key_loaded"] = True
+    return {c.nombre: c.estado for c in vr.evaluar(ms)}["llave de autoridad"]
+
+
+def test_llave_de_autoridad_ausente_es_fallo():
+    assert _con_autoridad(False) == vr.FAIL
+
+
+def test_llave_de_autoridad_cargada_en_un_nodo_es_ok():
+    assert _con_autoridad(True) == vr.OK
+
+
+def test_nodos_antiguos_sin_campo_de_autoridad_es_aviso():
+    assert _con_autoridad(None) == vr.WARN

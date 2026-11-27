@@ -84,3 +84,12 @@ def test_settings_son_inmutables_y_peers_se_separan_por_comas(monkeypatch):
     assert s.peers == ["10.0.0.1:8001", "10.0.0.2:8001"]
     with pytest.raises(Exception):
         s.node_port = 1
+
+
+def test_health_informa_si_la_llave_de_autoridad_esta_cargada(tmp_path):
+    from blockchain.core.wallet import Wallet
+    sin = make_app(tmp_path, "sin_llave")
+    con = make_app(tmp_path, "con_llave", autoridad=Wallet.generate())
+    with ClienteASGI(sin) as c1, ClienteASGI(con) as c2:
+        assert c1.get("/health").json()["authority_key_loaded"] is False
+        assert c2.get("/health").json()["authority_key_loaded"] is True
