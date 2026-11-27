@@ -979,7 +979,7 @@ async function generateWalletAndIssue() {
   resultEl.textContent = '⏳ Generando wallet institucional…';
 
   const { ok: wOk, data: wallet } = await fetchJSON('/wallet/generate', { method:'POST' });
-  if (!wOk) { resultEl.textContent = '✗ Error al generar wallet'; return; }
+  if (!wOk) { resultEl.textContent = '✗ Error al generar wallet: ' + _detail(wallet); return; }
 
   // El registro lo firma la autoridad del nodo (TX ISSUER_REGISTER, P0-6).
   resultEl.textContent = '⏳ Registrando emisor UPB…';
@@ -1266,14 +1266,15 @@ function awardCsv() {
 }
 
 async function trainModel() {
-  const { ok, data } = await fetchJSON('/ai/train', { method:'POST' });
+  const { ok, data, status, error } = await fetchJSON('/ai/train', { method:'POST' });
   const el = document.getElementById('ai-recommendations');
   if (ok && data.trained) {
     el.textContent = `✓ Modelo entrenado con ${data.samples} muestras · ${data.features?.join(', ')}`;
   } else {
     el.textContent = data?.reason === 'insufficient_data'
       ? `ℹ Datos insuficientes: ${data.samples} TX (mínimo ${data.min_samples}); sigue la heurística`
-      : `ℹ Entrenamiento: ${data?.reason || 'Ver consola'}`;
+      : ok ? `ℹ Entrenamiento: ${data?.reason || 'sin resultado'}`
+      : `✗ Entrenamiento (${status || 'sin conexión'}): ${data ? _detail(data) : (error || 'sin respuesta')}`;
   }
 }
 
