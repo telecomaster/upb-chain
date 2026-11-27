@@ -153,7 +153,7 @@ Flujos de trabajo y orden de dependencias:
 ## P2 — Mejoras
 
 - [x] **P2-1** Firma en el navegador (`@noble/secp256k1` 2.2.3 vendida): las llaves privadas no tocan el servidor; billetera web del estudiante en `GET /billetera`. Los endpoints con `private_key_hex` quedan como herramienta educativa en desuso.
-- [x] **P2-2** Pruebas de inclusión Merkle (`GET /tx/{id}/proof`) y verificador liviano.
+- [x] **P2-2** Pruebas de inclusión Merkle (`GET /tx/{id}/proof`) y verificador liviano (`scripts/verificar_prueba.py`: en PoW comprueba los bits; en PBFT comprueba el certificado de commit, firmas de >= 2f+1 réplicas, y el conjunto de réplicas se toma del nodo salvo `--replicas`).
 - [x] **P2-3** Credenciales como W3C Verifiable Credentials / Open Badges 3.0 con `did:web` para la UPB. Alineado con (no certificado ni validado contra esquemas oficiales); VC sin `proof` propio, ancla en cadena como evidencia; ver `docs/credenciales_vc.md`.
 - [x] **P2-4** Índice de bloques y estado en SQLite (fin de recorridos O(altura) y reescrituras completas).
 - [x] **P2-5** Dificultad por bits y elección de cadena por trabajo acumulado.

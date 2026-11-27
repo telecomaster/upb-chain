@@ -101,7 +101,40 @@ def red(tmp_path):
     red.cerrar()
 
 
-def test_caso_normal_4_replicas_consenso_api_metricas_y_eventos(red):
+def _verificar_prueba_cli(c, tx_id, red, capsys):
+    """scripts/verificar_prueba.py (main) contra la red PBFT: comprueba el certificado, no el PoW."""
+    import importlib.util
+    import sys
+    from pathlib import Path
+    import httpx
+    ruta = Path(__file__).resolve().parent.parent / "scripts" / "verificar_prueba.py"
+    spec = importlib.util.spec_from_file_location("verificar_prueba_cli", ruta)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    real = httpx.get
+    httpx.get = lambda url, timeout=None: c.get(url.replace("http://nodo", ""))
+    try:
+        capsys.readouterr()
+        sys.argv = ["verificar_prueba.py", tx_id, "--base-url", "http://nodo"]
+        assert mod.main() == 0
+        salida = capsys.readouterr().out
+        assert "certificado PBFT" in salida and "no aplica (PBFT)" in salida
+        assert "prueba de trabajo correcta" not in salida and "informado por el propio nodo" in salida
+        # Con la lista de réplicas dada por otra vía (--replicas) también valida...
+        sys.argv = ["verificar_prueba.py", tx_id, "--base-url", "http://nodo", "--replicas", str(red.lista)]
+        assert mod.main() == 0 and "del archivo" in capsys.readouterr().out
+        # ... y con una lista ajena el certificado se rechaza.
+        ajena = red.lista.with_name("ajena.json")
+        ajena.write_text(json.dumps({"replicas": [
+            {"id": rid, "public_key": Wallet.generate().public_key_hex} for rid in red.ids]}), encoding="utf-8")
+        sys.argv = ["verificar_prueba.py", tx_id, "--base-url", "http://nodo", "--replicas", str(ajena)]
+        assert mod.main() == 1 and "certificado PBFT inválido" in capsys.readouterr().out
+    finally:
+        httpx.get = real
+
+
+def test_caso_normal_4_replicas_consenso_api_metricas_y_eventos(red, capsys):
+    capsys_salida = capsys
     eventos = []
     for rid in red.ids:
         bus = red.nodo(rid).events
@@ -137,6 +170,7 @@ def test_caso_normal_4_replicas_consenso_api_metricas_y_eventos(red):
         assert pbft and pbft[0]["ok"] is True
         assert [x["texto"] for x in checks if x["ok"] is False] == [
             x["texto"] for x in checks if "ID de la credencial" in x["texto"]]   # solo falla el ID (la TX no es una credencial)
+    _verificar_prueba_cli(c, tx_id, red, capsys_salida)
     r = c.post("/blocks/mine", json={"miner_address": "M"})
     assert r.status_code == 409 and "PBFT" in r.json()["detail"]
     metricas = c.get("/metrics").text

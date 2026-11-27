@@ -96,3 +96,52 @@ async def test_api_prueba_verifica_y_verificador_liviano(client):
 @pytest.mark.asyncio
 async def test_desconocida_404(client):
     assert (await client.get("/tx/" + "0" * 64 + "/proof")).status_code == 404
+
+
+def _modulo_verificador():
+    ruta = Path(__file__).resolve().parent.parent / "scripts" / "verificar_prueba.py"
+    spec = importlib.util.spec_from_file_location("verificar_prueba", ruta)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_verificador_certificado_pbft_cuorum_firmas_y_repetidos():
+    from blockchain.consensus.pbft import COMMIT, sign_message
+    mod = _modulo_verificador()
+    reps = [Wallet.generate() for _ in range(4)]
+    replicas = [{"id": f"r{i}", "public_key": w.public_key_hex} for i, w in enumerate(reps)]
+    bloque = {"header": {"index": 5}, "hash": "ab" * 32}
+
+    def commit(i, **extra):
+        m = {"type": COMMIT, "view": 0, "seq": 5, "digest": "ab" * 32, "replica": f"r{i}", **extra}
+        return sign_message(m, reps[i].private_key_hex)
+
+    def cert(commits, **extra):
+        return {"view": 0, "seq": 5, "digest": "ab" * 32, "commits": commits, **extra}
+
+    assert mod.verificar_certificado(cert([commit(0), commit(1), commit(2)]), bloque, replicas)[0]
+    ok, motivo = mod.verificar_certificado(cert([commit(0), commit(1)]), bloque, replicas)
+    assert not ok and "necesitan 3" in motivo
+    assert not mod.verificar_certificado(cert([commit(0), commit(1), commit(1)]), bloque, replicas)[0]
+    falso = commit(2)
+    falso["replica"] = "r3"                                  # firma de r2 atribuida a r3
+    assert not mod.verificar_certificado(cert([commit(0), commit(1), falso]), bloque, replicas)[0]
+    assert not mod.verificar_certificado(cert([commit(0), commit(1), commit(2)], digest="cd" * 32),
+                                         bloque, replicas)[0]
+    assert not mod.verificar_certificado(None, bloque, replicas)[0]
+    # Llaves de otras réplicas (conjunto distinto): ninguna firma vale.
+    ajenas = [{"id": f"r{i}", "public_key": Wallet.generate().public_key_hex} for i in range(4)]
+    assert not mod.verificar_certificado(cert([commit(0), commit(1), commit(2)]), bloque, ajenas)[0]
+
+
+def test_verificador_no_exige_trabajo_en_pbft_pero_si_en_pow():
+    from blockchain.core.block import Block, BlockHeader
+    mod = _modulo_verificador()
+    bloque = Block(BlockHeader(index=1, timestamp=1.5, previous_hash="0" * 64,
+                               merkle_root=Block.compute_merkle_root([{"tx_id": "t"}]),
+                               difficulty=200), [{"tx_id": "t"}]).to_dict()
+    p = {"tx_id": "t", "leaf": mod._h(json.dumps({"tx_id": "t"}, sort_keys=True)), "proof": [],
+         "merkle_root": bloque["header"]["merkle_root"], "block_hash": bloque["hash"]}
+    assert any("prueba de trabajo" in f for f in mod.verificar(p, bloque))
+    assert mod.verificar(p, bloque, pbft=True) == []
