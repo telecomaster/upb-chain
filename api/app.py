@@ -79,6 +79,8 @@ from api.events import EventBus, sse_stream
 from security.rate_limiter import TxRateLimiter
 from security.attacks.simulator import full_security_analysis
 from security.attacks.eclipse import EclipseAttack
+from security.attacks.recompensas import (
+    PUNTOS_POR_ESCENARIO, escenarios_premiables, validar_recibo, verificar_repitiendo)
 from security.hardening import HardeningAuditor
 from security.crypto_utils import generate_keypair, benchmark_crypto
 
@@ -1335,6 +1337,68 @@ async def award_badge(request: BadgeRequest, node: NodeState = Depends(get_node)
         nonce=node.blockchain.next_nonce(request.issuer_address)))
     _submit_contract_tx(node, tx)
     return {"status": "PENDING", "tx_id": tx.tx_id, "nonce": tx.nonce}
+
+
+class LabRewardRequest(BaseModel):
+    issuer_address: str
+    private_key_hex: str               # llave del EMISOR (docente); el laboratorio no tiene ninguna
+    recibo: dict                       # salida de scripts/laboratorio_ataques.py --direccion ...
+
+
+_lab_lock = threading.Lock()           # el laboratorio usa puertos y nodos: una corrida a la vez
+
+
+@router.get("/laboratorio/recompensas")
+async def lab_rewards_info():
+    """Escenarios del laboratorio que dan recompensa y cuánto (P1-12)."""
+    return {"escenarios": escenarios_premiables(), "puntos": PUNTOS_POR_ESCENARIO,
+            "symbol": TOKEN_SYMBOL}
+
+
+@router.post("/laboratorio/recompensas", dependencies=[Depends(require_admin)])
+async def lab_reward(request: LabRewardRequest, node: NodeState = Depends(get_node)):
+    """Recompensa por completar un escenario del laboratorio (P1-12).
+
+    Vuelve a correr el escenario del recibo (no confía en él) y, si el logro se cumple, el emisor
+    firma una insignia ``lab-<escenario>`` y ``PUNTOS_POR_ESCENARIO`` PUPB (``laboratorio:<escenario>``).
+    Una sola vez por dirección y escenario (unicidad de la insignia).
+    """
+    recibo = request.recibo
+    motivo = validar_recibo(recibo)
+    if motivo:
+        raise HTTPException(400, motivo)
+    student, escenario = recibo["direccion"], recibo["escenario"]
+    if not _direccion_valida(student):
+        raise HTTPException(400, "la dirección del recibo no es una dirección UPB válida")
+    badge_id = f"lab-{escenario}"
+    if node.blockchain.contract_state("badges").has_badge(student, badge_id):
+        raise HTTPException(409, f"la dirección ya recibió la recompensa {badge_id}")
+    restante = node.blockchain.contract_state("tokens").remaining(
+        request.issuer_address, semester_of(time.time()))
+    if restante < PUNTOS_POR_ESCENARIO:
+        raise HTTPException(400, "el emisor no tiene presupuesto suficiente en el semestre")
+    if not _lab_lock.acquire(blocking=False):
+        raise HTTPException(429, "ya hay una corrida del laboratorio en curso; reintente")
+    try:
+        cumplido = await asyncio.to_thread(verificar_repitiendo, recibo)
+    finally:
+        _lab_lock.release()
+    if not cumplido:
+        raise HTTPException(400, "al repetir el escenario no se cumplió el logro")
+    # Insignia primero: si es duplicada (incluso pendiente en el mempool) se rechaza antes de
+    # acuñar, así no se pueden cobrar puntos dos veces por el mismo escenario.
+    badge = _signed(lambda: create_badge_award_transaction(
+        request.issuer_address, student, badge_id, f"Laboratorio: {escenario}",
+        f"laboratorio:{escenario}", request.private_key_hex,
+        nonce=node.blockchain.next_nonce(request.issuer_address)))
+    _submit_contract_tx(node, badge)
+    mint = _signed(lambda: create_mint_transaction(
+        request.issuer_address, student, PUNTOS_POR_ESCENARIO, request.private_key_hex,
+        nonce=node.blockchain.next_nonce(request.issuer_address),
+        reason=f"laboratorio:{escenario}"))
+    _submit_contract_tx(node, mint)
+    return {"status": "PENDING", "badge_tx_id": badge.tx_id, "mint_tx_id": mint.tx_id,
+            "badge_id": badge_id, "amount": PUNTOS_POR_ESCENARIO}
 
 
 @router.get("/badges/{address}")

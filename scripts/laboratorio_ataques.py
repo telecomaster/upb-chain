@@ -54,6 +54,8 @@ def construir_parser() -> argparse.ArgumentParser:
     p.add_argument("--intentos", type=int, default=4, help="reorg: corridas por cuota")
     p.add_argument("--identidades", type=int, default=5, help="sybil: identidades falsas")
     p.add_argument("--bits", type=int, default=10, help="pow: dificultad en bits")
+    p.add_argument("--direccion", help="dirección UPB del estudiante: si completa un escenario "
+                   "premiable (P1-12), se imprime un recibo para que el docente lo reclame")
     p.add_argument("--json", action="store_true", help="imprimir solo el JSON")
     p.add_argument("--verboso", action="store_true", help="mostrar los logs de los nodos")
     return p
@@ -78,12 +80,19 @@ def main(argv=None) -> dict:
     if not args.verboso:
         logging.getLogger("upb_chain").setLevel(logging.CRITICAL + 1)
     resultado = ejecutar(args.escenario, args.consenso, args.semilla, **opciones_de(args))
+    if args.direccion:
+        from security.attacks.recompensas import construir_recibo
+        resultado["recibo"] = construir_recibo(resultado, args.direccion)
     if not args.json:
         print(f"== Laboratorio de ataques: {args.escenario} ({args.consenso}) ==")
         for linea in resultado["narrativa"]:
             print(f"- {linea}")
         veredicto = "TUVO ÉXITO" if resultado["exito_ataque"] else "FALLÓ"
         print(f"Veredicto: el ataque {veredicto}.")
+        if args.direccion:
+            print("Recibo para el docente (campo 'recibo', POST /laboratorio/recompensas)."
+                  if resultado["recibo"] else
+                  "Sin recibo: el escenario/consenso no da recompensa o el logro no se cumplió.")
         print()
     print(json.dumps(resultado, ensure_ascii=False, indent=2))
     return resultado

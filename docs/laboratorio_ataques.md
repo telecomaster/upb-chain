@@ -111,7 +111,34 @@ Solo para el laboratorio y la docencia. Todo escucha en `127.0.0.1`, los datos y
 viven en un directorio temporal que se borra al terminar y los nodos se detienen al salir. No
 apuntar este código a nodos ajenos ni a la red de las Raspberry Pi.
 
+## Recompensas (P1-12)
+
+El laboratorio no tiene llave de emisor: **no acuña nada**. El flujo es:
+
+```powershell
+venv\Scripts\python.exe scripts\laboratorio_ataques.py --escenario equivocacion --consenso pbft --direccion UPB...
+```
+
+1. Si el escenario es premiable y se cumplió su logro, el JSON trae un `recibo` (escenario,
+   consenso, semilla, dirección, resumen y `digest` SHA-256 que detecta alteraciones).
+2. El docente (emisor registrado con presupuesto) lo envía a `POST /laboratorio/recompensas`
+   (`issuer_address`, `private_key_hex` como en `/tokens/award`, y `recibo`; solo local o con
+   `ADMIN_API_KEY`). El servidor **vuelve a correr** el escenario (3 a 5 s) y comprueba el logro:
+   el recibo solo dice qué repetir, no es prueba. Si se cumple, el emisor firma `BADGE_AWARD`
+   `lab-<escenario>` y `TOKEN_MINT` de 10 PUPB con motivo `laboratorio:<escenario>`.
+   `GET /laboratorio/recompensas` lista los escenarios premiables.
+3. Una sola vez por dirección y escenario: la insignia es única (`409` si ya la tiene; la insignia se
+   envía antes que los puntos, así un duplicado pendiente tampoco cobra dos veces).
+
+Premiables (desenlace determinista: la defensa gana): `doble_gasto`, `sybil` y `equivocacion` en
+`pbft`. Los de PoW y el barrido del 51 % son azarosos y no se premian.
+
+**Alternativa descartada**: un código de evento (`EVENT_CODE_*`) impreso al terminar el laboratorio.
+Un estudiante podría compartir el enlace sin correr nada, y el laboratorio tendría que conocer la
+llave del evento. **Límite honesto del diseño elegido**: se verifica que el escenario es reproducible
+con esa semilla, no que *ese* estudiante lo corrió (la dirección es una etiqueta); lo respalda el
+docente al entregar el recibo, como en un premio manual.
+
 ## Pendiente
 
-- Recompensas del laboratorio (P1-12): premiar con PUPB o insignias a quien completa un escenario.
 - Correr el laboratorio entre dos máquinas reales (las RPi) en vez de en un solo proceso.

@@ -134,7 +134,9 @@ Flujos de trabajo y orden de dependencias:
   Nombre provisorio `PUPB` (decisión abierta). **Hecho también:** códigos QR de evento de un solo uso (`EVENT_CODE_CREATE`/`EVENT_CODE_CLAIM`,
   `POST /tokens/event-codes`, `GET /tokens/event-codes/{id}`, reclamo firmado en `/billetera`;
   `docs/contratos.md`). El premio automático al emitir credencial se hizo en P2-12.
-  **Pendiente:** recompensas del laboratorio de ataques.
+  **Recompensas del laboratorio:** `POST /laboratorio/recompensas` (admin; el emisor firma): el estudiante corre
+  `laboratorio_ataques.py --direccion`, recibe un recibo y el servidor REPITE el escenario antes de dar
+  10 PUPB (`laboratorio:<escenario>`) y la insignia `lab-<escenario>`; ver `docs/laboratorio_ataques.md`.
 - [x] **P1-13 Interfaz única de contratos.** `apply(state, tx) -> state` determinista (sin reloj,
   azar ni floats), reproducida en cada nodo. Credential, Token, Badge y Voting como contratos de
   referencia; los estudiantes agregan nuevos por pull request.
@@ -175,7 +177,7 @@ Flujos de trabajo y orden de dependencias:
 
 1. **Laboratorio de ataques en vivo:** un nodo malicioso real intenta doble gasto, reorg del 51 % y
    Sybil; con `CONSENSUS=pbft` el mismo ataque falla frente al tribunal.
-   *Hecho: `security/attacks/laboratorio.py` + `scripts/laboratorio_ataques.py` (doble gasto, barrido de reorg medido en proceso, Sybil con/sin TLS, equivocación; ver `docs/laboratorio_ataques.md`); faltan las recompensas (P1-12).*
+   *Hecho: `security/attacks/laboratorio.py` + `scripts/laboratorio_ataques.py` (doble gasto, barrido de reorg medido en proceso, Sybil con/sin TLS, equivocación; ver `docs/laboratorio_ataques.md`); recompensas del laboratorio hechas en P1-12: recibo + repetición del escenario en el servidor.*
 2. **Carrera de consensos:** la misma carga en PoW y PBFT, latencia/TPS/CPU lado a lado (figuras OE-2).
    *Arnés hecho en P1-1 (`scripts/experiments/carrera_consensos.py`, medido en un portátil); falta correrlo en las RPi.*
 3. **Anclaje público:** sellar el hash de la cabeza en Bitcoin con OpenTimestamps cada N bloques.

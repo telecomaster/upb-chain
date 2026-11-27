@@ -355,3 +355,7 @@ en PNG (`qr_png_base64`); el nodo no guarda la llave del evento. `GET /tokens/ev
 da reclamos usados, cupos, vencimiento y estado `OPEN|EXPIRED|EXHAUSTED` (404 hasta confirmarse).
 En `/billetera` el navegador firma el reclamo con la llave de la URL (`signEventClaim` en
 `wallet-core.js`) y luego la TX con la llave del estudiante; hay test cruzado con `node`.
+
+**Recompensas del laboratorio de ataques.** No usan códigos de evento (se podrían compartir sin
+correr nada): `POST /laboratorio/recompensas` repite el escenario en el servidor y el emisor firma una
+`BADGE_AWARD` `lab-<escenario>` más una `TOKEN_MINT` `laboratorio:<escenario>`; ver `docs/laboratorio_ataques.md`.
