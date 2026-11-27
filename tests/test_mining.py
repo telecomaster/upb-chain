@@ -39,6 +39,15 @@ def _lento(app, monkeypatch, segundos):
 
 
 @pytest.mark.asyncio
+async def test_minar_sin_cuerpo_como_en_el_readme(client):
+    """Regresión: el README documenta ``curl -X POST .../blocks/mine`` sin cuerpo y la API
+    respondía 422 (cuerpo obligatorio)."""
+    r = await client.post("/blocks/mine")
+    assert r.status_code == 200, r.text
+    assert r.json()["block"]["header"]["index"] == 1
+
+
+@pytest.mark.asyncio
 async def test_health_responde_durante_el_minado(client, app, monkeypatch):
     _lento(app, monkeypatch, 1.0)
     minado = asyncio.create_task(

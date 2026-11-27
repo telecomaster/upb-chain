@@ -881,7 +881,9 @@ async def consensus_info(node: NodeState = Depends(get_node)):
 
 
 @router.post("/blocks/mine", dependencies=[Depends(require_admin)])
-async def mine_block(request: MineRequest, background_tasks: BackgroundTasks, node: NodeState = Depends(get_node)):
+async def mine_block(background_tasks: BackgroundTasks, request: Optional[MineRequest] = None,
+                     node: NodeState = Depends(get_node)):
+    # Cuerpo opcional: ``curl -X POST .../blocks/mine`` (README) no manda JSON.
     if node.settings.consensus == "pbft":
         raise HTTPException(409, "Modo PBFT: los bloques no se minan; el primario propone "
                                  "uno automáticamente cuando hay transacciones pendientes")
