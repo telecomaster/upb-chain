@@ -2180,11 +2180,6 @@ def add_peer(host: str, port: int, node: NodeState = Depends(get_node)):
     return {"connected": ok}
 
 
-@router.get("/network/sync")
-async def sync_chain(node: NodeState = Depends(get_node)):
-    return {"chain": [b.to_dict() for b in node.blockchain.chain], "height": node.blockchain.height}
-
-
 @router.post("/network/sync", dependencies=[Depends(require_admin)])
 def sync_now(node: NodeState = Depends(get_node)):
     """Fuerza la sincronización con todos los pares activos (P0-5)."""

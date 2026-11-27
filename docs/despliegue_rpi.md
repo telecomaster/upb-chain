@@ -244,6 +244,12 @@ sudo systemctl start upbchain-node_1 upbchain-node_2
 Si no se borran en las 4, la réplica con datos viejos rechaza o es rechazada (génesis o reglas
 distintas).
 
+**`Longitud de mensaje inválida: N` en el journal.** Un par mandó un marco mayor que el tope de
+10 MB. Con la sincronización por lotes (P0-5) ningún nodo actualizado lo hace: casi siempre es una
+réplica con código viejo (`git log -1` en las dos Pi). Se registra una sola línea por conexión, sin
+traza. Esta versión cambia reglas de consenso (topes de tamaño, P0-3) y el protocolo de
+sincronización: actualizar las 4 réplicas a la vez.
+
 **Cambió la IP de una Pi.** La IP está en la lista de réplicas y en el certificado: repetir los
 pasos 3 a 5 (borrar antes `data\despliegue` y los `data/node_*` de las 4 réplicas).
 

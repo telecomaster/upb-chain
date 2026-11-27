@@ -177,7 +177,9 @@ guarda `<DATA_DIR>/chain.db`:
 - **Memoria.** `Blockchain.chain` sigue siendo la lista de bloques en memoria (la usan la
   validación, la red y varios endpoints); P2-4 elimina las reescrituras y los recorridos, no la
   lista. Siguen recorriendo la cadena, porque necesitan todos los bloques: `/ai/analytics`,
-  `/ai/train`, el envío de la cadena por P2P y `GET /network/sync`.
+  `/ai/train` y la búsqueda del punto de bifurcación al sincronizar (`GET_HASHES`). El antiguo
+  `GET /network/sync` (volcado HTTP de la cadena entera, sin autenticación y sin uso) se eliminó;
+  queda `POST /network/sync` (admin), que fuerza la sincronización por lotes (§4.8).
 
 **Arranque (`REVALIDATE_ON_START`).**
 
@@ -284,7 +286,7 @@ todas las firmas válidas (`ReplicaSet.check_commit_certificate`, sin reloj ni a
 la tabla `certificates` de `chain.db`, **fuera del hash del bloque**: dos réplicas pueden juntar
 subconjuntos distintos de COMMIT igualmente válidos, y el bloque debe ser el mismo para todas.
 Se verifica al agregar un bloque (`add_block(bloque, certificate)`), al sincronizar
-(`GET_CHAIN` → `CHAIN` lleva `certificates`; `replace_chain` los verifica en vez del trabajo) y al
+(`GET_BLOCKS` → `BLOCKS` lleva los `certificates` del lote; `replace_chain` los verifica en vez del trabajo) y al
 arrancar (fast y full). Si una cadena recibida trae otro bloque certificado en una altura que ya
 tenemos, se rechaza y el monitor emite la alerta **CRITICAL `PBFT_CONFLICT`** (solo puede pasar
 con más de *f* réplicas bizantinas). Un `DATA_DIR` de una red PoW no arranca en modo pbft.
@@ -354,7 +356,7 @@ a los observadores. Ahora, con trabajo pendiente durante `catch_up_delay` (= `PB
 1 s por defecto, **antes** de que venza el temporizador de vista), la réplica difunde
 `CERT_REQUEST⟨h⟩` ("estoy en *h*"); también lo hace en cuanto ve un mensaje para una altura mayor
 que *h* + 1. Toda réplica con más altura contesta **solo a quien pregunta** con `CERT_REPLY`: el
-bloque *h* + 1 (y siguientes, hasta 10; más allá se usa `GET_CHAIN`) con su certificado de commit.
+bloque *h* + 1 (y siguientes, hasta 10; más allá se usa la sincronización por lotes `GET_BLOCKS`) con su certificado de commit.
 La misma respuesta recibe un VIEW-CHANGE que trae una altura menor a la propia. Quien recibe un
 `CERT_REPLY` **no confía en el emisor**: acepta el bloque solo si el certificado tiene 2*f* + 1
 COMMIT con firma válida de réplicas distintas para ese hash, vista y altura
@@ -374,7 +376,7 @@ de red con el lock tomado) y hay como máximo una por réplica cada `catch_up_de
 - **Clientes y REPLY:** el "cliente" consulta la cadena por la API. Las TXs llegan a las
   réplicas por el gossip P2P existente (`NEW_TX`); el primario no reenvía peticiones.
 - **Transferencia de estado completa:** una réplica muy atrasada pide la cadena a sus pares
-  (`GET_CHAIN`) y verifica certificado por certificado; para pocos bloques basta `CERT_REQUEST`.
+  por lotes (`GET_HASHES`/`GET_BLOCKS`) y verifica certificado por certificado; para pocos bloques basta `CERT_REQUEST`.
 - **Retransmisión de mensajes de fase:** un PREPARE o COMMIT perdido no se reenvía; si las demás
   confirmaron, la réplica se pone al día con el certificado (§4.4); si no, el temporizador provoca
   un cambio de vista.
@@ -434,6 +436,37 @@ CRL ni OCSP); un certificado robado sigue siendo válido para otros nodos que no
 `PING` 0,85 ms con conexión por mensaje → 0,24 ms persistente sin TLS → 0,27 ms persistente con mTLS; envío
 de un mensaje PBFT 0,58 ms → 0,12 ms → 0,10 ms. El apretón de manos TLS se paga una vez por conexión,
 no por mensaje.
+
+### 4.9 Sincronización por lotes (P0-5, auditoría)
+
+**Problema.** `GET_CHAIN` mandaba la cadena entera en un solo marco. Cada mensaje tiene un tope de
+`_MAX_PAYLOAD` = 10 MB; una cadena normal lo supera con el tiempo (o enseguida con TXs grandes), y
+desde ese momento un nodo nuevo o con el `DATA_DIR` borrado no podía sincronizar nunca ("Longitud de
+mensaje inválida" en bucle) mientras el que servía registraba trazas de `SSLEOFError`. En PoW no había
+otro camino.
+
+**Ahora** (`P2PNode.sync_with`):
+
+1. **Punto de bifurcación.** `GET_HASHES {from, count}` → `HASHES {data: [hash…], height}`, desde
+   nuestra punta hacia atrás en lotes de hasta 2000 hashes. Como cada hash incluye al anterior, la
+   primera altura que coincide desde arriba es el último bloque común. Si el par solo nos extiende,
+   basta un pedido; si ni el génesis coincide, es otra red y no se sigue.
+2. **Descarga.** `GET_BLOCKS {from, count, max_bytes}` → `BLOCKS {data, certificates, height}`:
+   bloques consecutivos desde la bifurcación + 1, hasta 500 por lote y sin pasar de la mitad del
+   menor `_MAX_PAYLOAD` de ambos extremos (siempre al menos un bloque; un bloque mide ≤ 1 MiB, §2.4.1).
+   Se baja hasta la altura que el par anunció al empezar, y cada lote se comprueba (índice y
+   `previous_hash` encadenados) antes de pedir el siguiente.
+3. **Adopción.** Nuestro prefijo hasta la bifurcación + lo bajado → **una** llamada a `replace_chain`,
+   que valida todo y decide por trabajo acumulado (en pbft, por certificados: los de nuestro prefijo
+   más los del lote).
+
+`GET_CHAIN` se eliminó (nadie más lo usaba; el nodo malicioso del laboratorio ahora sobrescribe
+`_serving_chain`). Un marco que supera el tope o no es JSON se registra en **una línea** y se cierra
+esa conexión; un par que se va mientras se le responde, también (sin traza). La validación completa
+desde el génesis en `replace_chain` se mantiene: es O(altura) por sincronización.
+
+**Cambio de protocolo.** Un nodo con la versión anterior pide `GET_CHAIN` y no recibe respuesta:
+todos los nodos deben actualizarse a la vez (es el mismo despliegue que los topes de P0-3).
 
 ## 5. Modelo de Amenazas
 

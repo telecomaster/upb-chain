@@ -70,7 +70,7 @@ Qué se omite (documentado en docs/arquitectura.md §4)
 - Peticiones nulas en NEW-VIEW: con ventana 1 no hay huecos que rellenar.
 - Respuestas a clientes (REPLY): el "cliente" mira la cadena (API).
 - Transferencia de estado completa: una réplica muy atrasada se sincroniza
-  por P2P (GET_CHAIN) y verifica los certificados de cada bloque; los pocos
+  por P2P (GET_HASHES/GET_BLOCKS, por lotes) y verifica los certificados de cada bloque; los pocos
   bloques que faltan tras perder mensajes llegan por CERT-REQUEST/CERT-REPLY.
 - La vista no se guarda en disco: al arrancar se toma la vista del último
   certificado de la cadena.
@@ -378,7 +378,7 @@ class PBFTReplica:
 
     TICK = 0.05
     MAX_FUTURE = 500      # mensajes de vistas futuras guardados como máximo
-    MAX_CATCH_UP = 10     # bloques certificados por respuesta CERT-REPLY; más: GET_CHAIN
+    MAX_CATCH_UP = 10     # bloques certificados por respuesta CERT-REPLY; más: GET_BLOCKS
 
     def __init__(self, replica_id: str, private_key_hex: str, replicas: ReplicaSet,
                  blockchain, send: Callable[[dict], None], *,

@@ -187,14 +187,15 @@ def test_par_con_otro_genesis_es_rechazado(red):
     assert f"{HOST}:{c.port}" not in a.peers
 
 
-def test_get_chain_sync_request_y_peers_responden_datos_reales(red):
-    """Regresión: GET_CHAIN devolvía la petición, SYNC_REQUEST altura 0, PEERS fallaba."""
+def test_get_blocks_sync_request_y_peers_responden_datos_reales(red):
+    """Regresión: GET_CHAIN devolvía la petición, SYNC_REQUEST altura 0, PEERS fallaba.
+    (GET_CHAIN se reemplazó por GET_BLOCKS por lotes, P0-5.)"""
     a = red.nodo("a")
     _minar(a, 2)
     b = red.nodo("b", peers=[a])
     assert _esperar(_alcanzo(b, a))
 
-    cadena = b.request_chain_sync(f"{HOST}:{a.port}")
+    cadena = b.request_blocks(f"{HOST}:{a.port}", 0, 10)["data"]
     assert [blk["hash"] for blk in cadena] == [blk.hash for blk in a.blockchain.chain]
 
     estado = b._request(HOST, a.port, {"type": MSG_SYNC_REQUEST})

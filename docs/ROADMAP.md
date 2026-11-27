@@ -63,6 +63,10 @@ Flujos de trabajo y orden de dependencias:
   `replace_chain` debe comprobar génesis y trabajo acumulado, devolver TXs huérfanas al mempool y
   llamar `on_chain_reorg`. *Listo cuando:* el nodo 2, arrancado después, alcanza al nodo 1 y se
   recupera tras una desconexión.
+  - [x] Auditoría: sincronización por lotes. `GET_CHAIN` (la cadena en un solo mensaje, imposible
+    pasados 10 MB) se reemplazó por `GET_HASHES` (punto de bifurcación) + `GET_BLOCKS` (lotes
+    acotados por cantidad y bytes) y una sola `replace_chain`; marcos inválidos en una línea sin
+    traza; se eliminó `GET /network/sync`.
 - [x] **P0-6 Credenciales derivadas de la cadena.** El estado del contrato = reproducción de TXs
   `CREDENTIAL_ISSUE`/`REVOKE` confirmadas (al iniciar y en cada bloque). Verificación devuelve
   `PENDING`/`CONFIRMED` con bloque y confirmaciones; endpoint de revocación firmado; registro de

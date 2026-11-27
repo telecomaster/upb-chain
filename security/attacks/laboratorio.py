@@ -66,7 +66,7 @@ from blockchain.core.transaction import (
     Transaction, TransactionType, create_mint_transaction, create_transfer_transaction,
 )
 from blockchain.core.wallet import Wallet
-from blockchain.network.node import MSG_BLOCK, MSG_CHAIN, MSG_GET_CHAIN, P2PNode
+from blockchain.network.node import MSG_BLOCK, P2PNode
 
 logger = logging.getLogger("upb_chain.laboratorio")
 
@@ -83,7 +83,7 @@ class NodoMalicioso(P2PNode):
     Lo único que cambia respecto de ``P2PNode`` está marcado con ``MALICIOSO`` y afecta solo
     a este nodo:
       - Retiene su cadena privada (otra ``Blockchain``, fuera de la red) y, al ``liberar``,
-        la anuncia como propia: ``_status`` y ``GET_CHAIN`` responden con ella.
+        la anuncia como propia: ``_status`` y ``GET_HASHES``/``GET_BLOCKS`` responden con ella.
       - Envía mensajes elegidos a pares elegidos (``enviar_bloque_a``, ``enviar_pbft_a``):
         así puede decir cosas distintas a nodos distintos (equivocación).
     Los mensajes PBFT que recibe se ignoran (no corre una réplica honesta).
@@ -109,17 +109,11 @@ class NodoMalicioso(P2PNode):
                           tip=bloques[-1].hash)
         return estado
 
-    def _dispatch(self, message: dict, conn) -> None:
-        if message.get("type") == MSG_GET_CHAIN and self._privada is not None:
-            if not self._mark_seen(message.get("id", "")):
-                return
-            bloques, certs = self._privada     # MALICIOSO: sirve la cadena privada
-            respuesta = {"type": MSG_CHAIN, "data": bloques}
-            if certs:
-                respuesta["certificates"] = {str(h): c for h, c in certs.items()}
-            self._send_framed(conn, respuesta)
-            return
-        super()._dispatch(message, conn)
+    def _serving_chain(self) -> tuple:
+        if self._privada is None:
+            return super()._serving_chain()
+        bloques, certs = self._privada     # MALICIOSO: sirve la cadena privada
+        return [Block.from_dict(b) for b in bloques], dict(certs)
 
     # MALICIOSO: entrega dirigida (no gossip) para contar historias distintas a cada par.
     def enviar_bloque_a(self, puerto: int, bloque: dict, certificado: Optional[dict] = None) -> None:

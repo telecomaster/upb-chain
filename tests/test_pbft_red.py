@@ -184,7 +184,7 @@ def test_una_replica_caida_confirma_y_la_tardia_sincroniza_certificados(red):
     red.iniciar("r0", "r1", "r2")
     red.enviar_tx("r0")
     assert esperar(lambda: all(red.altura(r) == 1 for r in ("r0", "r1", "r2")), 10)
-    # r3 llega tarde: HANDSHAKE → GET_CHAIN con certificados → replace_chain los verifica.
+    # r3 llega tarde: HANDSHAKE → GET_HASHES/GET_BLOCKS con certificados → replace_chain los verifica.
     red.iniciar("r3")
     assert esperar(lambda: red.altura("r3") == 1, 10)
     bc3 = red.nodo("r3").blockchain

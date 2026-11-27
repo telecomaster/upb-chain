@@ -9,8 +9,8 @@ Cada mensaje se transmite como::
     [ 4 bytes big-endian uint32 = longitud del payload ][ payload JSON UTF-8 ]
 
 Conexiones persistentes (P2-6): hay UNA conexión TCP larga por par y canal ("ctl" para
-HANDSHAKE/sincronización/gossip, "pbft" para los mensajes PBFT, de modo que bajar una cadena
-grande no retrase a PBFT). Por cada conexión el cliente envía un mensaje y, si corresponde, lee su
+HANDSHAKE/sincronización/gossip, "pbft" para los mensajes PBFT, de modo que bajar muchos
+bloques no retrase a PBFT). Por cada conexión el cliente envía un mensaje y, si corresponde, lee su
 respuesta (peticiones serializadas por un candado); el servidor atiende mensajes en bucle hasta
 que el cliente cierre o pase ``idle_timeout`` sin tráfico. Antes de reutilizarla se comprueba que
 siga viva (si el par la cerró, se reabre una vez); los TCP keepalive y la consulta periódica
@@ -33,7 +33,11 @@ Mensajes (P0-5)
   (trabajo acumulado), tip y peers conocidos. Génesis distinto → ``REJECT``.
   Quien tenga menos trabajo pide la cadena del otro.
 - ``SYNC_REQUEST`` → ``SYNC_RESPONSE`` con el mismo estado (consulta periódica).
-- ``GET_CHAIN`` → ``CHAIN`` con la cadena completa (lista de bloques).
+- ``GET_HASHES {from, count}`` → ``HASHES {from, data: [hash…], height}``: hashes de las
+  alturas ``from``… (para hallar el punto de bifurcación).
+- ``GET_BLOCKS {from, count, max_bytes}`` → ``BLOCKS {from, data: [bloque…], certificates,
+  height}``: un LOTE de bloques consecutivos acotado por cantidad y por bytes (siempre al menos
+  un bloque si ``from`` ≤ altura). Ver "Sincronización por lotes".
 - ``NEW_BLOCK`` (sin respuesta): si extiende la punta se valida, se añade y se
   re-propaga una vez; si no la extiende se sincroniza con el emisor
   (``origin``); si es inválido se ignora con un log.
@@ -48,8 +52,23 @@ Modo de consenso (P1-1)
 -----------------------
 El estado anunciado lleva ``consensus`` ("pow" o "pbft"); es de toda la red:
 un par con otro modo recibe ``REJECT`` igual que con otro génesis. En pbft,
-``NEW_BLOCK`` lleva ``certificate`` y ``CHAIN`` lleva ``certificates``
+``NEW_BLOCK`` lleva ``certificate`` y ``BLOCKS`` lleva ``certificates``
 ({altura: certificado}); la cadena los verifica en lugar del trabajo.
+
+Sincronización por lotes (P0-5, auditoría)
+------------------------------------------
+Antes ``GET_CHAIN`` mandaba la cadena entera en UN marco: pasado ``_MAX_PAYLOAD`` (10 MB) un nodo
+nuevo no podía sincronizar nunca. Ahora ``sync_with``:
+
+1. pide ``GET_HASHES`` hacia atrás desde nuestra punta hasta encontrar el último bloque común
+   (los hashes encadenan: si la altura *i* coincide, todas las anteriores también);
+2. baja con ``GET_BLOCKS`` solo los bloques posteriores, lote a lote, hasta la altura que el par
+   anunció al empezar (no persigue una punta que crece sin fin), comprobando índice y enlace;
+3. arma la cadena candidata (nuestro prefijo + lo bajado) y llama UNA vez a ``replace_chain``, que
+   valida todo y decide por trabajo acumulado (o certificados en pbft).
+
+Cada respuesta cabe en ``_MAX_PAYLOAD`` del que la pide (``max_bytes``) y del que la sirve. Un
+bloque mide a lo sumo ``MAX_BLOCK_BYTES`` (1 MiB, P0-3), así que un lote siempre lleva al menos uno.
 
 Framing
 -------
@@ -81,8 +100,10 @@ MSG_HANDSHAKE   = "HANDSHAKE"
 MSG_REJECT      = "REJECT"
 MSG_BLOCK       = "NEW_BLOCK"
 MSG_TRANSACTION = "NEW_TX"
-MSG_GET_CHAIN   = "GET_CHAIN"
-MSG_CHAIN       = "CHAIN"
+MSG_GET_HASHES  = "GET_HASHES"
+MSG_HASHES      = "HASHES"
+MSG_GET_BLOCKS  = "GET_BLOCKS"
+MSG_BLOCKS      = "BLOCKS"
 MSG_GET_PEERS   = "GET_PEERS"
 MSG_PEERS       = "PEERS"
 MSG_PING        = "PING"
@@ -182,7 +203,9 @@ class P2PNode:
     MAX_PEERS = 64              # tope de la tabla de pares (los de PEERS se conservan siempre)
     MAX_PEERS_PER_MSG = 16      # direcciones que se aprenden de un solo mensaje
     _MAX_SEEN = 5_000           # ids de mensajes recordados para deduplicar (FIFO)
-    _MAX_PAYLOAD = 10_000_000   # 10 MB — límite de seguridad
+    _MAX_PAYLOAD = 10_000_000   # 10 MB por mensaje — límite de seguridad (un test lo baja por instancia)
+    _BLOCKS_PER_MSG = 500       # bloques por lote de GET_BLOCKS como máximo
+    _HASHES_PER_MSG = 2000      # hashes por respuesta de GET_HASHES como máximo
 
     def __init__(
         self,
@@ -208,7 +231,7 @@ class P2PNode:
     ):
         """
         - ``blockchain``: si se pasa, el nodo valida y añade bloques/TXs recibidos,
-          responde ``GET_CHAIN`` y sincroniza con ``replace_chain``. ``on_new_block``
+          responde ``GET_HASHES``/``GET_BLOCKS`` y sincroniza por lotes con ``replace_chain``. ``on_new_block``
           y ``on_new_tx`` pasan a ser avisos DESPUÉS de aceptar (dict recibido).
         - ``on_invalid_block(reason, origen)``: aviso cuando un bloque recibido que
           extiende la punta es rechazado (P1-5).
@@ -371,7 +394,15 @@ class P2PNode:
                     message = self._recv_framed(conn)
                 except (ConnectionError, socket.timeout, ssl.SSLError):
                     break               # cierre limpio del par, inactividad o error de TLS
-                self._dispatch(message, conn)
+                except ValueError as e:
+                    # Marco demasiado grande o JSON roto: una línea, sin traza, y se corta.
+                    logger.warning(f"Mensaje inválido de {addr[0]}: {e}; se cierra la conexión")
+                    break
+                try:
+                    self._dispatch(message, conn)
+                except OSError as e:     # incluye ssl.SSLError/SSLEOFError: el par se fue
+                    logger.warning(f"No se pudo responder a {addr[0]}: {e!r}")
+                    break
         except Exception:
             if self._running:
                 logger.exception(f"Error manejando conexión de {addr}")
@@ -543,13 +574,10 @@ class P2PNode:
             self._handle_block(message, conn)
         elif msg_type == MSG_TRANSACTION:
             self._handle_tx(message)
-        elif msg_type == MSG_GET_CHAIN:
-            chain = list(self.blockchain.chain) if self.blockchain is not None else []
-            reply = {"type": MSG_CHAIN, "data": [b.to_dict() for b in chain]}
-            certs = getattr(self.blockchain, "certificates", None)
-            if certs:
-                reply["certificates"] = {str(h): c for h, c in dict(certs).items()}
-            self._send_framed(conn, reply)
+        elif msg_type == MSG_GET_HASHES:
+            self._send_framed(conn, self._hashes_reply(message))
+        elif msg_type == MSG_GET_BLOCKS:
+            self._send_framed(conn, self._blocks_reply(message))
         elif msg_type == MSG_SYNC_REQUEST:
             self._send_framed(conn, {"type": MSG_SYNC_RESPONSE, **self._status()})
         elif msg_type == MSG_GET_PEERS:
@@ -559,6 +587,59 @@ class P2PNode:
             self._send_framed(conn, {"type": MSG_PONG, "node_id": self.node_id})
         elif msg_type == MSG_PBFT and self.on_pbft_message:
             self._notify(self.on_pbft_message, message.get("data"))
+
+    # ── Servir la cadena por lotes (P0-5) ─────────────────────────────────────
+
+    def _serving_chain(self) -> tuple:
+        """``(bloques, certificados)`` que este nodo sirve a sus pares (el laboratorio lo cambia)."""
+        if self.blockchain is None:
+            return [], {}
+        return list(self.blockchain.chain), dict(getattr(self.blockchain, "certificates", {}) or {})
+
+    def _reply_budget(self, message: dict) -> int:
+        """Bytes de datos que caben en una respuesta: la mitad del menor de ambos topes.
+
+        La otra mitad queda para el sobre JSON y los certificados que se cuentan aparte.
+        """
+        budget = self._MAX_PAYLOAD // 2
+        pedido = message.get("max_bytes")
+        if type(pedido) is int and pedido > 0:
+            budget = min(budget, pedido)
+        return budget
+
+    @staticmethod
+    def _range_of(message: dict, tope: int) -> tuple:
+        start, count = message.get("from"), message.get("count")
+        start = start if type(start) is int and start >= 0 else 0
+        count = count if type(count) is int and count > 0 else tope
+        return start, min(count, tope)
+
+    def _hashes_reply(self, message: dict) -> dict:
+        chain, _ = self._serving_chain()
+        tope = max(1, min(self._HASHES_PER_MSG, self._reply_budget(message) // 70))
+        start, count = self._range_of(message, tope)
+        return {"type": MSG_HASHES, "from": start, "height": len(chain) - 1,
+                "data": [b.hash for b in chain[start:start + count]]}
+
+    def _blocks_reply(self, message: dict) -> dict:
+        chain, certs = self._serving_chain()
+        start, count = self._range_of(message, self._BLOCKS_PER_MSG)
+        budget = self._reply_budget(message)
+        data, lote_certs, used = [], {}, 0
+        for block in chain[start:start + count]:
+            d = block.to_dict()
+            cert = certs.get(block.header.index)
+            size = len(json.dumps(d)) + (len(json.dumps(cert)) if cert is not None else 0) + 16
+            if data and used + size > budget:
+                break                     # siempre va al menos un bloque
+            data.append(d)
+            used += size
+            if cert is not None:
+                lote_certs[str(block.header.index)] = cert
+        reply = {"type": MSG_BLOCKS, "from": start, "height": len(chain) - 1, "data": data}
+        if lote_certs:
+            reply["certificates"] = lote_certs
+        return reply
 
     def _handle_handshake(self, message: dict, conn: socket.socket) -> None:
         peer_id = message.get("node_id", "unknown")
@@ -818,37 +899,117 @@ class P2PNode:
 
     # ── Sincronización ────────────────────────────────────────────────────────
 
-    def request_chain_sync(self, peer_address: str) -> Optional[List[dict]]:
-        """Pide la cadena completa (``GET_CHAIN``) a ``"host:port"``. None si falla."""
-        response = self._fetch_chain(peer_address)
-        return response.get("data", []) if response is not None else None
-
-    def _fetch_chain(self, peer_address: str) -> Optional[dict]:
-        """Respuesta ``CHAIN`` completa (bloques y, en pbft, certificados) o None."""
+    def request_blocks(self, peer_address: str, start: int, count: int) -> Optional[dict]:
+        """Un lote ``GET_BLOCKS`` de ``"host:port"`` (respuesta ``BLOCKS`` completa) o None."""
+        host, port = peer_address.rsplit(":", 1)
         try:
-            host, port = peer_address.rsplit(":", 1)
-            response = self._request(host, int(port), {"type": MSG_GET_CHAIN, "node_id": self.node_id})
-            if response.get("type") == MSG_CHAIN:
-                return response
-            logger.debug(f"request_chain_sync: respuesta inesperada de {peer_address}: {response.get('type')}")
+            reply = self._request(host, int(port), {
+                "type": MSG_GET_BLOCKS, "from": start, "count": count,
+                "max_bytes": self._MAX_PAYLOAD // 2})
         except Exception as e:
-            logger.warning(f"request_chain_sync falló para {peer_address}: {e}")
-        return None
+            logger.warning(f"GET_BLOCKS a {peer_address} falló: {e}")
+            return None
+        return reply if reply.get("type") == MSG_BLOCKS else None
+
+    def _request_hashes(self, host: str, port: int, start: int, count: int) -> Optional[dict]:
+        try:
+            reply = self._request(host, port, {
+                "type": MSG_GET_HASHES, "from": start, "count": count,
+                "max_bytes": self._MAX_PAYLOAD // 2})
+        except Exception as e:
+            logger.warning(f"GET_HASHES a {host}:{port} falló: {e}")
+            return None
+        return reply if reply.get("type") == MSG_HASHES else None
+
+    def _find_fork(self, host: str, port: int, local: List[Block]) -> Optional[tuple]:
+        """``(altura del último bloque común, altura del par)`` o None (falla o génesis ajeno).
+
+        Retrocede por lotes de hashes desde nuestra punta: si la altura *i* coincide, todas las
+        anteriores también (cada hash incluye el anterior), así que el primer acierto desde arriba
+        es la bifurcación. Una cadena que solo nos extiende se resuelve con un único pedido.
+        """
+        paso = self._HASHES_PER_MSG
+        start = max(0, len(local) - paso)
+        peer_height = None
+        while True:
+            reply = self._request_hashes(host, port, start, paso)
+            if reply is None or reply.get("from") != start:
+                return None
+            hashes = reply.get("data")
+            if not isinstance(hashes, list):
+                return None
+            if peer_height is None:
+                peer_height = reply.get("height")
+                if type(peer_height) is not int or peer_height < 0:
+                    return None
+            if not hashes and start > peer_height:
+                # El par es más corto que nuestro lote: retroceder hasta su punta.
+                start = max(0, peer_height - paso + 1)
+                continue
+            top = min(start + len(hashes), len(local)) - 1
+            for h in range(top, start - 1, -1):
+                if hashes[h - start] == local[h].hash:
+                    return h, peer_height
+            if start == 0:
+                return None              # ni el génesis coincide: otra red
+            start = max(0, start - paso)
+
+    def _download(self, peer_address: str, fork: int, fork_hash: str,
+                  target: int) -> Optional[tuple]:
+        """Bloques ``fork+1 … target`` del par, por lotes: ``(dicts, certificados)`` o None."""
+        blocks: List[dict] = []
+        certs: Dict[str, dict] = {}
+        prev_hash, nxt = fork_hash, fork + 1
+        while nxt <= target:
+            reply = self.request_blocks(peer_address, nxt, min(self._BLOCKS_PER_MSG, target - nxt + 1))
+            lote = reply.get("data") if reply is not None else None
+            if not lote or not isinstance(lote, list):
+                return None
+            for d in lote[:target - nxt + 1]:
+                try:
+                    index, previous = d["header"]["index"], d["header"]["previous_hash"]
+                except (KeyError, TypeError):
+                    return None
+                if index != nxt or previous != prev_hash:
+                    logger.warning(f"Lote de {peer_address} no encadena en la altura {nxt}")
+                    return None
+                blocks.append(d)
+                prev_hash, nxt = d.get("hash"), nxt + 1
+            lote_certs = reply.get("certificates") or {}
+            if isinstance(lote_certs, dict):
+                certs.update(lote_certs)
+        return blocks, certs
 
     def sync_with(self, peer_address: str) -> bool:
-        """Descarga la cadena del par y llama ``replace_chain`` (que decide por trabajo)."""
+        """Sincroniza por lotes con el par (ver "Sincronización por lotes") y ``replace_chain``."""
         if self.blockchain is None:
             return False
         with self._sync_lock:
-            response = self._fetch_chain(peer_address)
-            chain = response.get("data") if response is not None else None
-            if not chain:
+            try:
+                host, port = peer_address.rsplit(":", 1)
+                port = int(port)
+            except ValueError:
                 return False
-            certificates = response.get("certificates")
-            ok, reason = (self.blockchain.replace_chain(chain, certificates) if certificates
-                          else self.blockchain.replace_chain(chain))
+            local = list(self.blockchain.chain)
+            found = self._find_fork(host, port, local)
+            if found is None:
+                return False
+            fork, peer_height = found
+            if peer_height <= fork:
+                return False            # el par no tiene nada que no tengamos
+            downloaded = self._download(peer_address, fork, local[fork].hash, peer_height)
+            if downloaded is None:
+                return False
+            blocks, certs = downloaded
+            chain = [b.to_dict() for b in local[:fork + 1]] + blocks
+            if getattr(self.blockchain, "consensus", "pow") == "pbft":
+                own = {str(h): c for h, c in dict(self.blockchain.certificates).items() if h <= fork}
+                ok, reason = self.blockchain.replace_chain(chain, {**own, **certs})
+            else:
+                ok, reason = self.blockchain.replace_chain(chain)
         if ok:
-            logger.info(f"Sincronizado con {peer_address}: altura {self.blockchain.height}")
+            logger.info(f"Sincronizado con {peer_address}: altura {self.blockchain.height} "
+                        f"({len(blocks)} bloque(s) desde la bifurcación en {fork})")
         else:
             logger.debug(f"Cadena de {peer_address} no adoptada: {reason}")
         return ok
