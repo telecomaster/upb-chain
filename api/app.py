@@ -2382,10 +2382,11 @@ def create_app(settings: Optional[Settings] = None,
         # did:web (P2-3): sin dominio fijo, cada nodo firma/exporta con el host de la petición
         # y un VC no verifica contra otro nodo de la red.
         multinodo = bool(settings.peers) or settings.consensus == "pbft"
-        if multinodo and not (settings.did_web_domain or settings.public_base_url):
-            logger.warning("Red multinodo sin DID_WEB_DOMAIN ni PUBLIC_BASE_URL: los VC exportados "
-                           "por este nodo no verificarán contra los demás; definir el mismo "
-                           "DID_WEB_DOMAIN (o PUBLIC_BASE_URL) en todos los nodos")
+        # PUBLIC_BASE_URL no basta: suele ser distinta en cada nodo y entonces el did difiere.
+        if multinodo and not settings.did_web_domain:
+            logger.warning("Red multinodo sin DID_WEB_DOMAIN: los VC exportados por este nodo "
+                           "no verificarán contra los demás (el did sale del host de cada nodo); "
+                           "definir el mismo DID_WEB_DOMAIN en todos los nodos")
         if node.anchors is not None:
             node.anchors.retry_failed()
         logger.info(f"UPB-Chain nodo {settings.node_id} iniciado ({settings.consensus})")

@@ -201,3 +201,19 @@ async def test_sin_aviso_si_hay_dominio_o_nodo_unico(tmp_path, caplog):
         async with unico.router.lifespan_context(unico):
             pass
     assert not any("DID_WEB_DOMAIN" in r.getMessage() for r in caplog.records)
+
+
+async def test_aviso_multinodo_aunque_haya_public_base_url(tmp_path, caplog):
+    """PUBLIC_BASE_URL (distinta por nodo) no silencia el aviso: el did seguiría difiriendo."""
+    from tests.helpers import make_app
+    app = make_app(tmp_path, peers=["127.0.0.1:1"], public_base_url="http://nodo-a:8000")
+    with caplog.at_level("WARNING", logger="upb_chain.api"):
+        async with app.router.lifespan_context(app):
+            pass
+    assert any("DID_WEB_DOMAIN" in r.getMessage() for r in caplog.records)
+
+
+def test_compose_define_dominio_did_compartido():
+    from pathlib import Path
+    raiz = Path(__file__).resolve().parent.parent
+    assert "DID_WEB_DOMAIN" in (raiz / "docker-compose.yml").read_text(encoding="utf-8")

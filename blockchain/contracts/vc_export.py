@@ -90,6 +90,8 @@ def build_did_document(domain: str, keys: Dict[str, str],
 
 def _contexto(domain: str) -> list:
     # Términos propios (UPBChainAnchor, fieldsRoot...) bajo un @vocab de la UPB: sin publicar.
+    # Sale del dominio did:web (compartido por la red), no de la URL por nodo del VC (``id``),
+    # para que el vocabulario sea idéntico en todos los nodos; el esquema https es solo un IRI.
     return [CONTEXTO_VC, CONTEXTO_OB3, {"@vocab": f"https://{domain.replace('%3A', ':')}/ns/upb-chain#"}]
 
 
