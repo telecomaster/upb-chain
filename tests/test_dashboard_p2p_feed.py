@@ -1,8 +1,8 @@
-"""Dashboard: /blocks con order=desc para mostrar los bloques más recientes."""
+"""Dashboard: bloques recientes (order=desc) y TXs recibidas por P2P hacia monitor y feed."""
 from fastapi.testclient import TestClient
 
-
-
+from blockchain.core.transaction import Transaction, TransactionType
+from blockchain.core.wallet import Wallet
 from tests.helpers import make_app
 
 
@@ -24,3 +24,17 @@ def test_blocks_orden_desc_y_paginacion(tmp_path):
         assert c.get("/blocks?order=x").status_code == 422
 
 
+def test_tx_recibida_por_p2p_pasa_por_monitor_y_feed(tmp_path):
+    app = make_app(tmp_path)
+    with TestClient(app):
+        node = app.state.node
+        monitor, eventos = [], []
+        node.security_monitor.on_transaction = monitor.append
+        node.events.publish = lambda ev, data=None: eventos.append((ev, data))
+        w = Wallet.generate()
+        tx = Transaction(type=TransactionType.DATA_RECORD, sender=w.address,
+                         recipient="DEST", payload={"x": 1}, nonce=1)
+        tx.sign(w.private_key_hex)
+        node.p2p._handle_tx({"type": "TX", "data": tx.to_dict()})   # como si llegara de un par
+        assert [t["tx_id"] for t in monitor] == [tx.tx_id]
+        assert ("tx", {"tx_id": tx.tx_id, "pending": 1}) in eventos

@@ -280,6 +280,8 @@ def build_node(settings: Settings, authority_address: Optional[str] = None) -> N
         on_pbft_message=lambda m: node.pbft.receive(m) if node.pbft is not None else None,
         # P1-5: bloques recibidos y aceptados, bloques inválidos y pares fuera de PEERS.
         on_new_block=lambda b: node.announce_block(b),
+        # TXs de pares ya admitidas al mempool: feed en vivo y monitor (solo alertas).
+        on_new_tx=lambda t: node.announce_tx(t),
         on_invalid_block=security_monitor.on_invalid_block,
         on_unknown_peer=security_monitor.on_unknown_peer,
         known_peers=settings.peers,
