@@ -501,7 +501,9 @@ class HardeningAuditor:
     garantiza compatibilidad con Windows y Linux.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, settings=None) -> None:
+        # Sin ``settings`` (scripts) NET-005 lee el entorno con load_settings().
+        self._settings = settings
         self.checks: List[HardeningCheck] = HARDENING_CHECKS
         self._last_audit: Optional[dict] = None
 
@@ -654,7 +656,7 @@ class HardeningAuditor:
         if cid == "NET-005":
             try:
                 from config import load_settings
-                s = load_settings()
+                s = self._settings or load_settings()
                 return "PASS" if (s.p2p_allowlist and s.p2p_tls == "on") else "FAIL"
             except Exception:
                 return "MANUAL"

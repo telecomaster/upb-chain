@@ -2116,9 +2116,9 @@ async def crypto_benchmark():
 
 
 @router.get("/security/hardening")
-async def hardening_checklist():
+async def hardening_checklist(node: NodeState = Depends(get_node)):
     """Checklist de hardening en solo lectura (inspección de código, sin shell)."""
-    return HardeningAuditor().run_audit()
+    return HardeningAuditor(settings=node.settings).run_audit()
 
 
 @router.post("/security/eclipse-simulation")
