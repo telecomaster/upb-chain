@@ -18,7 +18,6 @@ from blockchain.core.wallet import Wallet
 from tests.test_canjes import _cadena, _ok
 
 
-@pytest.mark.xfail(strict=True, reason="un VOTE previo ocupa el election_id y bloquea ELECTION_CREATE")
 def test_voto_previo_no_bloquea_la_creacion_de_la_eleccion(tmp_path):
     autoridad, intruso = Wallet.generate(), Wallet.generate()
     bc = _cadena(tmp_path / "a", autoridad)

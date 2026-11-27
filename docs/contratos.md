@@ -136,6 +136,9 @@ Se apoya en `ELECTION_CREATE`/`VOTE` de P2-12 y añade, sin cambiar las reglas e
 - Campos opcionales del `ELECTION_CREATE`: `title`, `eligible_credential_type` y `eligible_program`
   (texto 1-64). Si hay elegibilidad, solo vota quien tiene una credencial ACTIVA de ese tipo y/o
   programa (se lee con `ctx.view("credentials")`; un voto de otro es inválido y rechaza el bloque).
+- **Votos previos a la creación** (P2-12, cambio de consenso): un `VOTE` sobre un `election_id` sin
+  configuración sigue siendo válido (elección "libre" de P1-13), pero ya no ocupa el id: la autoridad
+  puede crear la elección después y los votos libres anteriores se descartan de forma determinista.
 - `GET /elections` y `GET /elections/{id}` devuelven `status`: `pending` (aún no abre), `open` o
   `closed`, calculado con la altura confirmada (`closed` cuando ya existe el bloque `end_height`),
   más `turnout` (votantes y peso total).

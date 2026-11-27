@@ -308,8 +308,11 @@ def test_eleccion_sin_config_conserva_el_voto_unico_y_ids_no_se_repiten(mundo):
     _ok(m.bc, [_voto(m.ana, "a", 1, eid="vieja"), _voto(m.beto, "a", 1, eid="vieja")])
     assert m.bc.contract_state("voting").tally("vieja") == {"a": 2}
     assert not m.bc.add_transaction(_voto(m.ana, "b", 2, eid="vieja"))[0]
+    # P2-12: los votos libres no ocupan el id; crearla los descarta (una configurada sí es única).
     ok, why = m.bc.add_transaction(_eleccion(m, 4, "one_per_address", 0, 9, eid="vieja"))
-    assert not ok and "ya existe" in why
+    assert ok, why
+    _ok(m.bc, [])
+    assert not m.bc.add_transaction(_eleccion(m, 5, "one_per_address", 0, 9, eid="vieja"))[0]
     # Solo autoridad o emisor la crean.
     ok, why = m.bc.add_transaction(_eleccion(m, 2, "one_per_address", 0, 9, creador=m.ana))
     assert not ok and "autoridad o un emisor" in why

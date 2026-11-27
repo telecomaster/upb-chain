@@ -151,7 +151,7 @@ class VotingContract(Contract):
                       ctx: TxContext) -> Tuple[bool, str]:
         if sender != self.authority_address and not is_registered_issuer(ctx, sender):
             return False, "Solo la autoridad o un emisor registrado pueden crear elecciones"
-        if election_id in state.configs or election_id in state.elections:
+        if election_id in state.configs:
             return False, f"La elección {election_id} ya existe"
         options = payload.get("options")
         if (not isinstance(options, list) or not 2 <= len(options) <= MAX_OPTIONS
@@ -197,6 +197,8 @@ class VotingContract(Contract):
                 config["cap"] = payload["cap"]
                 config["snapshot"] = {a: min(b, payload["cap"])
                                       for a, b in balances.items() if b > 0}
+            # Los votos libres previos (sin configuración) no cuentan: se descartan
+            state.elections.pop(election_id, None)
             state.configs[election_id] = config
             return state
         voter = tx["sender"]
