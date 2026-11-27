@@ -47,6 +47,8 @@ from typing import Deque, List, Optional, Tuple
 
 import numpy as np
 
+from blockchain.core.transaction import TransactionType
+
 logger = logging.getLogger("upb_chain.ai.anomaly")
 
 
@@ -80,11 +82,11 @@ BOLIVIA_TZ = timezone(timedelta(hours=-4))   # La Paz, sin horario de verano: de
 VENTANA_CONTEXTO = 60.0                      # segundos de historia para las características de contexto
 HORA_NOCTURNA_MAX = 5                        # "horario inusual" = antes de las 05:00 (hora de Bolivia)
 
-TYPE_MAP = {
-    "CREDENTIAL_ISSUE": 0, "CREDENTIAL_REVOKE": 1, "CREDENTIAL_VERIFY": 2, "VOTE": 3,
-    "DATA_RECORD": 4, "TOKEN_TRANSFER": 5, "SMART_CONTRACT": 6, "ISSUER_REGISTER": 7,
-    "TOKEN_MINT": 8,
-}
+# Código numérico de cada tipo = posición en `TransactionType` (determinista; un tipo nuevo
+# se agrega al final del enum y no mueve los códigos anteriores). El mapa se guarda con el
+# modelo: si cambia, el modelo viejo se descarta (las características ya no significan lo mismo).
+TYPE_MAP = {t.value: i for i, t in enumerate(TransactionType)}
+TYPE_DEFAULT = TYPE_MAP["DATA_RECORD"]
 
 
 def _hash_payload(payload) -> str:
@@ -159,8 +161,10 @@ class TransactionAnomalyDetector:
         "is_new_sender",
     ]
     N_BASE = 5            # las primeras 5 no dependen del contexto (las usa la heurística)
-    MIN_SAMPLES = 10
-    MODEL_VERSION = 1
+    # 100: con 8 características y contamination=5 %, con menos de ~100 TX el bosque aísla
+    # apenas 5 puntos "anómalos" y el escalador/la referencia salen de muestras casi vacías.
+    MIN_SAMPLES = 100
+    MODEL_VERSION = 2   # 2: el código de tipo sale de TransactionType (se guarda `type_map`)
 
     def __init__(self, contamination: float = 0.05, threshold: float = 0.6):
         self.contamination = contamination
@@ -179,7 +183,7 @@ class TransactionAnomalyDetector:
         payload_size = len(json.dumps(tx.get("payload", {})))
         fee = int(tx.get("fee", 0))
         dt = datetime.fromtimestamp(float(tx.get("timestamp", time.time())), tz=BOLIVIA_TZ)
-        return [payload_size, fee, dt.hour, dt.weekday(), TYPE_MAP.get(tx.get("type", "DATA_RECORD"), 4)]
+        return [payload_size, fee, dt.hour, dt.weekday(), TYPE_MAP.get(str(getattr(tx.get("type"), "value", tx.get("type", "DATA_RECORD"))), TYPE_DEFAULT)]
 
     def extract_features(self, tx: dict, context: Optional[ContextoTx] = None) -> List[float]:
         ctx = context if context is not None else self.context
@@ -223,8 +227,9 @@ class TransactionAnomalyDetector:
 
     def train(self, transactions: List[dict]) -> dict:
         if len(transactions) < self.MIN_SAMPLES:
-            logger.warning("Datos insuficientes para entrenamiento (mínimo 10)")
-            return {"trained": False, "reason": "insufficient_data"}
+            logger.warning("Datos insuficientes para entrenamiento (mínimo %d)", self.MIN_SAMPLES)
+            return {"trained": False, "reason": "insufficient_data", "min_samples": self.MIN_SAMPLES,
+                    "samples": len(transactions)}
         ctx = ContextoTx()
         features = []
         for tx in sorted(transactions, key=lambda t: t.get("timestamp", 0)):
@@ -251,7 +256,7 @@ class TransactionAnomalyDetector:
         tmp = path.with_suffix(path.suffix + ".tmp")
         joblib.dump({
             "version": self.MODEL_VERSION, "features": self.FEATURE_NAMES,
-            "model": self._model, "scaler": self._scaler,
+            "type_map": TYPE_MAP, "model": self._model, "scaler": self._scaler,
             "contamination": self.contamination, "threshold": self.threshold,
             "training_samples": self._training_samples, "ref": self._ref,
         }, tmp)
@@ -265,8 +270,11 @@ class TransactionAnomalyDetector:
             return False
         try:
             data = joblib.load(path)
-            if data.get("version") != self.MODEL_VERSION or data.get("features") != self.FEATURE_NAMES:
-                logger.warning("Modelo guardado incompatible; se ignora")
+            if (data.get("version") != self.MODEL_VERSION or data.get("features") != self.FEATURE_NAMES
+                    or data.get("type_map") != TYPE_MAP):
+                logger.warning("Modelo guardado incompatible (versión %s, codificación de tipos distinta); "
+                               "se ignora y se usa la heurística hasta reentrenar con POST /ai/train",
+                               data.get("version"))
                 return False
             self._model, self._scaler = data["model"], data["scaler"]
             self.contamination = data["contamination"]
@@ -407,6 +415,10 @@ class TransactionAnomalyDetector:
     def get_stats(self) -> dict:
         return {
             "is_trained": self._is_trained,
+            "mode": "isolation_forest" if self._is_trained else "heuristic",
+            "label": (f"Isolation Forest entrenado ({self._training_samples} muestras)"
+                      if self._is_trained else "heurística (sin entrenar)"),
+            "min_samples": self.MIN_SAMPLES,
             "training_samples": self._training_samples,
             "threshold": self.threshold,
             "contamination": self.contamination,
