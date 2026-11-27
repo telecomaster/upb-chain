@@ -28,14 +28,14 @@ UPB-Chain es una red blockchain permisionada implementada sobre dos nodos **Rasp
 │                                 │    │                                 │
 │  ┌─────────────────────────┐    │    │  ┌─────────────────────────┐    │
 │  │   API REST (FastAPI)    │    │    │  │   API REST (FastAPI)    │    │
-│  │   Puerto 8000           │    │    │  │   Puerto 8002           │    │
+│  │   Puerto 8000           │    │    │  │   Puerto 8010           │    │
 │  └────────────┬────────────┘    │    │  └────────────┬────────────┘    │
 │               │                 │    │               │                 │
 │  ┌────────────▼────────────┐    │    │  ┌────────────▼────────────┐    │
 │  │   Blockchain Core       │◄───┼────┼──►   Blockchain Core       │    │
 │  │   Chain + Mempool       │    │P2P │  │   Chain + Mempool       │    │
 │  └────────────┬────────────┘    │8001│  └────────────┬────────────┘    │
-│               │                 │8003│               │                 │
+│               │                 │8011│               │                 │
 │  ┌────────────▼────────────┐    │    │  ┌────────────▼────────────┐    │
 │  │   Consenso (PoW/PBFT)  │    │    │  │   Consenso (PoW/PBFT)  │    │
 │  └─────────────────────────┘    │    │  └─────────────────────────┘    │
@@ -289,7 +289,7 @@ venv\Scripts\python.exe -m pytest tests -q                       # toda la suite
 venv\Scripts\python.exe -m pytest tests\test_security.py -q      # un archivo
 ```
 
-Estado actual: 580 pruebas pasan y 1 está marcada `xfail`, en unos 2,5 minutos (2 min 25 s en un portátil de desarrollo; la cifra cambia al aterrizar trabajos nuevos).
+Estado actual: 731 pruebas pasan y 1 está marcada `xfail`, en unos 2,5 minutos (2 min 25 s en un portátil de desarrollo; la cifra cambia al aterrizar trabajos nuevos).
 
 Los tests que necesitan su propio nodo lo arman con `tests.helpers.make_app(tmp_path, ...)`
 (`create_app` + `Settings`), así que varias apps conviven en un mismo proceso.
@@ -400,10 +400,8 @@ Protocolo, variante, qué se omite y diagramas en [`docs/arquitectura.md`](docs/
 ### Criptografía Implementada
 
 - **ECDSA secp256k1**: firma y verificación (mismo estándar que Bitcoin)
-- **SHA-256 / SHA3-256 / BLAKE2b**: hashing de bloques y transacciones
+- **SHA-256**: hashing de bloques y transacciones (SHA3-256 y BLAKE2b solo en `benchmark_crypto`)
 - **Merkle Tree**: integridad eficiente de conjuntos de transacciones
-- **AES-256-GCM**: cifrado simétrico autenticado
-- **PBKDF2-HMAC-SHA256**: derivación segura de contraseñas
 
 ### Inteligencia Artificial
 

@@ -1,22 +1,19 @@
 # Hoja de ruta — UPB-Chain
 
-Estado verificado al 2026-11-25. Fuente de verdad para prioridades y delegación; `TAREAS.md` y
+Estado verificado al 2026-11-26. Fuente de verdad para prioridades y delegación; `TAREAS.md` y
 `docs/PLAN_IMPLEMENTACION.md` conservan el plan original del autor.
 
 ## Resumen
 
-UPB-Chain funciona como demo de **un solo nodo**, pero todavía no es una blockchain de dos nodos:
-los 78 tests pasan porque prueban cada clase aislada, no las costuras entre ellas. Verificado
-ejecutando el código:
+Estado verificado al 2026-11-26 (suite: 731 pruebas pasan y 1 `xfail`). El sistema ya es una
+blockchain multinodo funcional en laptop:
 
-- Cada nodo crea un génesis distinto (`time.time()`), así que dos nodos nunca pueden sincronizar.
-- Nunca se verifican firmas: se aceptan TXs falsificadas y sin firmar.
-- Se aceptan bloques sin prueba de trabajo, y `replace_chain` acepta cualquier cadena más larga,
-  incluso con otro génesis.
-- Las credenciales viven solo en memoria: son "válidas" antes de minarse y se pierden al reiniciar.
-- PBFT no está conectado; la dificultad adaptativa se ignora; `sync.py`, `discovery.py`,
-  `eclipse.py` y `hardening.py` no se importan en ningún lado.
-- No existe un token real: `TOKEN_TRANSFER` no valida montos y el "balance" suma fees.
+- Varios nodos locales (PoW) y 4 réplicas PBFT con certificados de commit sincronizan, resuelven
+  bifurcaciones y se recuperan al reiniciar (SQLite en `chain.db`); P2P con mTLS opcional.
+- Firmas, génesis determinista, nonces/saldos, credenciales con emisores registrados, votación,
+  máquina virtual y laboratorio de ataques están conectados y probados por la API.
+- Pendiente: P1-10 (mediciones en las RPi, las hace el dueño del hardware), Idea 6 (detección
+  federada) y las decisiones legales. Ninguna cifra de rendimiento en RPi está medida.
 
 **Espíritu del proyecto:** construido desde cero, explicable en un paper, ejecutable en una RPi 5,
 útil para enseñar. Las mejoras deben respetar eso.
@@ -216,8 +213,8 @@ Casi todo se desarrolla en una laptop: el nodo es Python puro. Tras P0-7, cada n
 con sus puertos y su directorio (PowerShell, una terminal por nodo):
 
 ```powershell
-$env:NODE_ID="node_2"; $env:NODE_PORT="8003"; $env:DATA_DIR="data/node_2"; $env:PEERS="127.0.0.1:8001"
-venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8002
+$env:NODE_ID="node_2"; $env:NODE_PORT="8011"; $env:DATA_DIR="data/node_2"; $env:PEERS="127.0.0.1:8001"
+venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8010
 ```
 
 Solo la red LAN real, systemd, reinicios, temperatura y las cifras de hash rate/TPS del paper
