@@ -1,5 +1,5 @@
 // Billetera web del estudiante (P2-1). La llave privada nunca sale del navegador.
-import { buildSignedTx, kinds, randomPrivateKey, normalizePrivateKey, publicKeyHex,
+import { buildSignedTx, kinds, signEventClaim, randomPrivateKey, normalizePrivateKey, publicKeyHex,
   addressFromPublicKey, toHex, fromHex } from './wallet-core.js';
 
 const $ = (id) => document.getElementById(id);
@@ -190,6 +190,35 @@ $('btn-enviar').onclick = () => protegido(async () => {
   $('resultado').textContent = JSON.stringify(cuerpo, null, 2);
   if (!r.ok) throw new Error(cuerpo.detail || `Error HTTP ${r.status}`);
   estado('Transacción enviada: ' + cuerpo.tx_id);
+  refrescar();
+});
+
+// Código de evento (P1-12): /billetera?evento=<id>&k=<llave del evento>. La llave sale de la URL
+// (queda solo en memoria) y se firma, con la dirección del estudiante, el reclamo del código.
+const params = new URLSearchParams(location.search);
+const eventoId = params.get('evento');
+const eventoLlave = params.get('k');
+if (eventoId && eventoLlave) {
+  try { history.replaceState(null, '', location.pathname + '?evento=' + encodeURIComponent(eventoId)); } catch { /* sin historial */ }
+  $('sec-evento').classList.remove('oculto');
+  obtener('/tokens/event-codes/' + encodeURIComponent(eventoId)).then((c) => {
+    $('evento-info').textContent = `${c.reason}: ${c.amount} puntos por persona · ` +
+      `quedan ${c.claims_left} de ${c.max_claims} · vence en el bloque ${c.expires_height} (${c.status}).`;
+  }).catch(() => { $('evento-info').textContent = 'No se encontró el código (¿aún sin confirmar?).'; });
+}
+$('btn-reclamar').onclick = () => protegido(async () => {
+  if (!eventoId || !eventoLlave) throw new Error('Abre el enlace del QR del evento.');
+  if (!llave) throw new Error('Abre o crea tu billetera primero (el reclamo se firma con tu dirección).');
+  const cuenta = await obtener(`/accounts/${direccion}`);
+  const c = await obtener('/tokens/event-codes/' + encodeURIComponent(eventoId));
+  const claimSig = await signEventClaim(normalizePrivateKey(eventoLlave), c.genesis_hash, eventoId, direccion);
+  const tx = await buildSignedTx(llave, { ...kinds.eventClaim(eventoId, claimSig), nonce: cuenta.next_nonce });
+  const r = await fetch('/transactions', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(tx) });
+  const cuerpo = await r.json().catch(() => ({}));
+  $('resultado').textContent = JSON.stringify(cuerpo, null, 2);
+  if (!r.ok) throw new Error(cuerpo.detail || `Error HTTP ${r.status}`);
+  estado('Reclamo enviado: ' + cuerpo.tx_id);
   refrescar();
 });
 

@@ -129,8 +129,10 @@ Flujos de trabajo y orden de dependencias:
   API: `GET /tokens/{address}`, `GET /badges/{address}`, `GET /issuers/{address}/budget`,
   `GET|POST /tokens/redeem-addresses`, `POST /tokens/budget`, `/tokens/award`, `/tokens/award/csv`,
   `/tokens/redeem`, `/badges/award`; panel de estudiante y de emisor en el dashboard.
-  Nombre provisorio `PUPB` (decisión abierta). **Pendiente** (el premio automático al emitir credencial se hizo en P2-12):
-  códigos QR de un solo uso en eventos y recompensas del laboratorio de ataques.
+  Nombre provisorio `PUPB` (decisión abierta). **Hecho también:** códigos QR de evento de un solo uso (`EVENT_CODE_CREATE`/`EVENT_CODE_CLAIM`,
+  `POST /tokens/event-codes`, `GET /tokens/event-codes/{id}`, reclamo firmado en `/billetera`;
+  `docs/contratos.md`). El premio automático al emitir credencial se hizo en P2-12.
+  **Pendiente:** recompensas del laboratorio de ataques.
 - [x] **P1-13 Interfaz única de contratos.** `apply(state, tx) -> state` determinista (sin reloj,
   azar ni floats), reproducida en cada nodo. Credential, Token, Badge y Voting como contratos de
   referencia; los estudiantes agregan nuevos por pull request.

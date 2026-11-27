@@ -39,6 +39,9 @@ Tipos con efecto sobre saldos:
                     Σ saldos + Σ saldos de contratos = total_supply. Por eso
                     TOKEN_TRANSFER/TOKEN_MINT a una dirección "UPC…" son inválidas.
 
+    EVENT_CODE_CLAIM (P1-12) acredita al sender el monto del código de evento que
+                    decide el contrato ``tokens`` (``claim_award``), como el premio automático.
+
 Los demás tipos (credenciales, DATA_RECORD, VOTE, …) solo consumen nonce y fee.
 Este contrato es siempre el primero del registro: lo posee la cadena
 (``Blockchain.accounts``) porque el nonce ordena las TXs de cada firmante.
@@ -157,6 +160,16 @@ class AccountContract(Contract):
                 award = auto_award(tokens, tx, ctx)
                 if award is not None:
                     state.balances[recipient] = state.balance_of(recipient) + award["amount"]
+                    state.total_supply += award["amount"]
+        elif tx_type == "EVENT_CODE_CLAIM":
+            # Código QR de evento (P1-12): igual que el premio automático; validez y monto
+            # salen de ``claim_award`` sobre el estado previo de ``tokens``.
+            tokens = ctx.view("tokens")
+            if tokens is not None:
+                from blockchain.contracts.tokens import claim_award
+                award, _ = claim_award(tokens, tx, ctx)
+                if award is not None:
+                    state.balances[sender] = state.balance_of(sender) + award["amount"]
                     state.total_supply += award["amount"]
         return state
 

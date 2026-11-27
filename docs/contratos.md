@@ -319,3 +319,36 @@ Lo que **no** va en un contrato: llamadas a la red, al disco o a servicios exter
 estudiante ejecutado con `exec()` (los contratos desplegables son P2-11, sobre una VM propia:
 ver `docs/vm.md`; ahí una llamada que hace REVERT o se queda sin gas es válida y cobra gas,
 única excepción a "TX inválida ⇒ bloque inválido").
+
+## Códigos QR de evento de un solo uso (P1-12)
+
+Sirven para premiar a quienes asisten a un evento sin conocer sus direcciones de antemano. Viven
+en `tokens` (que ya tiene presupuestos y premios); **el orden de contratos no cambia**.
+`accounts` acredita con la misma función pura `claim_award(ctx.view("tokens"), tx, ctx)`, igual
+que con el premio automático.
+
+| TX | Quién firma | Regla |
+|----|-------------|-------|
+| `EVENT_CODE_CREATE` | emisor registrado | `{code_id, event_pubkey (DER hex secp256k1), amount > 0, max_claims 1..10000, expires_height, reason}`; un `code_id` una sola vez |
+| `EVENT_CODE_CLAIM` | estudiante | `{code_id, claim_sig}`; válida si el código existe, `altura del bloque <= expires_height`, quedan cupos, la dirección no lo reclamó, no es el emisor, `claim_sig` verifica y el emisor tiene presupuesto en el semestre del bloque |
+
+**Contra el front-running.** En un mempool público, un código secreto dentro de la TX se
+podría copiar y reenviar a nombre de otro. Por eso el QR lleva la **llave privada efímera** del
+evento (`/billetera?evento=<code_id>&k=<hex>`) y la TX solo lleva `claim_sig`: firma ECDSA de esa
+llave sobre `UPB-EVENT-CLAIM:v1|<GENESIS_HASH>|<code_id>|<dirección>` (`claim_message`). La firma
+liga el génesis (no sirve en otra red), el código y la dirección del estudiante; copiarla desde
+otra dirección falla. Quien tenga el QR puede reclamar una vez por dirección hasta agotar el
+cupo: el control es el cupo, el vencimiento y el presupuesto, no el secreto del QR.
+
+**Presupuesto: se cobra por reclamo, no se reserva al crear.** Crear el código no bloquea
+presupuesto; cada reclamo descuenta `amount` del presupuesto del emisor en el semestre del bloque
+que lo incluye. Si se agotó, ese reclamo es inválido (400 / bloque rechazado) y se puede reintentar
+tras ampliar el presupuesto mientras el código siga vigente. Consecuencia: `amount * max_claims`
+puede superar el presupuesto sin error al crear.
+
+**API.** `POST /tokens/event-codes` (educativo, como `/tokens/award`: el emisor manda su llave
+privada) genera la llave del evento y devuelve `code_id`, `event_private_key`, `claim_url` y el QR
+en PNG (`qr_png_base64`); el nodo no guarda la llave del evento. `GET /tokens/event-codes/{id}`
+da reclamos usados, cupos, vencimiento y estado `OPEN|EXPIRED|EXHAUSTED` (404 hasta confirmarse).
+En `/billetera` el navegador firma el reclamo con la llave de la URL (`signEventClaim` en
+`wallet-core.js`) y luego la TX con la llave del estudiante; hay test cruzado con `node`.

@@ -52,6 +52,35 @@ política de TX inválida de P1-13, a propósito). Como los saldos son del contr
 cuentas, ese contrato acredita el monto leyendo ``ctx.view("tokens")`` ANTES de que
 este contrato aplique la TX; ambos usan el mismo estado previo, así que coinciden.
 
+Códigos QR de evento de un solo uso (P1-12). Diseño contra el front-running en un
+mempool público: el QR del evento NO lleva una "clave de canje" que cualquiera
+pueda copiar de una TX pendiente y reenviar a su nombre, sino la llave PRIVADA
+efímera del evento; la TX del estudiante solo lleva una firma de esa llave que
+liga el código con SU dirección.
+
+    EVENT_CODE_CREATE        sender = emisor registrado; payload {code_id, event_pubkey
+                             (DER SPKI hex secp256k1, como las llaves de billetera),
+                             amount int > 0, max_claims 1..MAX_CLAIMS, expires_height
+                             int, reason}. Un ``code_id`` se crea una sola vez.
+    EVENT_CODE_CLAIM         sender = estudiante; payload {code_id, claim_sig}. Válida si:
+                             el código existe, el bloque tiene altura <= expires_height,
+                             hay cupo (reclamos < max_claims), esa dirección no lo
+                             reclamó antes, el emisor no se premia a sí mismo, ``claim_sig``
+                             es una firma ECDSA de la llave del evento sobre
+                             ``claim_message(code_id, sender)`` (incluye el hash del
+                             génesis y la dirección) y el semestre del bloque tiene
+                             presupuesto >= amount. Efecto: ``amount`` al estudiante.
+                             Una TX copiada y reenviada por otra dirección falla: la firma
+                             liga la dirección original.
+
+Presupuesto: se COBRA POR RECLAMO, no se reserva al crear. Así crear un código no
+bloquea presupuesto que quizá nunca se use, y el tope real lo da el presupuesto del
+semestre del bloque donde se reclama (si se agota, el reclamo es inválido y el
+estudiante puede reintentarlo cuando haya presupuesto, mientras el código siga vigente).
+Como los saldos son de ``accounts``, ese contrato acredita con la misma función pura
+``claim_award`` sobre ``ctx.view("tokens")`` (igual que ``auto_award``); el orden de los
+contratos no cambia.
+
 No hay recompensa por minado: los mineros son nodos de la UPB.
 
 Lectura entre contratos: "emisor registrado" se consulta con
@@ -126,6 +155,63 @@ def is_registered_issuer(ctx: TxContext, address) -> bool:
 
 MAX_ID = 64
 MAX_TITLE = 140
+MAX_CLAIMS = 10_000     # tope de reclamos por código de evento
+
+
+def claim_message(code_id: str, address: str) -> str:
+    """Mensaje que firma la llave del evento: liga génesis, código y dirección del estudiante."""
+    from blockchain.core.block import GENESIS_HASH
+    return f"UPB-EVENT-CLAIM:v1|{GENESIS_HASH}|{code_id}|{address}"
+
+
+def is_secp256k1_public_key(value) -> bool:
+    """¿``value`` es una llave pública DER (SPKI) en hex sobre secp256k1?"""
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        key = serialization.load_der_public_key(bytes.fromhex(value))
+        return isinstance(key, ec.EllipticCurvePublicKey) and key.curve.name == "secp256k1"
+    except Exception:
+        return False
+
+
+def claim_award(state: "TokenState", tx: dict, ctx: TxContext) -> Tuple[Optional[dict], str]:
+    """Premio de una TX ``EVENT_CODE_CLAIM``: ``(premio, "OK")`` o ``(None, motivo)``.
+
+    Pura y determinista (la verificación ECDSA lo es): mira el estado previo, la
+    TX y la altura/hora del bloque. La usan ``tokens`` (validar y aplicar) y
+    ``accounts`` (acreditar).
+    """
+    payload = tx.get("payload")
+    if not isinstance(payload, dict):
+        return None, "payload debe ser un objeto"
+    code_id, claim_sig = payload.get("code_id"), payload.get("claim_sig")
+    code = state.event_codes.get(code_id) if isinstance(code_id, str) else None
+    if code is None:
+        return None, "El código de evento no existe"
+    if ctx.block_index is None or ctx.block_timestamp is None:
+        return None, "Sin altura u hora de bloque no se puede reclamar"
+    if ctx.block_index > code["expires_height"]:
+        return None, f"El código venció en el bloque {code['expires_height']}"
+    claimer = tx.get("sender", "")
+    if len(code["claimed_by"]) >= code["max_claims"]:
+        return None, "El código ya agotó sus reclamos"
+    if claimer in code["claimed_by"]:
+        return None, "Esta dirección ya reclamó el código"
+    if claimer == code["issuer"]:
+        return None, "El emisor no puede reclamar su propio código"
+    if not isinstance(claim_sig, str) or not claim_sig:
+        return None, "Falta claim_sig"
+    from security.crypto_utils import verify_signature
+    if not verify_signature(claim_message(code_id, claimer), claim_sig, code["event_pubkey"]):
+        return None, "claim_sig no es una firma válida de la llave del evento para esta dirección"
+    semester = semester_of(ctx.block_timestamp)
+    remaining = state.remaining(code["issuer"], semester)
+    if code["amount"] > remaining:
+        return None, (f"Presupuesto del emisor insuficiente en {semester}: "
+                      f"quedan {remaining}, el código da {code['amount']}")
+    return {"code_id": code_id, "amount": code["amount"], "issuer": code["issuer"],
+            "recipient": claimer, "semester": semester, "reason": code["reason"]}, "OK"
 
 
 def receipt_id_of(tx_id: str) -> str:
@@ -171,6 +257,7 @@ class TokenState:
     catalog: Dict[str, dict] = field(default_factory=dict)            # item_id → ítem (P2-12)
     receipts: Dict[str, dict] = field(default_factory=dict)           # recibo → canje de catálogo (P2-12)
     rules: Dict[str, dict] = field(default_factory=dict)              # rule_id → premio automático (P2-12)
+    event_codes: Dict[str, dict] = field(default_factory=dict)        # code_id → código de evento (P1-12)
 
     def budget_of(self, issuer: str, semester: str) -> int:
         return self.budgets.get(issuer, {}).get(semester, 0)
@@ -186,7 +273,8 @@ class TokenContract(Contract):
     NAME = "tokens"
     HANDLED_TYPES = frozenset({"ISSUER_BUDGET", "TOKEN_MINT",
                                "REDEEM_ADDRESS_REGISTER", "TOKEN_REDEEM",
-                               "CATALOG_ITEM", "AWARD_RULE", "CREDENTIAL_ISSUE"})
+                               "CATALOG_ITEM", "AWARD_RULE", "CREDENTIAL_ISSUE",
+                               "EVENT_CODE_CREATE", "EVENT_CODE_CLAIM"})
 
     def __init__(self, authority_address: Optional[str] = None) -> None:
         from blockchain.core.block import GENESIS_AUTHORITY_ADDRESS
@@ -230,6 +318,11 @@ class TokenContract(Contract):
             return self._check_catalog_item(state, sender, payload)
         if tx_type == "AWARD_RULE":
             return self._check_award_rule(state, sender, payload, ctx)
+        if tx_type == "EVENT_CODE_CREATE":
+            return self._check_event_create(state, sender, payload, ctx)
+        if tx_type == "EVENT_CODE_CLAIM":
+            award, reason = claim_award(state, tx, ctx)
+            return award is not None, reason
         if tx_type == "CREDENTIAL_ISSUE":
             return True, "OK"   # la valida el contrato de credenciales; aquí solo se premia
         return False, f"Tipo no soportado por el contrato: {tx_type}"
@@ -285,6 +378,31 @@ class TokenContract(Contract):
             if (rule["credential_type"] == ctype
                     and rule["issuer_address"] == payload["issuer_address"]):
                 return False, "Ya hay una regla para ese tipo de credencial y emisor"
+        return True, "OK"
+
+    @staticmethod
+    def _check_event_create(state: TokenState, sender: str, payload: dict,
+                            ctx: TxContext) -> Tuple[bool, str]:
+        if not is_registered_issuer(ctx, sender):
+            return False, "Solo un emisor registrado puede crear códigos de evento"
+        code_id = text_or_none(payload.get("code_id"), MAX_ID)
+        if code_id is None or code_id != code_id.strip() or "|" in code_id:
+            return False, f"code_id debe ser texto de 1 a {MAX_ID} caracteres, sin espacios en los bordes ni '|'"
+        if code_id in state.event_codes:
+            return False, f"El código {code_id} ya existe"
+        if not is_secp256k1_public_key(payload.get("event_pubkey")):
+            return False, "event_pubkey debe ser una llave pública DER secp256k1 en hex"
+        if not is_int(payload.get("amount")) or payload["amount"] <= 0:
+            return False, "amount debe ser un entero > 0"
+        if (not is_int(payload.get("max_claims"))
+                or not 1 <= payload["max_claims"] <= MAX_CLAIMS):
+            return False, f"max_claims debe ser un entero entre 1 y {MAX_CLAIMS}"
+        if not is_int(payload.get("expires_height")):
+            return False, "expires_height debe ser un entero"
+        if ctx.block_index is not None and payload["expires_height"] < ctx.block_index:
+            return False, "expires_height ya pasó"
+        if text_or_none(payload.get("reason"), MAX_REASON) is None:
+            return False, f"reason es obligatorio (texto de 1 a {MAX_REASON} caracteres)"
         return True, "OK"
 
     def _check_budget(self, state: TokenState, sender: str, payload: dict,
@@ -373,6 +491,25 @@ class TokenContract(Contract):
                 "rule_id": payload["rule_id"], "credential_type": payload["credential_type"],
                 "issuer_address": payload["issuer_address"], "amount": payload["amount"],
             }
+        elif tx_type == "EVENT_CODE_CREATE":
+            state.event_codes[payload["code_id"]] = {
+                "code_id": payload["code_id"], "issuer": sender,
+                "event_pubkey": payload["event_pubkey"], "amount": payload["amount"],
+                "max_claims": payload["max_claims"], "expires_height": payload["expires_height"],
+                "reason": payload["reason"], "created_at_block": ctx.block_index,
+                "claimed_by": [],
+            }
+        elif tx_type == "EVENT_CODE_CLAIM":
+            award, _ = claim_award(state, tx, ctx)
+            state.event_codes[award["code_id"]]["claimed_by"].append(award["recipient"])
+            per_issuer = state.minted.setdefault(award["issuer"], {})
+            per_issuer[award["semester"]] = per_issuer.get(award["semester"], 0) + award["amount"]
+            state.awards.setdefault(award["recipient"], []).append({
+                "issuer": award["issuer"], "amount": award["amount"],
+                "reason": award["reason"], "semester": award["semester"],
+                "block_index": ctx.block_index, "tx_id": tx.get("tx_id", ""),
+                "code_id": award["code_id"],
+            })
         elif tx_type == "CREDENTIAL_ISSUE":
             award = auto_award(state, tx, ctx)
             if award is not None:     # sin premio: la credencial se emite igual (ver docstring)

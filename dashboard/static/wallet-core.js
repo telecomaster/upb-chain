@@ -97,11 +97,23 @@ export async function buildSignedTx(privHex, fields) {
   return tx;
 }
 
+// Códigos QR de evento (P1-12): la llave PRIVADA del evento viaja en el QR; el reclamo lleva una
+// firma suya sobre (génesis, código, dirección del estudiante), igual que claim_message() de tokens.py.
+export const claimMessage = (genesisHash, codeId, address) =>
+  `UPB-EVENT-CLAIM:v1|${genesisHash}|${codeId}|${address}`;
+export async function signEventClaim(eventPrivHex, genesisHash, codeId, address) {
+  const hash = sha256(utf8(claimMessage(genesisHash, codeId, address)));
+  const sig = await secp.signAsync(hash, fromHex(eventPrivHex));
+  return b64(compactToDer(sig.toCompactRawBytes()));
+}
+
 // Campos por tipo de TX (mismos que los constructores de transaction.py).
 export const kinds = {
   transfer: (recipient, amount) => ({ type: 'TOKEN_TRANSFER', recipient, payload: { amount } }),
   redeem: (recipient, amount, item, itemId) =>
     ({ type: 'TOKEN_REDEEM', recipient, payload: { amount, ...(item ? { item } : {}), ...(itemId ? { item_id: itemId } : {}) } }),
+  eventClaim: (codeId, claimSig) =>
+    ({ type: 'EVENT_CODE_CLAIM', recipient: 'TOKENS_CONTRACT', payload: { code_id: codeId, claim_sig: claimSig } }),
   vote: (election_id, choice) =>
     ({ type: 'VOTE', recipient: 'VOTING_CONTRACT', payload: { election_id, choice } }),
   // data_hash = sha256(json.dumps(data, sort_keys=True)), igual que create_data_record_transaction.

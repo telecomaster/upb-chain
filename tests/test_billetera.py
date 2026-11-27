@@ -119,6 +119,37 @@ def test_firma_js_la_acepta_el_verificador_de_python(txs_js, i):
     assert not Transaction.from_dict(mala).is_consensus_valid()[0]
 
 
+@necesita_node
+def test_js_firma_del_reclamo_de_evento_la_verifica_python_y_el_tx_coincide():
+    """P1-12: la firma JS del evento pasa ``claim_award`` (verify_signature) y la TX coincide con Python."""
+    from blockchain.contracts.tokens import claim_message
+    from blockchain.core.block import GENESIS_HASH
+    from security.crypto_utils import verify_signature
+    evento_priv = "00" * 31 + "07"
+    evento_pub = public_key_from_private(_priv_der_hex(evento_priv))
+    arg = json.dumps({"priv": evento_priv, "genesis": GENESIS_HASH, "codeId": "EV-ñ1", "address": DIR})
+    r = subprocess.run([NODE, str(RAIZ / "tests" / "js" / "event_claim_check.mjs")], input=arg.encode("utf-8"),
+                       capture_output=True, timeout=60, cwd=RAIZ)
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
+    sig = json.loads(r.stdout.decode("utf-8"))["sig"]
+    assert verify_signature(claim_message("EV-ñ1", DIR), sig, evento_pub)
+    assert not verify_signature(claim_message("EV-ñ1", OTRO), sig, evento_pub)   # ligada a la dirección
+    # La TX EVENT_CODE_CLAIM de la billetera tiene el mismo payload, tx_id y mensaje firmado que Python.
+    caso = {"kind": "eventClaim", "args": ["EV-ñ1", sig], "nonce": 5, "fee": 0, "timestamp": 1700000009}
+    arg = json.dumps({"priv": PRIV_RAW, "casos": [caso]})
+    r = subprocess.run([NODE, str(RAIZ / "tests" / "js" / "cross_check.mjs")], input=arg.encode("utf-8"),
+                       capture_output=True, timeout=60, cwd=RAIZ)
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
+    js = json.loads(r.stdout.decode("utf-8"))[0]
+    from blockchain.core.transaction import create_event_claim_transaction
+    py = create_event_claim_transaction(DIR, "EV-ñ1", sig, PRIV_DER, nonce=5)
+    py = Transaction.from_dict({**py.to_dict(), "timestamp": 1700000009})
+    py.tx_id = py._compute_id()
+    assert js["payload"] == py.payload and js["recipient"] == py.recipient and js["type"] == py.type
+    assert js["tx_id"] == py.tx_id
+    assert Transaction.from_dict(js).is_consensus_valid() == (True, "OK")
+
+
 def test_firma_python_con_mismo_formato_que_noble_se_verifica():
     """Sin node: una firma ECDSA/SHA-256 en DER con S bajo (como emite noble) pasa el verificador."""
     from cryptography.hazmat.primitives import hashes

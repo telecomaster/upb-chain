@@ -26,6 +26,8 @@ class TransactionType(str, Enum):
     BADGE_AWARD         = "BADGE_AWARD"         # insignia intransferible, la otorga un emisor (P1-12)
     CATALOG_ITEM        = "CATALOG_ITEM"        # admin: ítem canjeable con precio y stock (P2-12)
     AWARD_RULE          = "AWARD_RULE"          # admin: premio automático al emitir una credencial (P2-12)
+    EVENT_CODE_CREATE   = "EVENT_CODE_CREATE"   # emisor: código QR de evento, un reclamo por dirección (P1-12)
+    EVENT_CODE_CLAIM    = "EVENT_CODE_CLAIM"    # estudiante: reclama puntos con la firma de la llave del evento (P1-12)
     ELECTION_CREATE     = "ELECTION_CREATE"     # configuración de una elección ponderada (P2-12)
     SMART_CONTRACT      = "SMART_CONTRACT"
     CONTRACT_DEPLOY     = "CONTRACT_DEPLOY"     # despliega bytecode de la VM de pila (P2-11)
@@ -525,6 +527,52 @@ def create_election_transaction(
         sender=creator_address,
         recipient="VOTING_CONTRACT",
         payload=payload,
+        nonce=nonce,
+    )
+    tx.sign(private_key_hex)
+    return tx
+
+
+EVENT_CODE_RECIPIENT = "TOKENS_CONTRACT"   # las TX de códigos de evento no tienen destinatario real
+
+
+def create_event_code_transaction(
+    issuer_address: str,
+    code_id: str,
+    event_pubkey: str,
+    amount: int,
+    max_claims: int,
+    expires_height: int,
+    reason: str,
+    private_key_hex: str,
+    nonce: int = 0,
+) -> Transaction:
+    """TX EVENT_CODE_CREATE (P1-12): un emisor registrado publica un código de evento."""
+    tx = Transaction(
+        type=TransactionType.EVENT_CODE_CREATE,
+        sender=issuer_address,
+        recipient=EVENT_CODE_RECIPIENT,
+        payload={"code_id": code_id, "event_pubkey": event_pubkey, "amount": amount,
+                 "max_claims": max_claims, "expires_height": expires_height, "reason": reason},
+        nonce=nonce,
+    )
+    tx.sign(private_key_hex)
+    return tx
+
+
+def create_event_claim_transaction(
+    student_address: str,
+    code_id: str,
+    claim_sig: str,
+    private_key_hex: str,
+    nonce: int = 0,
+) -> Transaction:
+    """TX EVENT_CODE_CLAIM (P1-12): el estudiante reclama; ``claim_sig`` la firma la llave del evento."""
+    tx = Transaction(
+        type=TransactionType.EVENT_CODE_CLAIM,
+        sender=student_address,
+        recipient=EVENT_CODE_RECIPIENT,
+        payload={"code_id": code_id, "claim_sig": claim_sig},
         nonce=nonce,
     )
     tx.sign(private_key_hex)

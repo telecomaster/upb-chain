@@ -9,6 +9,7 @@ mismo proceso son independientes. ``app = create_app()`` al final mantiene
 ``uvicorn api.app:app``.
 """
 import asyncio
+import base64
 import csv
 import hashlib
 import hmac
@@ -17,8 +18,10 @@ import io
 import json
 import logging
 import os
+import secrets
 import threading
 import time
+from urllib.parse import urlencode
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,17 +53,19 @@ from blockchain.core.transaction import (
     create_catalog_item_transaction,
     create_award_rule_transaction,
     create_election_transaction,
+    create_event_code_transaction,
 )
 from blockchain.core.wallet import Wallet, derive_address, public_key_from_private
 from blockchain.consensus.proof_of_work import ProofOfWork
 from blockchain.consensus.pbft import PBFTConfigError, PBFTReplica, PBFTTransport, ReplicaSet
+from blockchain.core.block import GENESIS_HASH
 from blockchain.contracts.credential import CredentialState, credential_id_of_tx
 from blockchain.contracts import vc_export
 from blockchain.contracts import programs
 from blockchain.vm import AsmError, assemble, disassemble
 from blockchain.vm.asm import address_to_int
 from blockchain.contracts.tokens import (
-    MAX_REASON, TOKEN_NAME, TOKEN_SYMBOL, is_semester, semester_of,
+    MAX_CLAIMS, MAX_REASON, TOKEN_NAME, TOKEN_SYMBOL, is_semester, semester_of,
 )
 from blockchain.network.node import P2PNode
 from ai.anomaly.detector import TransactionAnomalyDetector, BlockAnomalyDetector
@@ -457,6 +462,16 @@ class AwardCsvRequest(BaseModel):
     issuer_address: str
     private_key_hex: str
     csv: str                           # encabezado "address,amount,reason"
+
+
+class EventCodeRequest(BaseModel):
+    issuer_address: str
+    private_key_hex: str               # llave del EMISOR (educativo; la firma real va en el navegador)
+    amount: int = Field(gt=0)          # puntos por reclamo
+    max_claims: int = Field(ge=1, le=MAX_CLAIMS)
+    expires_height: Optional[int] = None   # por defecto, altura actual + 1000 bloques
+    reason: str
+    code_id: Optional[str] = None      # por defecto, uno aleatorio
 
 
 class RedeemRequest(BaseModel):
@@ -1017,6 +1032,62 @@ async def award_tokens_csv(request: AwardCsvRequest, node: NodeState = Depends(g
                 "submitted": submitted})
         submitted.append({"row": line, "tx_id": tx.tx_id})
     return {"status": "PENDING", "count": len(submitted), "submitted": submitted}
+
+
+# ── Códigos QR de evento de un solo uso (P1-12) ──────────────────────────────
+
+def _llave_cruda(private_key_hex: str) -> str:
+    """Escalar secp256k1 (64 hex) de una llave privada DER: lo que lleva el QR y usa la billetera."""
+    from cryptography.hazmat.primitives import serialization
+    key = serialization.load_der_private_key(bytes.fromhex(private_key_hex), password=None)
+    return f"{key.private_numbers().private_value:064x}"
+
+
+@router.post("/tokens/event-codes")
+async def create_event_code(request: EventCodeRequest, http: Request,
+                            node: NodeState = Depends(get_node)):
+    """Crea un código de evento (EVENT_CODE_CREATE firmada por el emisor, educativo).
+
+    Genera la llave EFÍMERA del evento: la privada va en el QR (``claim_url``), la pública
+    en la TX. Quien escanee el QR firma con ella el reclamo ligado a SU dirección. La llave
+    del evento solo se devuelve aquí; el nodo no la guarda.
+    """
+    import qrcode
+    event_key = Wallet.generate()
+    code_id = request.code_id or "EV-" + secrets.token_hex(4)
+    height = node.blockchain.contracts.height
+    expires = request.expires_height if request.expires_height is not None else height + 1000
+    tx = _signed(lambda: create_event_code_transaction(
+        request.issuer_address, code_id, event_key.public_key_hex, request.amount,
+        request.max_claims, expires, request.reason, request.private_key_hex,
+        nonce=node.blockchain.next_nonce(request.issuer_address)))
+    _submit_contract_tx(node, tx)
+    base = (node.settings.public_base_url or str(http.base_url)).rstrip("/")
+    secreto = _llave_cruda(event_key.private_key_hex)
+    claim_url = f"{base}/billetera?{urlencode({'evento': code_id, 'k': secreto})}"
+    buf = io.BytesIO()
+    qrcode.make(claim_url).save(buf, format="PNG")
+    return {"status": "PENDING", "tx_id": tx.tx_id, "code_id": code_id,
+            "event_private_key": secreto, "event_pubkey": event_key.public_key_hex,
+            "expires_height": expires, "claim_url": claim_url,
+            "qr_png_base64": base64.b64encode(buf.getvalue()).decode("ascii")}
+
+
+@router.get("/tokens/event-codes/{code_id}")
+async def get_event_code(code_id: str, node: NodeState = Depends(get_node)):
+    """Estado confirmado de un código de evento: reclamos usados, vencimiento y vigencia."""
+    code = node.blockchain.contract_state("tokens").event_codes.get(code_id)
+    if code is None:
+        raise HTTPException(404, "Código de evento no encontrado (o aún sin confirmar)")
+    height = node.blockchain.contracts.height
+    used = len(code["claimed_by"])
+    estado = ("EXHAUSTED" if used >= code["max_claims"]
+              else "EXPIRED" if height >= code["expires_height"] else "OPEN")
+    return {"code_id": code_id, "issuer": code["issuer"], "amount": code["amount"],
+            "max_claims": code["max_claims"], "claims_used": used,
+            "claims_left": code["max_claims"] - used, "expires_height": code["expires_height"],
+            "height": height, "status": estado, "reason": code["reason"],
+            "symbol": TOKEN_SYMBOL, "genesis_hash": GENESIS_HASH}
 
 
 @router.post("/tokens/redeem")
