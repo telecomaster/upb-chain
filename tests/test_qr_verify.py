@@ -28,7 +28,12 @@ async def test_pagina_pendiente_valida_y_revocada(client):
     r = await client.get(f"/verify/{cid}")
     assert r.status_code == 200 and "VÁLIDA" in r.text and emisor.address in r.text
     assert "Confirmaciones" in r.text
+    assert "Revocación pendiente" not in r.text
     await _revocar(client, emisor, cid)
+    # Regresión: con la revocación en el mempool, el empleador que escanea el QR debe verlo
+    # (antes la página decía VÁLIDA sin ningún aviso; solo el JSON traía pending_revocation).
+    t = (await client.get(f"/verify/{cid}")).text
+    assert "VÁLIDA" in t and "Revocación pendiente" in t
     await _minar_api(client)
     assert "REVOCADA" in (await client.get(f"/verify/{cid}")).text
 

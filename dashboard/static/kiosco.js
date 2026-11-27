@@ -224,7 +224,8 @@ async function verificar(id) {
   if (!st) { veredicto.textContent = 'NO ENCONTRADA'; veredicto.className = 'veredicto nd'; return; }
   veredicto.textContent = st.verdict || st.status;
   veredicto.className = 'veredicto ' + (COLORES[st.status] || 'nd');
-  $('motivo').textContent = st.reason || '';
+  $('motivo').textContent = (st.reason || '') +
+    (st.pending_revocation ? ' · ⚠ Revocación pendiente de minado: el emisor ya pidió revocarla.' : '');
   const c = st.credential || {};
   raizCampos = c.fields_root || null;
   const filas = [['ID', id], ['Emisor', c.issuer_address], ['Tipo', c.credential_type],

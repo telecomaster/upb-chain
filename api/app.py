@@ -1801,9 +1801,13 @@ async def verify_page(credential_id: str, node: NodeState = Depends(get_node)):
               ("Confirmaciones", st.get("confirmations") if cred else None)]
     rows = "".join(f"<dt>{html.escape(k)}</dt><dd>{html.escape(str(v))}</dd>"
                    for k, v in campos if v is not None and v != "")
+    motivo = st["reason"]
+    if st.get("pending_revocation"):
+        # La revocación ya está en el mempool: el empleador debe saberlo antes de que se mine.
+        motivo += ". ⚠ Revocación pendiente de minado: el emisor ya pidió revocarla."
     body = _VERIFY_PAGE.format(
         color=_VERIFY_COLORS.get(st["status"], "#4b5563"),
-        verdict=html.escape(st["verdict"]), reason=html.escape(st["reason"]), rows=rows)
+        verdict=html.escape(st["verdict"]), reason=html.escape(motivo), rows=rows)
     return HTMLResponse(body, status_code=404 if st["status"] == "NOT_FOUND" else 200)
 
 
